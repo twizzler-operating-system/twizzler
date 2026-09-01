@@ -59,6 +59,7 @@ lazy_gates! {
     unlink_external: DynamicSecGate<'static, (Descriptor, ObjID, usize), ()>
         = "pager_unlink_external",
     set_mtime_external: DynamicSecGate<'static, (ObjID, u64), ()> = "pager_set_mtime_external",
+    nlink_external: DynamicSecGate<'static, (ObjID,), u32> = "pager_nlink_external",
     readlink_external: DynamicSecGate<'static, (Descriptor, ObjID), usize>
         = "pager_readlink_external",
 }
@@ -247,6 +248,12 @@ impl PagerHandle {
 /// the call is inode-addressed and moves no buffer data.
 pub fn set_mtime_external(id: ObjID, mtime: u64) -> Result<()> {
     (pager_api().set_mtime_external())(id, mtime)
+}
+
+/// The store's link count for external object `id`. Handle-free for the same reason as
+/// [set_mtime_external]: inode-addressed, and it moves no buffer data.
+pub fn nlink_external(id: ObjID) -> Result<u32> {
+    (pager_api().nlink_external())(id)
 }
 
 pub fn objid_to_ino(id: u128) -> Option<u32> {

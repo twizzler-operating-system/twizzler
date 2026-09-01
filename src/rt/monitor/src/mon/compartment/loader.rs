@@ -8,7 +8,7 @@ use dynlink::{
     DynlinkError, SMALL_STRING_SIZE, SMALL_VEC_SIZE,
 };
 use happylock::ThreadKey;
-use monitor_api::SharedCompConfig;
+use monitor_api::{ControllerOption, SharedCompConfig};
 use smallstr::SmallString;
 use talc::{ErrOnOom, Talc};
 use tinyvec::TinyVec;
@@ -152,6 +152,12 @@ impl LoadInfo {
         mut loader_config: monitor_api::CompartmentLoaderConfig,
     ) -> Result<RunComp, DynlinkError> {
         let _start = Instant::now();
+        // Publish the *resolved* controller: `Inherit` means nothing to the new compartment,
+        // which reads this field to answer `/dev/tty`.
+        loader_config.controller = match controller {
+            Some(id) => ControllerOption::Object(id),
+            None => ControllerOption::NoController,
+        };
         let mut comp_config = CompConfigObject::new(
             handle,
             SharedCompConfig::new(self.sctx_id, null_mut(), loader_config),

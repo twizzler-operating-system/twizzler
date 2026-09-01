@@ -1922,6 +1922,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "devfs_test"
+version = "0.1.0"
+
+[[package]]
 name = "devmgr"
 version = "0.1.0"
 dependencies = [
@@ -7712,6 +7716,7 @@ dependencies = [
  "futures",
  "libc",
  "miette",
+ "monitor-api",
  "rand 0.10.2",
  "sunset",
  "sunset-async",

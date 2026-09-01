@@ -74,6 +74,26 @@ pub mod spacesplit {
     /// The accumulators stay unconditional -- they are relaxed adds and cost nothing.
     pub const REPORT_ON: bool = false;
 
+    /// Master switch for the *clock reads*, as opposed to the counters.
+    ///
+    /// The accumulators are relaxed adds and cost nothing; the four `Instant::now()` pairs that
+    /// feed them do not, and they sit on every object map in the system. Off by default, and when
+    /// off nothing is logged rather than logging zeros -- a sweep should read silence, not
+    /// mistake an ungated build's zeros for measurements.
+    pub const TIMING: bool = false;
+
+    /// `Instant::now()`, if [`TIMING`] is on.
+    #[inline(always)]
+    pub fn t0() -> Option<std::time::Instant> {
+        TIMING.then(std::time::Instant::now)
+    }
+
+    /// Nanoseconds since `t`, or 0 when [`TIMING`] is off.
+    #[inline(always)]
+    pub fn ns(t: Option<std::time::Instant>) -> u64 {
+        t.map_or(0, |t| t.elapsed().as_nanos() as u64)
+    }
+
     static COUNT: AtomicU64 = AtomicU64::new(0);
     static HITS: AtomicU64 = AtomicU64::new(0);
     static LOCK1: AtomicU64 = AtomicU64::new(0);
@@ -94,7 +114,7 @@ pub mod spacesplit {
     /// monitor while it is servicing the very calls being measured.
     pub fn report() {
         let n = COUNT.load(Ordering::Relaxed);
-        if !REPORT_ON || n == 0 {
+        if !REPORT_ON || !TIMING || n == 0 {
             return;
         }
         let miss = n - HITS.load(Ordering::Relaxed);
@@ -294,9 +314,9 @@ impl Space {
             lock2: 0,
             hit: true,
         };
-        let t_lock1 = std::time::Instant::now();
+        let t_lock1 = spacesplit::t0();
         let mut guard = crate::lockdiag::watched(this.lock().unwrap());
-        split.lock1 = t_lock1.elapsed().as_nanos() as u64;
+        split.lock1 = spacesplit::ns(t_lock1);
         let item = match guard.maps.get_mut(&info) {
             Some(item) => item,
             None => {
@@ -307,14 +327,14 @@ impl Space {
                 // the map table held. Allocating after the drop leaves this lock covering only a
                 // hash lookup on the way in and an insert on the way out.
                 drop(guard);
-                let t_slot = std::time::Instant::now();
+                let t_slot = spacesplit::t0();
                 let slot: usize = unsafe { __monitor_get_slot() }
                     .try_into()
                     .ok()
                     .ok_or(ResourceError::OutOfResources)?;
-                split.slot = t_slot.elapsed().as_nanos() as u64;
+                split.slot = spacesplit::ns(t_slot);
 
-                let t_sys = std::time::Instant::now();
+                let t_sys = spacesplit::t0();
                 let res = twizzler_abi::syscall::sys_object_map_in_sctx(
                     None,
                     info.id,
@@ -323,11 +343,11 @@ impl Space {
                     info.flags.into(),
                     target_sctx,
                 );
-                split.sys = t_sys.elapsed().as_nanos() as u64;
+                split.sys = spacesplit::ns(t_sys);
                 mapsyscallstats::record(split.sys);
-                let t_lock2 = std::time::Instant::now();
+                let t_lock2 = spacesplit::t0();
                 guard = crate::lockdiag::watched(this.lock().unwrap());
-                split.lock2 = t_lock2.elapsed().as_nanos() as u64;
+                split.lock2 = spacesplit::ns(t_lock2);
                 let Ok(_) = res else {
                     unsafe {
                         __monitor_release_slot(slot);

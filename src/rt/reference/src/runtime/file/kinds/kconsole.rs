@@ -61,6 +61,7 @@ impl Fd for KernelConsoleFile {
             accessed: Duration::ZERO,
             modified: Duration::ZERO,
             unix_mode: S_IFCHR | 0o666,
+            nlink: 1,
         })
     }
 }

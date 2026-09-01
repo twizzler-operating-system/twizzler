@@ -11,7 +11,8 @@ use std::{
 
 use dynlink::{compartment::CompartmentId, context::Context};
 use monitor_api::{
-    CompartmentFlags, RuntimeThreadControl, SharedCompConfig, ThreadInfo, TlsTemplateInfo,
+    CompartmentFlags, ControllerOption, RuntimeThreadControl, SharedCompConfig, ThreadInfo,
+    TlsTemplateInfo,
 };
 use secgate::util::SimpleBuffer;
 use talc::{ErrOnOom, Talc};
@@ -425,6 +426,17 @@ impl RunComp {
     /// Get a pointer to the compartment config.
     pub fn comp_config_ptr(&self) -> *const SharedCompConfig {
         self.comp_config_object.get_comp_config()
+    }
+
+    /// Keep the published config's controller matching the monitor's authority (`CompartmentMgr`),
+    /// which `/dev/tty` reads. Field-granular so concurrent use of the config's atomics
+    /// (`posted_signals`) is untouched.
+    pub fn set_config_controller(&mut self, controller: ControllerOption) {
+        // Safety: only the monitor writes comp configs, and we hold this one mutably.
+        unsafe {
+            let cfg = self.comp_config_object.get_comp_config() as *mut SharedCompConfig;
+            (*cfg).loader_config.controller = controller;
+        }
     }
 
     /// Allocate some space in the compartment allocator, and initialize it.

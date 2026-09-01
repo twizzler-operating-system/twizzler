@@ -17,7 +17,7 @@ use twizzler_rt_abi::{
     bindings::{sync_info, SYNC_FLAG_ASYNC_DURABLE, SYNC_FLAG_DURABLE},
     error::ArgumentError,
     fd::FdInfo,
-    object::{MapFlags, ObjectCmd, ObjectHandle, MEXT_MTIME, MEXT_SIZED},
+    object::{MapFlags, ObjectCmd, ObjectHandle, MEXT_MTIME, MEXT_NLINK, MEXT_SIZED},
     Result,
 };
 
@@ -162,6 +162,57 @@ impl RawFile {
                     .store(me as *const MetaExt as *mut _, Ordering::Relaxed);
             }
         }
+    }
+
+    /// Stamp `nlink` into the object's `MEXT_NLINK`, creating the extension if absent.
+    ///
+    /// Best-effort: the meta page is only writable through a write mapping, and the common reader
+    /// of this value (`stat`) holds a read-only one. Failing to update the cache costs another
+    /// store round trip on the next stat, nothing more.
+    fn stamp_nlink(&self, nlink: u32) {
+        if !self.handle.map_flags().contains(MapFlags::WRITE) {
+            return;
+        }
+        let nlink = nlink.max(1) as u64;
+        if let Some(me) = self.handle.find_meta_ext(MEXT_NLINK) {
+            me.value.store(nlink, Ordering::SeqCst);
+            return;
+        }
+        let _ = unsafe { self.handle.set_meta_ext(MetaExt::new(MEXT_NLINK, nlink)) };
+    }
+
+    /// The number of names bound to this object.
+    ///
+    /// `MEXT_NLINK` on the meta page is the store's count as of the last time the page was
+    /// synthesized, and nothing re-synthesizes a page that stays resident -- so it goes stale in
+    /// exactly one direction on its own: an unlink through another name leaves it too high, while
+    /// [ReferenceRuntime::link](crate::runtime::ReferenceRuntime) bumps it itself on the way in. A
+    /// count above one is therefore confirmed against the store; a count of one is trusted, which
+    /// is what keeps the overwhelmingly common case free of a round trip.
+    fn nlink(&self) -> u32 {
+        // Only a store-backed object has a link count to report. A native object's names live in
+        // namespace objects that count nothing, and its meta page is the real, persistent one --
+        // caching a count there would be writing down a number nothing ever corrects.
+        if !self.is_external() {
+            return 1;
+        }
+        let cached = self
+            .handle
+            .find_meta_ext(MEXT_NLINK)
+            .map(|me| me.value.load(Ordering::SeqCst) as u32)
+            .unwrap_or(1)
+            .max(1);
+        if cached <= 1 {
+            return cached;
+        }
+        let Ok(fresh) = crate::pager::nlink_external(self.handle.id()) else {
+            return cached;
+        };
+        let fresh = fresh.max(1);
+        if fresh != cached {
+            self.stamp_nlink(fresh);
+        }
+        fresh
     }
 
     pub fn open(obj_id: ObjID, flags: MapFlags) -> Result<Self> {
@@ -312,6 +363,7 @@ impl Fd for RawFile {
             accessed: std::time::Duration::ZERO,
             modified,
             created: std::time::Duration::ZERO,
+            nlink: self.nlink(),
         })
     }
 

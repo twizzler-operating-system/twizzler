@@ -28,7 +28,9 @@ pub const BUFFER_NSLOTS: usize = 8;
 
 pub type Result<T> = std::result::Result<T, TwzError>;
 
-pub use store::{cache_stats, memo_config, GetFlags, NameSession, NameStore, NsNode, NsNodeKind};
+pub use store::{
+    cache_stats, memo_config, DevFs, GetFlags, NameSession, NameStore, NsNode, NsNodeKind,
+};
 use twizzler_rt_abi::error::TwzError;
 
 /// A path passed in a gate's arguments rather than through the handle's shared buffer.

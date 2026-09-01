@@ -268,6 +268,14 @@ pub fn pager_set_mtime_external(id: ObjID, mtime: u64) -> Result<(), TwzError> {
     Ok(())
 }
 
+/// The store's link count for external object `id`, which is the authority the synthesized meta
+/// page's `MEXT_NLINK` is a cache of.
+#[secgate::entry(lib = "pager")]
+pub fn pager_nlink_external(id: ObjID) -> Result<u32, TwzError> {
+    let pager = &PAGER_CTX.get().unwrap();
+    Ok(pager.paged_ostore(None)?.nlink(id.raw())?)
+}
+
 #[secgate::entry(lib = "pager")]
 pub fn pager_unlink_external(desc: Descriptor, dir: ObjID, namelen: usize) -> Result<(), TwzError> {
     let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;

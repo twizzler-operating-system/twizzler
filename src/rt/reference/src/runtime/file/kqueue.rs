@@ -2,9 +2,10 @@ static KEV_SLEEPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 static KEV_SHORT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 use std::{
+    cell::RefCell,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Mutex,
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -30,6 +31,82 @@ use crate::runtime::{
     file::{get_fd_slots, Fd},
     ReferenceRuntime,
 };
+
+/// Identifies one registration for suppression/oneshot bookkeeping: `(ident, filter, token)`.
+type SuppressKey = (usize, kevent_filter, u64);
+
+/// Per-call scratch for [`ReferenceRuntime::kevent`], reused across calls on the same thread.
+///
+/// `kevent` is the event-loop primitive under mio/tokio, so it runs at the frequency of the whole
+/// workload. Building a dozen `Vec`s plus a fresh copy of the registration set on every call put
+/// the allocator inside every iteration of every event loop; the buffers are the same shape each
+/// time, so they are kept and re-filled instead.
+///
+/// Cleared on the way *out* as well as in: a thread parked in its event loop would otherwise sit
+/// holding the previous call's `keepalive` `Arc`s and `udata` pointers for as long as it is idle.
+#[derive(Default)]
+struct KeventScratch {
+    receipts: Vec<kevent>,
+    snapshot: Vec<KqueueEntry>,
+    wps: Vec<ThreadSync>,
+    info: Vec<(usize, bool)>,
+    ready: Vec<usize>,
+    rearmed: Vec<(SuppressKey, Option<u64>)>,
+    user_observed: Vec<(usize, u64)>,
+    clear_observed: Vec<(usize, Option<u64>)>,
+    keepalives: Vec<Option<Arc<AtomicU64>>>,
+    oneshot_fired: Vec<SuppressKey>,
+    user_fired: Vec<(usize, u64)>,
+    suppress: Vec<(SuppressKey, Option<u64>)>,
+}
+
+impl KeventScratch {
+    fn clear(&mut self) {
+        self.receipts.clear();
+        self.snapshot.clear();
+        self.wps.clear();
+        self.info.clear();
+        self.ready.clear();
+        self.rearmed.clear();
+        self.user_observed.clear();
+        self.clear_observed.clear();
+        self.keepalives.clear();
+        self.oneshot_fired.clear();
+        self.user_fired.clear();
+        self.suppress.clear();
+    }
+}
+
+thread_local! {
+    static KEVENT_SCRATCH: RefCell<KeventScratch> = RefCell::new(KeventScratch::default());
+}
+
+/// Borrows the thread's scratch for one `kevent` call and hands it back, emptied, on every exit
+/// path. Takes rather than holds a `RefCell` borrow, so a re-entrant call (there is none today)
+/// gets a fresh set instead of panicking.
+struct ScratchGuard(Option<KeventScratch>);
+
+impl ScratchGuard {
+    fn take() -> Self {
+        let mut s = KEVENT_SCRATCH.with(|c| core::mem::take(&mut *c.borrow_mut()));
+        s.clear();
+        Self(Some(s))
+    }
+
+    fn get(&mut self) -> &mut KeventScratch {
+        // Unwrap-Ok: only `drop` takes the value, and that is the end of this guard's life.
+        self.0.as_mut().unwrap()
+    }
+}
+
+impl Drop for ScratchGuard {
+    fn drop(&mut self) {
+        if let Some(mut s) = self.0.take() {
+            s.clear();
+            KEVENT_SCRATCH.with(|c| *c.borrow_mut() = s);
+        }
+    }
+}
 
 fn filter_to_wait_kind(filter: kevent_filter) -> Option<wait_kind> {
     if filter == EVFILT_READ {
@@ -268,6 +345,7 @@ impl Fd for KqueueFile {
             accessed: Duration::ZERO,
             modified: Duration::ZERO,
             unix_mode: 0,
+            nlink: 1,
         })
     }
 
@@ -295,10 +373,25 @@ impl ReferenceRuntime {
             .as_kqueue()
             .ok_or(ArgumentError::InvalidArgument)?;
 
+        let mut guard = ScratchGuard::take();
+        let KeventScratch {
+            receipts,
+            snapshot,
+            wps,
+            info,
+            ready,
+            rearmed,
+            user_observed,
+            clear_observed,
+            keepalives,
+            oneshot_fired,
+            user_fired,
+            suppress,
+        } = guard.get();
+
         let mut out_count = 0;
-        let mut receipts = Vec::new();
-        kqf.apply_changes(changelist, &mut receipts);
-        for e in receipts {
+        kqf.apply_changes(changelist, receipts);
+        for e in receipts.drain(..) {
             if out_count >= eventlist.len() {
                 break;
             }
@@ -322,32 +415,25 @@ impl ReferenceRuntime {
         // Snapshot the currently-enabled registrations. We build the wait set from this snapshot
         // (rather than holding `entries` locked across the blocking syscall below), and reconcile
         // EV_ONESHOT removal and EVFILT_USER trigger consumption against it afterward.
-        let snapshot: Vec<KqueueEntry> = kqf
-            .entries
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|e| e.enabled)
-            .copied()
-            .collect();
+        snapshot.extend(
+            kqf.entries
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|e| e.enabled)
+                .copied(),
+        );
 
         let slots = get_fd_slots().read().unwrap();
-        let mut wps = Vec::new();
-        // Per sleep in `wps`: which snapshot entry it belongs to, and whether it is a falling-edge
-        // sleep (an EV_CLEAR registration waiting out a readiness it already reported) rather than
-        // the usual rising-edge one.
-        let mut info: Vec<(usize, bool)> = Vec::new();
-        let mut ready = Vec::new();
-        // EV_CLEAR registrations observed to have gone not-ready, which re-arms them.
-        let mut rearmed = Vec::new();
-        // Per ready EVFILT_USER entry: the trigger count observed when we decided to report it.
-        let mut user_observed: Vec<(usize, u64)> = Vec::new();
-        // Per EV_CLEAR entry: the falling-edge token observed for it this call. None means the
-        // kind has no falling-edge waitpoint, which is what makes EV_CLEAR degrade to level.
-        let mut clear_observed: Vec<(usize, Option<u64>)> = Vec::new();
-        // Must be held alive for as long as `wps` may still be read (through the
-        // sys_thread_sync call below) -- see WaitpointResult::keepalive.
-        let mut keepalives = Vec::new();
+        // `wps` holds the sleeps; `info` says, per sleep, which snapshot entry it belongs to and
+        // whether it is a falling-edge sleep (an EV_CLEAR registration waiting out a readiness it
+        // already reported) rather than the usual rising-edge one. `keepalives` must stay alive
+        // for as long as `wps` may still be read, through the sys_thread_sync below -- see
+        // WaitpointResult::keepalive. `rearmed` collects EV_CLEAR registrations seen to have gone
+        // not-ready; `user_observed` the trigger count each ready EVFILT_USER entry was judged
+        // against; `clear_observed` the falling-edge token sampled per EV_CLEAR entry (None means
+        // the kind has no falling-edge waitpoint, which is what makes EV_CLEAR degrade to level).
+        // All live in the thread's `KeventScratch`; see there for why.
         let mut has_user = false;
         for (idx, entry) in snapshot.iter().enumerate() {
             if entry.filter == EVFILT_USER {
@@ -397,7 +483,7 @@ impl ReferenceRuntime {
                     .as_ref()
                     .is_some_and(|d| d.sleep.value != token || d.sleep.ready());
                 if down.is_none() || already_fell {
-                    rearmed.push(key);
+                    rearmed.push((key, None));
                 } else {
                     // Still the same readiness we already reported. Wait for it to go away rather
                     // than reporting it again -- re-reporting is exactly what makes a
@@ -433,7 +519,7 @@ impl ReferenceRuntime {
                 )));
             }
             let __t0 = std::time::Instant::now();
-            let __res = sys_thread_sync(&mut wps, timeout);
+            let __res = sys_thread_sync(wps, timeout);
             let __slept = __t0.elapsed();
             // Age of the last read-readiness rising edge at the moment this sleep returned:
             // isolates the kernel wake+schedule hop from kevent's post-wake bookkeeping (UDPRISE
@@ -519,7 +605,8 @@ impl ReferenceRuntime {
             // the stall window carries ring-word samples -- POLLPROBE otherwise prints on
             // power-of-two call counts, which a stalled compartment stops reaching. Diag-gated
             // inside pollprobe; a healthy run's waits resolve in microseconds and never take this.
-            if matches!(__res, Err(TwzError::TIMED_OUT)) && timeout.is_some_and(|t| t.as_millis() >= 1000)
+            if matches!(__res, Err(TwzError::TIMED_OUT))
+                && timeout.is_some_and(|t| t.as_millis() >= 1000)
             {
                 crate::runtime::file::kinds::socket::engine::sample_rings();
                 crate::runtime::file::kinds::socket::engine::pollprobe("kevtimeout");
@@ -537,7 +624,7 @@ impl ReferenceRuntime {
                     // Went not-ready: re-arm it, but don't report -- the next kevent() will pick
                     // up the rising edge.
                     let entry = &snapshot[*idx];
-                    rearmed.push((entry.ident, entry.filter, entry.token));
+                    rearmed.push(((entry.ident, entry.filter, entry.token), None));
                 } else {
                     ready.push(*idx);
                 }
@@ -564,10 +651,7 @@ impl ReferenceRuntime {
             }
         }
 
-        let mut oneshot_fired = Vec::new();
-        let mut user_fired = Vec::new();
-        let mut suppress = Vec::new();
-        for idx in ready {
+        for idx in ready.drain(..) {
             if out_count >= eventlist.len() {
                 break;
             }
@@ -603,12 +687,11 @@ impl ReferenceRuntime {
 
         // Order matters: an entry re-armed above may also have been reported in the same call (it
         // went not-ready and back before we got here), and must end up suppressed.
-        let rearmed: Vec<_> = rearmed.into_iter().map(|k| (k, None)).collect();
-        kqf.set_suppression(&rearmed);
-        kqf.set_suppression(&suppress);
+        kqf.set_suppression(rearmed);
+        kqf.set_suppression(suppress);
 
         if !user_fired.is_empty() {
-            kqf.mark_triggers_reported(&user_fired);
+            kqf.mark_triggers_reported(user_fired);
         }
 
         if !oneshot_fired.is_empty() {

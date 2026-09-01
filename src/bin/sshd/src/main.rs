@@ -1,8 +1,6 @@
 use std::{
-    collections::BTreeMap,
     os::fd::FromRawFd,
     process::{Command, Stdio},
-    sync::Mutex,
 };
 
 use async_executor::LocalExecutor;
@@ -16,18 +14,13 @@ use tracing::Level;
 use twizzler::object::{ObjID, Object, RawObject};
 use twizzler_io::pty::{DEFAULT_TERMIOS, PtyBase, PtyServerHandle, PtySignal};
 use twizzler_rt_abi::{
-    bindings::IO_REGISTER_SIGNAL,
     fd::{RawFd, twz_rt_fd_close},
-    io::twz_rt_fd_set_config,
     object::ObjectCreate,
 };
 
-/// Maps a PTY object to the compartment fd of the shell running on it.
-///
-/// The line discipline's signal hook is a bare `fn` pointer with no captured state, so
-/// it needs somewhere to look up which session a signal belongs to.
-static SESSIONS: Mutex<BTreeMap<ObjID, RawFd>> = Mutex::new(BTreeMap::new());
-
+// The session shell is spawned with this PTY's client bound as its stdio, which makes the PTY
+// its controller -- so the monitor's fan-out reaches the shell *and* its foreground children,
+// which the old per-shell compartment-fd routing could not (^C never reached the child).
 fn pty_signal_handler(server: &PtyServerHandle, sig: PtySignal) {
     let signal = match sig {
         PtySignal::Interrupt => libc::SIGINT,
@@ -36,13 +29,16 @@ fn pty_signal_handler(server: &PtyServerHandle, sig: PtySignal) {
         PtySignal::Status => libc::SIGINFO,
         PtySignal::Winch => libc::SIGWINCH,
     } as u64;
-    let Some(fd) = SESSIONS.lock().unwrap().get(&server.object().id()).copied() else {
-        return;
-    };
-    let _ = twz_rt_fd_set_config(fd, IO_REGISTER_SIGNAL, signal).inspect_err(|e| {
+    let _ = monitor_api::post_signal(
+        Some(server.object().id()),
+        signal,
+        monitor_api::PostSignalFlags::CONTROLLER,
+    )
+    .inspect_err(|e| {
         tracing::warn!(
-            "failed to deliver signal {} to session shell: {}",
+            "failed to raise signal {} for controller {}: {}",
             signal,
+            server.object().id(),
             e
         )
     });
@@ -256,13 +252,6 @@ async fn shell(
         .await
         .into_diagnostic()?;
 
-    // Route this PTY's signals at the shell we just spawned. Registered before the
-    // reader/writer futures are first polled, so no keystroke can arrive ahead of it.
-    SESSIONS
-        .lock()
-        .unwrap()
-        .insert(pty.id(), handle.id() as RawFd);
-
     twz_rt_fd_close(client_fd);
     let handle = blocking::unblock(move || {
         let _ = handle.wait();
@@ -280,7 +269,6 @@ async fn shell(
     };
 
     tracing::debug!("shell exited");
-    SESSIONS.lock().unwrap().remove(&pty.id());
     pty.handle()
         .cmd(
             twizzler_rt_abi::object::ObjectCmd::Delete,

@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     io::{Write, stdout},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crossterm::{
@@ -17,12 +17,59 @@ use crossterm::{
 use twizzler_abi::{
     object::ObjID,
     syscall::{
-        EnumerateKind, ObjectInfo, sys_enumerate, sys_object_enumerate_notes, sys_object_get_note,
-        sys_object_stat, sys_object_stats,
+        EnumerateKind, MemoryStats, ObjectInfo, sys_enumerate, sys_info, sys_memory_stats,
+        sys_object_enumerate_notes, sys_object_get_note, sys_object_stat, sys_object_stats,
     },
 };
 
 const REFRESH: Duration = Duration::from_millis(2000);
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum SortKey {
+    Pages,
+    Delta,
+    Maps,
+    Ties,
+    Name,
+    Id,
+}
+
+impl SortKey {
+    const ALL: [SortKey; 6] = [
+        SortKey::Pages,
+        SortKey::Delta,
+        SortKey::Maps,
+        SortKey::Ties,
+        SortKey::Name,
+        SortKey::Id,
+    ];
+
+    fn name(&self) -> &'static str {
+        match self {
+            SortKey::Pages => "pages",
+            SortKey::Delta => "delta",
+            SortKey::Maps => "maps",
+            SortKey::Ties => "ties",
+            SortKey::Name => "name",
+            SortKey::Id => "id",
+        }
+    }
+
+    /// Numeric keys read best largest-first, text keys smallest-first.
+    fn descending(&self) -> bool {
+        !matches!(self, SortKey::Name | SortKey::Id)
+    }
+
+    fn step(&self, forward: bool) -> SortKey {
+        let idx = Self::ALL.iter().position(|k| k == self).unwrap_or(0);
+        let n = Self::ALL.len();
+        Self::ALL[if forward {
+            (idx + 1) % n
+        } else {
+            (idx + n - 1) % n
+        }]
+    }
+}
 
 fn main() {
     enable_raw_mode().unwrap();
@@ -36,13 +83,9 @@ fn main() {
         tracker.scan();
         tracker.read_stats();
         tracker.read_names();
+        tracker.render(&mut out).unwrap();
 
-        let quit = {
-            tracker.render(&mut out).unwrap();
-            wait_for_quit(REFRESH)
-        };
-
-        if quit {
+        if wait_for_input(REFRESH, &mut tracker, &mut out) {
             break;
         }
     }
@@ -52,10 +95,12 @@ fn main() {
     let _ = disable_raw_mode();
 }
 
-fn wait_for_quit(timeout: Duration) -> bool {
-    let deadline = std::time::Instant::now() + timeout;
+/// Waits out the refresh interval, returning true if the user asked to quit. Sort changes are
+/// applied and redrawn immediately rather than at the next scan, so the display tracks the key.
+fn wait_for_input(timeout: Duration, tracker: &mut ObjectTracker, out: &mut impl Write) -> bool {
+    let deadline = Instant::now() + timeout;
     loop {
-        let now = std::time::Instant::now();
+        let now = Instant::now();
         if now >= deadline {
             return false;
         }
@@ -64,9 +109,22 @@ fn wait_for_quit(timeout: Duration) -> bool {
                 if key.kind == KeyEventKind::Release {
                     continue;
                 }
+                let mut resort = true;
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => return true,
-                    _ => {}
+                    KeyCode::Char('s') | KeyCode::Right => {
+                        tracker.sort = tracker.sort.step(true);
+                        tracker.reverse = false;
+                    }
+                    KeyCode::Char('S') | KeyCode::Left => {
+                        tracker.sort = tracker.sort.step(false);
+                        tracker.reverse = false;
+                    }
+                    KeyCode::Char('r') => tracker.reverse = !tracker.reverse,
+                    _ => resort = false,
+                }
+                if resort {
+                    tracker.render(out).unwrap();
                 }
             }
         }
@@ -80,9 +138,30 @@ struct ObjEntry {
     prev_pages: usize,
 }
 
-#[derive(Default)]
+impl ObjEntry {
+    fn delta(&self) -> isize {
+        self.info.pages as isize - self.prev_pages as isize
+    }
+
+    fn ties(&self) -> usize {
+        self.info.ties_to + self.info.ties_from
+    }
+}
+
 struct ObjectTracker {
     objects: BTreeMap<ObjID, ObjEntry>,
+    sort: SortKey,
+    reverse: bool,
+}
+
+impl Default for ObjectTracker {
+    fn default() -> Self {
+        Self {
+            objects: BTreeMap::new(),
+            sort: SortKey::Pages,
+            reverse: false,
+        }
+    }
 }
 
 impl ObjectTracker {
@@ -150,12 +229,39 @@ impl ObjectTracker {
         }
     }
 
+    fn sorted(&self) -> Vec<&ObjEntry> {
+        let mut sorted: Vec<&ObjEntry> = self.objects.values().collect();
+        sorted.sort_by(|a, b| {
+            let ord = match self.sort {
+                SortKey::Pages => a.info.pages.cmp(&b.info.pages),
+                SortKey::Delta => a.delta().cmp(&b.delta()),
+                SortKey::Maps => a.info.maps.cmp(&b.info.maps),
+                SortKey::Ties => a.ties().cmp(&b.ties()),
+                // Unnamed objects sort last regardless of direction: they carry no key.
+                SortKey::Name => match (a.name.as_deref(), b.name.as_deref()) {
+                    (Some(a), Some(b)) => a.cmp(b),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                },
+                SortKey::Id => a.id.cmp(&b.id),
+            };
+            let ord = if self.sort.descending() != self.reverse {
+                ord.reverse()
+            } else {
+                ord
+            };
+            ord.then(a.id.cmp(&b.id))
+        });
+        sorted
+    }
+
     fn render(&self, out: &mut impl Write) -> std::io::Result<()> {
         let (cols, rows) = size().unwrap_or((80, 24));
         let global = sys_object_stats();
-
-        let mut sorted: Vec<&ObjEntry> = self.objects.values().collect();
-        sorted.sort_by(|a, b| b.info.pages.cmp(&a.info.pages).then(a.id.cmp(&b.id)));
+        let mem = sys_memory_stats();
+        let visible = self.sorted();
+        let total_maps: usize = visible.iter().map(|e| e.info.maps).sum();
 
         out.queue(Clear(ClearType::All))?;
         out.queue(MoveTo(0, 0))?;
@@ -165,26 +271,39 @@ impl ObjectTracker {
         out.queue(Print("otop"))?;
         out.queue(ResetColor)?;
         out.queue(Print(format!(
-            "  —  {} objects, {} mapped, {} pending delete",
-            global.nr_objects, global.nr_mapped, global.nr_pending_delete
+            "  —  {} objects, {} mapped, {} mappings, {} handles, {} ties, {} pending delete",
+            global.nr_objects,
+            global.nr_mapped,
+            total_maps,
+            global.nr_handles,
+            global.nr_ties,
+            global.nr_pending_delete
         )))?;
 
-        out.queue(MoveTo(0, 2))?;
+        out.queue(MoveTo(0, 1))?;
+        self.render_mem(out, &mem)?;
+
+        out.queue(MoveTo(0, 3))?;
         out.queue(SetAttribute(Attribute::Reverse))?;
         out.queue(Print(pad(
             &format!(
                 "{:<20}  {:<32}  {:>8}  {:>8}  {:>5}  {:>5}",
-                "ID", "NAME", "PAGES", "DELTA", "MAPS", "TIES"
+                self.col("ID", SortKey::Id),
+                self.col("NAME", SortKey::Name),
+                self.col("PAGES", SortKey::Pages),
+                self.col("DELTA", SortKey::Delta),
+                self.col("MAPS", SortKey::Maps),
+                self.col("TIES", SortKey::Ties),
             ),
             cols as usize,
         )))?;
         out.queue(SetAttribute(Attribute::Reset))?;
 
-        let body_start: u16 = 3;
+        let body_start: u16 = 4;
         let max_rows = rows.saturating_sub(body_start + 1) as usize;
-        for (i, entry) in sorted.iter().take(max_rows).enumerate() {
+        for (i, entry) in visible.iter().take(max_rows).enumerate() {
             let name = entry.name.as_deref().unwrap_or("");
-            let delta = entry.info.pages as isize - entry.prev_pages as isize;
+            let delta = entry.delta();
 
             out.queue(MoveTo(0, body_start + i as u16))?;
             out.queue(Print(format!(
@@ -209,18 +328,68 @@ impl ObjectTracker {
             out.queue(Print(format!(
                 "  {:>5}  {:>5}",
                 entry.info.maps,
-                entry.info.ties_to + entry.info.ties_from
+                entry.ties()
             )))?;
         }
 
         out.queue(MoveTo(0, rows.saturating_sub(1)))?;
         out.queue(SetForegroundColor(Color::DarkGrey))?;
-        out.queue(Print(
-            "q/Esc: quit  |  sorted by pages (desc)  |  delta = pages change since last scan",
-        ))?;
+        out.queue(Print(format!(
+            "q/Esc: quit  |  s/S or ←/→: sort key ({})  |  r: reverse ({})  |  delta = pages change since last scan",
+            self.sort.name(),
+            if self.sort.descending() != self.reverse {
+                "desc"
+            } else {
+                "asc"
+            }
+        )))?;
         out.queue(ResetColor)?;
 
         out.flush()
+    }
+
+    /// System memory, as the frame tracker sees it. `page_data` is what the objects listed below
+    /// are made of; `kernel_used` and the kalloc totals are everything else the kernel holds.
+    fn render_mem(&self, out: &mut impl Write, mem: &MemoryStats) -> std::io::Result<()> {
+        let page = if mem.nr_levels > 0 {
+            mem.levels[0].page_size
+        } else {
+            sys_info().page_size()
+        };
+        let total = if mem.tracker.total > 0 {
+            mem.tracker.total * page
+        } else {
+            mem.total_bytes()
+        };
+        let free = mem.free_bytes();
+        let used = total.saturating_sub(free);
+        let frac = if total > 0 {
+            used as f64 / total as f64
+        } else {
+            0.0
+        };
+
+        out.queue(Print(format!("mem   {} total, used ", fmt_bytes(total))))?;
+        out.queue(SetForegroundColor(pct_color(frac)))?;
+        out.queue(Print(format!("{} ({:.1}%)", fmt_bytes(used), frac * 100.0)))?;
+        out.queue(ResetColor)?;
+        out.queue(Print(format!(
+            ", free {}  |  objects {}, kernel {}, kalloc {}, pager {}",
+            fmt_bytes(free),
+            fmt_bytes(mem.tracker.page_data * page),
+            fmt_bytes(mem.tracker.kernel_used * page),
+            fmt_bytes(mem.kalloc_bytes()),
+            fmt_bytes(mem.tracker.pager_outstanding * page),
+        )))?;
+        Ok(())
+    }
+
+    fn col(&self, name: &str, key: SortKey) -> String {
+        if self.sort == key {
+            format!("{}*", name)
+        } else {
+            name.to_string()
+        }
     }
 }
 
@@ -238,6 +407,29 @@ fn try_read_object_name(id: ObjID) -> Option<String> {
     }
     let s = std::str::from_utf8(&buf[..len.min(128)]).ok()?;
     Some(s.to_string())
+}
+
+fn pct_color(frac: f64) -> Color {
+    match frac {
+        f if f >= 0.90 => Color::Red,
+        f if f >= 0.75 => Color::Yellow,
+        _ => Color::Green,
+    }
+}
+
+fn fmt_bytes(bytes: usize) -> String {
+    const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
+    let mut val = bytes as f64;
+    let mut unit = 0;
+    while val >= 1024.0 && unit < UNITS.len() - 1 {
+        val /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{}{}", bytes, UNITS[unit])
+    } else {
+        format!("{:.1}{}", val, UNITS[unit])
+    }
 }
 
 fn pad(s: &str, width: usize) -> String {

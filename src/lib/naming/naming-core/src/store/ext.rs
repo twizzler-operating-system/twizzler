@@ -1,7 +1,10 @@
 use std::{
     collections::BTreeMap,
     num::NonZeroUsize,
-    sync::{Arc, Mutex, MutexGuard, RwLock},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex, MutexGuard, RwLock,
+    },
     time::{Duration, Instant},
 };
 
@@ -147,18 +150,57 @@ pub fn cache_stats() -> (usize, usize, usize, usize) {
     (ns.len(), names, order, pinned)
 }
 
-/// Opening a pager handle is two gate calls (open, close) plus an object map and unmap, to carry
-/// one name across in the third. Keep one open instead: the descriptor is per-compartment, not
-/// per-thread, so it is reusable, and the shared `SimpleBuffer` inside it is what the lock guards.
-static PAGER_HANDLE: Mutex<Option<PagerHandle>> = Mutex::new(None);
-
-/// Borrow the compartment's pager handle, opening it on first use. `None` inside means the pager
-/// could not be reached; retried on the next call.
+/// How many pager handles this compartment will open.
 ///
-/// Lock order is this handle, then an `NsCache`. Nothing may take the pager handle while holding a
-/// cache lock.
+/// A handle is one descriptor and one `SimpleBuffer`, and every `PagerHandle` method writes its
+/// argument at offset 0 of that buffer and reads the reply back from offset 0 -- which is why the
+/// methods take `&mut self` and why a handle can carry exactly one call at a time. Concurrency
+/// therefore means more handles, not a bigger buffer: the pager's gate signatures
+/// (`lookup_external(desc, dir, namelen)` and friends) carry no offset, so the slot-sharding the
+/// naming client uses on its own buffer is not available here without changing that ABI.
+///
+/// Eight, matching `BUFFER_NSLOTS` on the naming side. Opened lazily, and only by a caller that
+/// found the earlier ones busy, so a serial workload still opens exactly one.
+const PAGER_HANDLES: usize = 8;
+
+/// This compartment's pager handles. One `SimpleBuffer` each, so they are independent.
+///
+/// This was a single handle behind one mutex, held across the pager gate call -- which on a miss
+/// is a disk round trip. Since naming-core runs inside naming-srv, that serialized every external
+/// (store-backed) lookup, create and enumeration in the whole system behind one lock, and
+/// `items()` held it across an `enumerate_external` *plus* one `readlink_external` per unresolved
+/// symlink in the directory.
+static PAGER_POOL: [Mutex<Option<PagerHandle>>; PAGER_HANDLES] =
+    [const { Mutex::new(None) }; PAGER_HANDLES];
+
+/// Which slot the next *blocking* caller waits on, so an all-busy pool spreads its waiters
+/// instead of piling them onto one handle.
+static PAGER_ROTOR: AtomicUsize = AtomicUsize::new(0);
+
+/// Borrow one of the compartment's pager handles, opening it on first use. `None` inside means the
+/// pager could not be reached; retried on the next call.
+///
+/// Lock order is a pager handle, then an `NsCache`. Nothing may take a pager handle while holding
+/// a cache lock, and no caller may hold two handles at once -- both unchanged from when this was a
+/// single lock, and both still what keeps the order acyclic.
 fn pager_handle() -> MutexGuard<'static, Option<PagerHandle>> {
-    let mut guard = PAGER_HANDLE.lock().unwrap();
+    // In order, from the front: a workload with no concurrency keeps landing on slot 0 and never
+    // opens a second handle. A poisoned slot reads as busy and is skipped rather than panicking
+    // every caller after the first.
+    for slot in PAGER_POOL.iter() {
+        if let Ok(guard) = slot.try_lock() {
+            return open_handle(guard);
+        }
+    }
+    // Every handle is in use. Block on one rather than spinning; the rotor keeps concurrent
+    // waiters off a single slot.
+    let idx = PAGER_ROTOR.fetch_add(1, Ordering::Relaxed) % PAGER_HANDLES;
+    open_handle(PAGER_POOL[idx].lock().unwrap())
+}
+
+fn open_handle(
+    mut guard: MutexGuard<'static, Option<PagerHandle>>,
+) -> MutexGuard<'static, Option<PagerHandle>> {
     if guard.is_none() {
         *guard = PagerHandle::new();
     }
@@ -350,6 +392,10 @@ impl Namespace for ExtNamespace {
         Some(node)
     }
 
+    fn is_external(&self) -> bool {
+        true
+    }
+
     fn create_file(&self, name: &str) -> Result<NsNode> {
         let mode = libc::S_IRUSR | libc::S_IWUSR | libc::S_IRGRP | libc::S_IROTH | libc::S_IFREG;
         let mut guard = pager_handle();
@@ -405,6 +451,8 @@ impl Namespace for ExtNamespace {
             NsNodeKind::Namespace => mode |= libc::S_IFDIR,
             NsNodeKind::SymLink => mode |= libc::S_IFLNK,
             NsNodeKind::Object => mode |= libc::S_IFREG,
+            // Synthesized by the runtime; there is nothing for a store to bind.
+            NsNodeKind::DevNode => return Err(TwzError::NOT_SUPPORTED),
         }
 
         let mut guard = pager_handle();
@@ -483,11 +531,11 @@ impl Namespace for ExtNamespace {
             skip,
             count,
         );
-        let t_cached = Instant::now();
+        let t_cached = itemstats::t0();
         let (want, generation) = {
             let cache = self.cache();
             if let Some(items) = cache.window(skip, count) {
-                itemstats::record_cached(t_cached.elapsed().as_nanos() as u64);
+                itemstats::record_cached(itemstats::ns(t_cached));
                 return items;
             }
             // Extending the known prefix: over-read, so a readdir walking this namespace in small
@@ -501,18 +549,18 @@ impl Namespace for ExtNamespace {
             (want, cache.generation)
         };
 
-        let t_handle = Instant::now();
+        let t_handle = itemstats::t0();
         let mut guard = pager_handle();
-        let handle_ns = t_handle.elapsed().as_nanos() as u64;
+        let handle_ns = itemstats::ns(t_handle);
         let Some(h) = guard.as_mut() else {
             tracing::warn!("failed to open handle to pager");
             return vec![];
         };
 
         let mut entries = Vec::new();
-        let t_enum = Instant::now();
+        let t_enum = itemstats::t0();
         let res = h.enumerate_external(self.id, &mut entries, skip, want);
-        let enum_ns = t_enum.elapsed().as_nanos() as u64;
+        let enum_ns = itemstats::ns(t_enum);
         if res.is_err() {
             tracing::warn!("failed to enumerate external namespace {}", self.id);
             return vec![];
@@ -532,7 +580,7 @@ impl Namespace for ExtNamespace {
                 .collect()
         };
 
-        let t_conv = Instant::now();
+        let t_conv = itemstats::t0();
         let mut nr_links = 0u64;
         let mut link_ns = 0u64;
         let mut out: Vec<NsNode> = entries
@@ -558,9 +606,9 @@ impl Namespace for ExtNamespace {
                     ExternalKind::Directory => NsNode::ns(name, i.id.into()).ok(),
                     ExternalKind::SymLink => known.or_else(|| {
                         nr_links += 1;
-                        let t_link = Instant::now();
+                        let t_link = itemstats::t0();
                         let link = h.readlink_external(i.id.into());
-                        link_ns += t_link.elapsed().as_nanos() as u64;
+                        link_ns += itemstats::ns(t_link);
                         // A target we cannot read, or cannot store in a node, must not cost the
                         // entry its place in the listing. The caller advances its readdir cursor
                         // by the number of entries it received, while the pager's `skip` counts
@@ -599,7 +647,7 @@ impl Namespace for ExtNamespace {
         itemstats::record_pager(
             handle_ns,
             enum_ns,
-            t_conv.elapsed().as_nanos() as u64 - link_ns,
+            itemstats::ns(t_conv).saturating_sub(link_ns),
             link_ns,
             out.len() as u64,
             nr_links,
@@ -628,6 +676,27 @@ impl Namespace for ExtNamespace {
 mod itemstats {
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    /// Master switch for the *clock reads*, as opposed to the counters.
+    ///
+    /// `statcadence::report_now` gates the output and leaves the work: four `Instant::now()` per
+    /// external enumerate ran on every call regardless. This is the same const-gate `nsidstats` in
+    /// `store.rs` already uses, and for the reason its comment gives. Off by default, and when off
+    /// nothing is logged rather than logging zeros -- a reader should see silence, not mistake an
+    /// ungated build's zeros for measurements.
+    pub const TIMING: bool = false;
+
+    /// `Instant::now()`, if [`TIMING`] is on.
+    #[inline(always)]
+    pub fn t0() -> Option<std::time::Instant> {
+        TIMING.then(std::time::Instant::now)
+    }
+
+    /// Nanoseconds since `t`, or 0 when [`TIMING`] is off.
+    #[inline(always)]
+    pub fn ns(t: Option<std::time::Instant>) -> u64 {
+        t.map_or(0, |t| t.elapsed().as_nanos() as u64)
+    }
+
     static CACHED: AtomicU64 = AtomicU64::new(0);
     static CACHED_NS: AtomicU64 = AtomicU64::new(0);
     static PAGED: AtomicU64 = AtomicU64::new(0);
@@ -641,7 +710,7 @@ mod itemstats {
     pub fn record_cached(ns: u64) {
         let n = CACHED.fetch_add(1, Ordering::Relaxed) + 1;
         let c = CACHED_NS.fetch_add(ns, Ordering::Relaxed) + ns;
-        if secgate::statcadence::report_now(n) {
+        if TIMING && secgate::statcadence::report_now(n) {
             secgate::statline!("ITEMSTATS {} cached enumerates: {} us", n, c / 1000);
         }
     }
@@ -654,7 +723,7 @@ mod itemstats {
         let l = LINK_NS.fetch_add(link, Ordering::Relaxed) + link;
         let nl = LINKS.fetch_add(links, Ordering::Relaxed) + links;
         let ne = ENTRIES.fetch_add(entries, Ordering::Relaxed) + entries;
-        if secgate::statcadence::report_now(n) {
+        if TIMING && secgate::statcadence::report_now(n) {
             secgate::statline!(
                 "ITEMSTATS {} pager enumerates, {} entries: handle {} us, enumerate {} us, \
                  convert {} us, readlink {} us over {} links",

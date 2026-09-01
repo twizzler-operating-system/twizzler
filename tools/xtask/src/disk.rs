@@ -289,6 +289,30 @@ pub fn copy_twizzler_build(
         }
     }
 
+    // libc.so gets the same treatment as libtwz_rt.so above, for the same reason: `copy_sysroot`
+    // deletes the staged copy (a stale one is a link-time trap -- an on-target `-lc` against an
+    // old libc.so mismatches the initrd's runtime copy), so something must put a current one
+    // back. Without it, lld silently satisfies `-lc` from libc.a, and a statically-linked mlibc
+    // never receives its entry stack -- every such binary runs with libc state (environ
+    // included) that nothing initialized. Freshness source is the toolchain sysroot, which is
+    // also where the initrd's runtime copy comes from.
+    let libc_src = crate::toolchain::get_sysroots_root()?
+        .join(triple.to_string())
+        .join("lib/libc.so");
+    let libc_dest = "/sysroot/lib/libc.so";
+    if ext4.exists(libc_dest) {
+        ext4.remove(libc_dest).unwrap();
+    }
+    let mut libc_dest_file = ext4
+        .open(
+            libc_dest,
+            OpenFlags::READ | OpenFlags::WRITE | OpenFlags::CREATE,
+        )
+        .unwrap();
+    let mut libc_src_file = File::open(&libc_src)?;
+    std::io::copy(&mut libc_src_file, &mut libc_dest_file).unwrap();
+    drop(libc_dest_file);
+
     // uuhelper's aliases are made here, at image build time, rather than by init on every boot.
     // They describe the contents of the image, so they belong to whatever writes the image: as
     // runtime work they cost a naming call per utility per boot and, being naming-server nodes

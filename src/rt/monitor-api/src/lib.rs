@@ -629,6 +629,23 @@ fn load_fd_specs_from_runtime() -> Vec<binding_info> {
     v
 }
 
+/// The first PTY client among the fd bindings, if any -- the terminal the child is being put on.
+fn pty_client_bind(config: &CompartmentLoaderConfig) -> Option<ObjID> {
+    if config.fd_spec.is_null() || config.fd_spec_len == 0 {
+        return None;
+    }
+    config.fd_spec().iter().find_map(|b| {
+        if b.kind != twizzler_rt_abi::bindings::open_kind_OpenKind_PtyClient
+            || (b.bind_len as usize) < core::mem::size_of::<u128>()
+        {
+            return None;
+        }
+        Some(ObjID::new(unsafe {
+            (b.bind_data.as_ptr() as *const u128).read_unaligned()
+        }))
+    })
+}
+
 impl CompartmentLoader {
     /// Make a new compartment loader.
     pub fn new(
@@ -723,13 +740,22 @@ impl CompartmentLoader {
         if len < envs_len + args_len + name_len {
             return Err(ArgumentError::InvalidArgument.into());
         }
+        // A session leader spawning through interfaces with no controller knob (sshd via
+        // std::process::Command) still yields controlled children: the terminal is named by the
+        // PTY client it binds into them. Explicit `Object`/`NoController` wins.
+        let mut config = self.config;
+        if matches!(config.controller, ControllerOption::Inherit) {
+            if let Some(id) = pty_client_bind(&config) {
+                config.controller = ControllerOption::Object(id);
+            }
+        }
         let desc = monitor_rt_load_compartment(
             self.root_object,
             name_len as u64,
             args_len as u64,
             envs_len as u64,
             self.flags.bits(),
-            (&self.config as *const _) as usize as u64,
+            (&config as *const _) as usize as u64,
         )?;
         Ok(CompartmentHandle { desc: Some(desc) })
     }
@@ -1251,6 +1277,10 @@ pub enum ControllerOption {
 #[derive(Default, Copy, Clone, Debug)]
 #[allow(dead_code)]
 pub struct CompartmentLoaderConfig {
+    /// Sent to the monitor as written, except that `load` resolves `Inherit` to the PTY client
+    /// among the child's fd bindings, if any. The monitor resolves what remains, and the copy it
+    /// publishes to the new compartment always carries `Object`/`NoController`. The controller
+    /// object doubles as the controlling terminal: `/dev/tty` opens it.
     pub controller: ControllerOption,
     pub fd_spec: *const binding_info,
     pub fd_spec_len: usize,

@@ -1,7 +1,10 @@
-use std::{sync::atomic::AtomicU64, time::Duration};
+use std::{mem::MaybeUninit, sync::atomic::AtomicU64, time::Duration};
 
 use libc::S_IFCHR;
-use twizzler_abi::syscall::{ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep};
+use twizzler_abi::syscall::{
+    sys_get_random, GetRandomFlags, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
+    ThreadSyncSleep,
+};
 use twizzler_rt_abi::{
     bindings::wait_kind,
     fd::{FdFlags, FdInfo, FdKind},
@@ -11,21 +14,24 @@ use twizzler_rt_abi::{
 
 use crate::runtime::file::{Fd, WaitpointResult};
 
-/// `/dev/null`: reads are EOF, writes are discarded, waits are always ready.
-pub struct NullFile;
+/// `/dev/urandom`: reads draw from the kernel CSPRNG, writes are discarded.
+pub struct URandomFile;
 
 // The sleep condition (word == 1) never holds, so a waiter returns immediately.
-static NULL_WAITWORD: AtomicU64 = AtomicU64::new(0);
+static URANDOM_WAITWORD: AtomicU64 = AtomicU64::new(0);
 
-impl Fd for NullFile {
+impl Fd for URandomFile {
     fn read(
         &self,
-        _buf: &mut [u8],
+        buf: &mut [u8],
         _flags: IoFlags,
         _offset: Option<u64>,
         _ep: Option<&mut twizzler_rt_abi::io::Endpoint>,
     ) -> Result<usize> {
-        Ok(0)
+        let dest = unsafe {
+            core::slice::from_raw_parts_mut(buf.as_mut_ptr().cast::<MaybeUninit<u8>>(), buf.len())
+        };
+        sys_get_random(dest, GetRandomFlags::empty())
     }
 
     fn write(
@@ -55,7 +61,7 @@ impl Fd for NullFile {
     fn waitpoint(&self, _kind: wait_kind) -> Result<WaitpointResult> {
         Ok(WaitpointResult {
             sleep: ThreadSyncSleep::new(
-                ThreadSyncReference::Virtual(&NULL_WAITWORD),
+                ThreadSyncReference::Virtual(&URANDOM_WAITWORD),
                 1,
                 ThreadSyncOp::Equal,
                 ThreadSyncFlags::empty(),

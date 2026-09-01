@@ -134,6 +134,9 @@ fn per_arg(arg: &str, cb: fn(ObjID) -> twizzler::Result<()>) -> twizzler::Result
             naming::NsNodeKind::SymLink => {
                 tracing::warn!("cannot hold / preload symlinks")
             }
+            naming::NsNodeKind::DevNode => {
+                tracing::warn!("cannot hold / preload device nodes")
+            }
         },
     }
     Ok(())

@@ -6,7 +6,7 @@ use std::{
 };
 
 use monitor_api::CompartmentHandle;
-use naming_core::{GetFlags, NsNodeKind};
+use naming_core::{DevFs, GetFlags, NsNodeKind};
 use secgate::TwzError;
 use twizzler_abi::{object::ObjID, syscall::ObjectCreate};
 use twizzler_io::pty::{PtyClientHandle, PtyServerHandle};
@@ -23,6 +23,7 @@ use crate::runtime::file::{
     kinds::{
         compartment::CompartmentFile, dir::DirFile, kconsole::KernelConsoleFile, null::NullFile,
         pty::PtyHandleKind, raw_file::RawFile, socket::SocketKind, symlink::SymLinkFile,
+        urandom::URandomFile, zero::ZeroFile,
     },
     pty_signal_handler, CreateOptions, FdImpl, OperationOptions,
 };
@@ -35,6 +36,17 @@ pub mod pty;
 pub mod raw_file;
 pub mod socket;
 pub mod symlink;
+pub mod urandom;
+pub mod zero;
+
+/// `/dev/std{in,out,err}`: the named descriptor's current open file, shared dup-style.
+fn dup_fd_file(fd: RawFd) -> Result<FdImpl> {
+    let slots = get_fd_slots().read().unwrap();
+    slots
+        .get(fd as usize)
+        .map(|f| f.file.clone())
+        .ok_or(NamingError::NotFound.into())
+}
 
 fn binding_ref<'a, T>(binding: *const c_void, binding_len: usize) -> std::io::Result<&'a T> {
     if std::mem::size_of::<T>() <= binding_len {
@@ -87,16 +99,6 @@ pub mod openstats {
 }
 
 fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) -> Result<FdImpl> {
-    // Not a naming entry: intercepted here so it works before naming is up, and so the fd's
-    // binding stays an ordinary Path binding (children re-open it by name across spawn).
-    if path == "/dev/null" {
-        return match create_opt {
-            CreateOptions::CreateKindNew | CreateOptions::CreateKindBind(_) => {
-                Err(NamingError::AlreadyExists.into())
-            }
-            _ => Ok(Arc::new(NullFile) as FdImpl),
-        };
-    }
     let t_start = std::time::Instant::now();
     let session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
     let lock_ns = t_start.elapsed().as_nanos() as u64;
@@ -169,6 +171,23 @@ fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) 
             Arc::new(file)
         }
         NsNodeKind::SymLink => Arc::new(SymLinkFile::new(obj_id)?),
+        // A dev entry's id names the device, not an object.
+        NsNodeKind::DevNode => match DevFs::try_from(obj_id.raw())? {
+            DevFs::Null => Arc::new(NullFile) as FdImpl,
+            DevFs::Zero => Arc::new(ZeroFile),
+            DevFs::URandom => Arc::new(URandomFile),
+            // The compartment's controller object is its terminal (see the monitor: `Inherit`
+            // never reaches a published config).
+            DevFs::Tty => match monitor_api::get_comp_config().loader_config.controller {
+                monitor_api::ControllerOption::Object(id) => {
+                    Arc::new(PtyHandleKind::Client(PtyClientHandle::new(id)?))
+                }
+                _ => return Err(NamingError::NotFound.into()),
+            },
+            DevFs::Stdin => dup_fd_file(0)?,
+            DevFs::Stdout => dup_fd_file(1)?,
+            DevFs::Stderr => dup_fd_file(2)?,
+        },
     };
     openstats::record(
         lock_ns,

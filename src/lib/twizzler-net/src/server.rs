@@ -47,6 +47,17 @@ impl NetServer {
             .then(|| self.client_tx.comp_space_waiter())
     }
 
+    /// `has_pending_msg_from_client`'s queue half, as its two conjuncts.
+    ///
+    /// That bool collapses "nothing was submitted" and "entries are present but carry a turn the
+    /// consumer will not accept" into one false, and only the second is a fault -- entries in that
+    /// state are invisible to `receive`, so no wake can clear them. Reported by net-srv at the
+    /// instant it parks. Note this covers the submission ring only, not the `pending_client_tx`
+    /// staging set that `has_pending_msg_from_client` also consults.
+    pub fn client_tx_pending_parts(&self) -> (u64, u64, bool, bool) {
+        self.client_tx.pending_parts()
+    }
+
     pub fn has_pending_msg_from_client(&self) -> bool {
         self.client_tx.has_pending_msg()
             || self

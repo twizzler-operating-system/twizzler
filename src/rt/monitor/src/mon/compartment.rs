@@ -223,6 +223,7 @@ impl CompartmentMgr {
     pub fn set_controller(&mut self, target: ObjID, controller: ObjID) -> Result<(), TwzError> {
         let comp = self.get_mut(target)?;
         comp.controller = Some(controller);
+        comp.set_config_controller(ControllerOption::Object(controller));
         tracing::debug!(
             "setting controller for compartment {}: {}",
             target,

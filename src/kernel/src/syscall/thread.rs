@@ -120,7 +120,18 @@ pub fn thread_ctrl(
             let stats_ptr = arg as usize as *mut ThreadSchedStats;
             let stats_ptr = unsafe { stats_ptr.as_mut() }.ok_or(TwzError::INVALID_ARGUMENT);
             if let Ok(stats_ptr) = stats_ptr {
-                stats_ptr.idle = thread.stats.idle.load(Ordering::SeqCst);
+                // A thread's idle count only advances when it next runs, so a thread that is
+                // sleeping (or never scheduled again) freezes with whatever counts it had at
+                // its last stattick -- and any percentage taken over the interval divides by
+                // that stale total. Charge the time since it last ran here, at read time, so
+                // user+system+idle is always the statticks elapsed since the thread existed.
+                let now = crate::processor::sched::current_stat_ticks();
+                let last = thread.stats.last.load(Ordering::SeqCst);
+                stats_ptr.idle = thread
+                    .stats
+                    .idle
+                    .load(Ordering::SeqCst)
+                    .saturating_add(now.saturating_sub(last));
                 stats_ptr.system = thread.stats.sys.load(Ordering::SeqCst);
                 stats_ptr.user = thread.stats.user.load(Ordering::SeqCst);
             } else {

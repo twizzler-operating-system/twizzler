@@ -11,21 +11,22 @@ use twizzler_rt_abi::{
 
 use crate::runtime::file::{Fd, WaitpointResult};
 
-/// `/dev/null`: reads are EOF, writes are discarded, waits are always ready.
-pub struct NullFile;
+/// `/dev/zero`: reads fill with zeros, writes are discarded, waits are always ready.
+pub struct ZeroFile;
 
 // The sleep condition (word == 1) never holds, so a waiter returns immediately.
-static NULL_WAITWORD: AtomicU64 = AtomicU64::new(0);
+static ZERO_WAITWORD: AtomicU64 = AtomicU64::new(0);
 
-impl Fd for NullFile {
+impl Fd for ZeroFile {
     fn read(
         &self,
-        _buf: &mut [u8],
+        buf: &mut [u8],
         _flags: IoFlags,
         _offset: Option<u64>,
         _ep: Option<&mut twizzler_rt_abi::io::Endpoint>,
     ) -> Result<usize> {
-        Ok(0)
+        buf.fill(0);
+        Ok(buf.len())
     }
 
     fn write(
@@ -55,7 +56,7 @@ impl Fd for NullFile {
     fn waitpoint(&self, _kind: wait_kind) -> Result<WaitpointResult> {
         Ok(WaitpointResult {
             sleep: ThreadSyncSleep::new(
-                ThreadSyncReference::Virtual(&NULL_WAITWORD),
+                ThreadSyncReference::Virtual(&ZERO_WAITWORD),
                 1,
                 ThreadSyncOp::Equal,
                 ThreadSyncFlags::empty(),

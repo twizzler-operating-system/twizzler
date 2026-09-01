@@ -294,6 +294,10 @@ impl Ext4InodeRef {
         self.inode.dirty = true;
     }
 
+    pub fn links_count(&self) -> u16 {
+        unsafe { lwext4::ext4_inode_get_links_cnt(self.inode.inode) }
+    }
+
     pub fn kind(&self) -> FileKind {
         if unsafe {
             lwext4::ext4_inode_is_type(

@@ -11,6 +11,7 @@ use twizzler::object::ObjID;
 use twizzler_rt_abi::{
     error::{ArgumentError, TwzError},
     object::MapFlags,
+    thread::{twz_rt_futex_wait, twz_rt_futex_wake},
 };
 
 use crate::{
@@ -31,6 +32,9 @@ pub struct NamingHandle<'a, API: NamerAPI> {
     buffer: OnceLock<SimpleBuffer>,
     /// Busy bit per buffer slot.
     slots: AtomicU32,
+    /// Threads blocked in [`Self::take_slot`] waiting for one. Lets a release skip the wake
+    /// syscall in the overwhelmingly common case that nobody is waiting.
+    slot_waiters: AtomicU32,
     api: &'a API,
 }
 
@@ -38,6 +42,9 @@ pub struct NamingHandle<'a, API: NamerAPI> {
 /// offset, which is what keeps concurrent spills disjoint.
 struct SlotGuard<'h> {
     slots: &'h AtomicU32,
+    /// Waiters parked on `slots`; see [`NamingHandle::take_slot`]. Read on release so the common
+    /// case -- nobody waiting -- costs one relaxed load instead of a wake syscall.
+    waiters: &'h AtomicU32,
     idx: usize,
 }
 
@@ -49,7 +56,13 @@ impl SlotGuard<'_> {
 
 impl Drop for SlotGuard<'_> {
     fn drop(&mut self) {
-        self.slots.fetch_and(!(1 << self.idx), Ordering::Release);
+        self.slots.fetch_and(!(1 << self.idx), Ordering::SeqCst);
+        // SeqCst above and here: the release and this load must not be reordered against the
+        // waiter's increment-then-recheck, or a waiter that registered just after our release
+        // could sleep on a slot that is already free with nobody left to wake it.
+        if self.waiters.load(Ordering::SeqCst) != 0 {
+            let _ = twz_rt_futex_wake(self.slots, None);
+        }
     }
 }
 
@@ -75,15 +88,30 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
         Ok(self.buffer.get().unwrap())
     }
 
-    /// Claim a free slot, waiting if all are in flight. The wait is bounded by a gate call's
+    /// Claim a free slot, blocking if all are in flight. The wait is bounded by a gate call's
     /// duration, and hitting it at all takes `BUFFER_NSLOTS` concurrent spilled calls on one
     /// handle.
+    ///
+    /// Blocks rather than spinning on `yield_now`. With one naming handle per compartment, the
+    /// eight slots are shared by every thread in it, so more than eight concurrent long-path
+    /// calls turned into a busy-wait against threads that are themselves inside a gate call --
+    /// burning the CPU the holders need to finish and release. A cliff rather than a gradient,
+    /// which is what made it worth removing.
     fn take_slot(&self) -> SlotGuard<'_> {
         loop {
             let cur = self.slots.load(Ordering::Relaxed);
             let free = !cur & ((1u32 << BUFFER_NSLOTS) - 1);
             if free == 0 {
-                std::thread::yield_now();
+                // Register *before* re-reading the word. A release landing between the two sees a
+                // nonzero waiter count and wakes us; `futex_wait` then compares against the value
+                // we just read and returns immediately if it has already moved, so the wakeup
+                // cannot be lost in either order.
+                self.slot_waiters.fetch_add(1, Ordering::SeqCst);
+                let now = self.slots.load(Ordering::SeqCst);
+                if (!now & ((1u32 << BUFFER_NSLOTS) - 1)) == 0 {
+                    let _ = twz_rt_futex_wait(&self.slots, now, None);
+                }
+                self.slot_waiters.fetch_sub(1, Ordering::SeqCst);
                 continue;
             }
             let idx = free.trailing_zeros() as usize;
@@ -94,6 +122,7 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
             {
                 return SlotGuard {
                     slots: &self.slots,
+                    waiters: &self.slot_waiters,
                     idx,
                 };
             }
@@ -134,12 +163,25 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
         Ok((slot, ab.len(), bb.len()))
     }
 
+    /// Read `n` nodes out of the shared buffer.
+    ///
+    /// Straight into the output vector's spare capacity: the intermediate `Vec<u8>` this replaces
+    /// meant every entry was copied twice on the client (buffer -> bytes -> out) and cost a second
+    /// allocation per chunk, on top of the two copies the server already makes. At 288 bytes an
+    /// entry and 113 entries a chunk that is 32 KiB of pure round-tripping per call.
     fn read_nodes(buffer: &SimpleBuffer, offset: usize, n: usize) -> Vec<NsNode> {
-        let mut bytes = vec![0u8; n * size_of::<NsNode>()];
-        buffer.read_offset(&mut bytes, offset);
-        let mut out = Vec::with_capacity(n);
-        for i in 0..n {
-            unsafe { out.push(*(bytes.as_ptr().add(i * size_of::<NsNode>()) as *const NsNode)) };
+        let mut out: Vec<NsNode> = Vec::with_capacity(n);
+        // Safety: `NsNode` is `repr(C)` and `Copy` with no padding invariants the buffer could
+        // violate that the previous pointer-read form did not equally rely on -- this reproduces
+        // that read, into the vector's own storage instead of a temporary. `set_len` follows the
+        // fill, and `with_capacity(n)` guarantees the space.
+        unsafe {
+            let raw = core::slice::from_raw_parts_mut(
+                out.as_mut_ptr().cast::<u8>(),
+                n * size_of::<NsNode>(),
+            );
+            buffer.read_offset(raw, offset);
+            out.set_len(n);
         }
         out
     }
@@ -342,6 +384,7 @@ impl<'a, API: NamerAPI> Handle for NamingHandle<'a, API> {
             desc,
             buffer: OnceLock::new(),
             slots: AtomicU32::new(0),
+            slot_waiters: AtomicU32::new(0),
             api: info,
         })
     }

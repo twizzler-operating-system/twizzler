@@ -159,7 +159,12 @@ pub struct Thread {
     /// which path consumed the SYNC_SLEEP flag when a hang row shows a parked thread no wake can
     /// claim. Sites: 1=wakeup_word claim, 2=SleepEntry::drop, 3=timeout callback, 4=self
     /// (non-sleep path), 5=device-interrupt claim, 6=self post-sleep cleanup, 7=exit.
-    sync_consumer: [AtomicU64; 2],
+    pub(crate) sync_consumer: [AtomicU64; 2],
+    /// (site, sync_sleep_gen) of the last requeue-list event involving this thread. Sites:
+    /// 1=slow insert, 2=dedup skip (already listed), 3=fast-path direct schedule, 4=requeue_all
+    /// claim, 5=claim_own_wakeup removed+won, 6=claim_own_wakeup removed WITHOUT winning (the
+    /// eaten-wake candidate), 7=remove_from_requeue. Diagnostic only.
+    pub(crate) requeue_event: [AtomicU64; 2],
     /// Depth of nested kernel entries (syscall, fault, exception). Zero means the thread is
     /// executing in userspace. A counter rather than a flag because a fault taken while already
     /// in the kernel must not report a return to user when only the inner handler finishes.
@@ -366,6 +371,7 @@ impl Thread {
             hang_reports: AtomicU32::new(0),
             sleep_word: [const { AtomicU64::new(0) }; 5],
             sync_consumer: [const { AtomicU64::new(0) }; 2],
+            requeue_event: [const { AtomicU64::new(0) }; 2],
             last_pf_flags: AtomicU32::new(0),
             mutex_count: AtomicU32::new(0),
             // Threads start executing in the kernel; jump_to_user() performs the matching exit.
@@ -975,6 +981,12 @@ impl Thread {
     pub fn note_sync_consumer(&self, site: u64) {
         self.sync_consumer[0].store(site, Ordering::Relaxed);
         self.sync_consumer[1].store(self.sync_sleep_gen(), Ordering::Relaxed);
+    }
+
+    /// Record the last requeue-list event for this thread; see the field.
+    pub fn note_requeue_event(&self, site: u64) {
+        self.requeue_event[0].store(site, Ordering::Relaxed);
+        self.requeue_event[1].store(self.sync_sleep_gen(), Ordering::Relaxed);
     }
 
     /// Record the security context this thread must be running in before a pending force-exit is
@@ -1592,7 +1604,7 @@ pub fn check_system_hang() {
                     && thread.get_state() == ExecutionState::Sleeping
             });
             emerglogln!(
-                "  thread {} ({}) '{}': {:?} sctx {} in_user {} must_exit {} ip {:x} word {}+{:x} wv {:x} wvok {} av {:x} m {} slprs {} cw {} wt {} lost {} fl {:x} crit {} gen {} cs {} cg {} | sync {} pager {} memwait {} mutex {} condvar {} requeue {} suspend {} sched {} timed {}",
+                "  thread {} ({}) '{}': {:?} sctx {} in_user {} must_exit {} ip {:x} word {}+{:x} wv {:x} wvok {} av {:x} m {} slprs {} cw {} wt {} lost {} fl {:x} crit {} gen {} cs {} cg {} rq {} rg {} | sync {} pager {} memwait {} mutex {} condvar {} requeue {} suspend {} sched {} timed {}",
                 thread.id(),
                 thread.objid(),
                 core::str::from_utf8(&namebuf[..namelen]).unwrap_or("?"),
@@ -1616,6 +1628,8 @@ pub fn check_system_hang() {
                 thread.sync_sleep_gen(),
                 thread.sync_consumer[0].load(Ordering::Relaxed),
                 thread.sync_consumer[1].load(Ordering::Relaxed),
+                thread.requeue_event[0].load(Ordering::Relaxed),
+                thread.requeue_event[1].load(Ordering::Relaxed),
                 thread.sync_links.is_linked(),
                 thread.pager_link.is_linked(),
                 thread.memwait_link.is_linked(),

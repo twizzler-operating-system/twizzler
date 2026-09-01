@@ -146,6 +146,7 @@ pub fn is_diag_mode() -> bool {
 
 static KDIAG_PAGER: AtomicBool = AtomicBool::new(false);
 static KDIAG_INVLS: AtomicBool = AtomicBool::new(false);
+static KDIAG_WAKE: AtomicBool = AtomicBool::new(false);
 
 /// `--diag=pager`: kernel-side pager/large-page milestone reports (PAGERWAIT, LARGEPAGE, SPLITS).
 pub fn kdiag_pager() -> bool {
@@ -155,6 +156,10 @@ pub fn kdiag_pager() -> bool {
 /// `--diag=invls`: per-object invalidation-latch reports (the `== invls latched object` lines).
 /// The latch itself and its counters are unaffected; the syscall-triggered summary stays
 /// unconditional.
+pub fn kdiag_wake() -> bool {
+    KDIAG_WAKE.load(Ordering::SeqCst)
+}
+
 pub fn kdiag_invls() -> bool {
     KDIAG_INVLS.load(Ordering::SeqCst)
 }
@@ -264,6 +269,9 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
                 }
                 if class == "invls" || class == "all" {
                     KDIAG_INVLS.store(true, Ordering::SeqCst);
+                }
+                if class == "wake" || class == "all" {
+                    KDIAG_WAKE.store(true, Ordering::SeqCst);
                 }
             }
         }

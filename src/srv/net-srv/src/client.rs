@@ -242,6 +242,193 @@ static LOCAL_RX_BY_SRC: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
 /// answer "was one of them for the peer" -- which is the question the failing rounds turn on.
 static TX_FIN_BY_DST: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
 static TX_FIN_BY_SRC: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
+
+/// Submission-ring state at the instant a client thread decided to park, keyed by host octet.
+///
+/// Recorded on every park (not a hot path) rather than printed there, because the wedged thread
+/// is precisely the one that stops running: once it parks for good it can never report again, so
+/// its last decision has to outlive it here for a *sibling* client's thread to print.
+///
+/// The pair that matters is `nonempty`/`turn`, which `has_pending` collapses into one bool:
+///   nonempty && !turn  -- entries are present but invisible to `receive`; no wake can fix it.
+///   nonempty &&  turn  -- entries were visible and this thread parked anyway.
+/// Those are different bugs, and the .120 tx-ring wedge (txbell climbing, txtail frozen) cannot
+/// be attributed without separating them.
+static PARK_BELL: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
+static PARK_TAIL: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
+/// bit0 nonempty, bit1 turn, bit2 has_pending_msg, bit3 completion owed, bit7 "has ever parked".
+static PARK_FLAGS: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
+static PARK_SEQ: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
+/// Parks-with-work seen per octet, for the emit-at-park rate limit.
+static PARK_WITH_WORK: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
+
+/// Where in its loop each client thread last got to, and how many loops it has completed.
+///
+/// A frozen `parks` counter says only that a thread stopped *reaching* the park site -- it cannot
+/// tell "parked in the kernel and never woken" from "blocked earlier on a lock", and those are
+/// different bugs with an identical outward signature (txtail frozen, peer starves). Stamping the
+/// stage before each blocking operation names the one it died on.
+///
+/// Stages are "about to do X", so a frozen value points at the operation that did not return.
+const ST_HANDLES: u64 = 1; // about to take the handles lock (sibling MAC snapshot)
+const ST_OWN_EP: u64 = 2; // about to take our own client.ep lock
+const ST_DRAIN: u64 = 3; // draining ep.receive()
+const ST_UNDERLOCK: u64 = 4; // under-lock reads (rx_waiter / pending_parts)
+const ST_REPORT: u64 = 5; // counter-report blocks, ep released
+const ST_DELIVER: u64 = 6; // about to enter deliver_local (takes handles + sibling eps)
+const ST_PARK: u64 = 7; // about to sys_thread_sync
+const ST_WOKE: u64 = 8; // returned from sys_thread_sync
+static STAGE: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
+static LOOPS: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
+
+/// Identity of the word this client thread last parked on, and the two values that decide whether
+/// parking was even legal.
+///
+/// `armed` is the value the sleep was registered with; `now` is that word re-read immediately
+/// before the syscall. With `ThreadSyncOp::Equal` the kernel sleeps only while `*word == armed`,
+/// so `armed != now` at park time means the park MUST be refused. Recording both splits the two
+/// remaining explanations for a frozen consumer:
+///   armed == now -> the arm was legal and a later ring should have woken it (wake lost)
+///   armed != now -> we asked to park on a stale value and the kernel took it anyway (kernel bug)
+/// `addr` is the join key against the kernel's `word ObjID(..)+off wv .. av ..` dump rows, which
+/// is otherwise guesswork among ~190 sleepers.
+static PARK_WADDR: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
+static PARK_WARMED: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
+static PARK_WNOW: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
+
+fn note_park_word(octet: u8, sleep: &twizzler_abi::syscall::ThreadSyncSleep) {
+    use twizzler_abi::syscall::ThreadSyncReference::*;
+    let addr = match sleep.reference {
+        Virtual(p) => p as u64,
+        Virtual32(p) => p as u64,
+        ObjectRef(_, off) => off as u64,
+    };
+    let o = octet as usize;
+    PARK_WADDR[o].store(addr, Ordering::Relaxed);
+    PARK_WARMED[o].store(sleep.value, Ordering::Relaxed);
+    // Re-read the word itself, as late as we can before the syscall.
+    PARK_WNOW[o].store(sleep.reference.load(), Ordering::Relaxed);
+}
+
+#[inline]
+fn stage(octet: u8, st: u64) {
+    STAGE[octet as usize].store(st, Ordering::Relaxed);
+}
+
+fn stage_name(st: u64) -> &'static str {
+    match st {
+        ST_HANDLES => "handles-lock",
+        ST_OWN_EP => "own-ep-lock",
+        ST_DRAIN => "drain",
+        ST_UNDERLOCK => "under-lock-reads",
+        ST_REPORT => "report",
+        ST_DELIVER => "deliver_local",
+        ST_PARK => "PARKED",
+        ST_WOKE => "woke",
+        _ => "?",
+    }
+}
+
+/// Record a park decision. Cheap and unconditional: the gate is on the *reporting*, so a sweep
+/// that forgot `--diag=net` still leaves the state behind for the census.
+fn note_park(octet: u8, parts: (u64, u64, bool, bool), has_pending: bool, comp_owed: bool) {
+    let (bell, tail, nonempty, turn) = parts;
+    let o = octet as usize;
+    PARK_BELL[o].store(bell, Ordering::Relaxed);
+    PARK_TAIL[o].store(tail, Ordering::Relaxed);
+    PARK_FLAGS[o].store(
+        0x80 | (nonempty as u64)
+            | ((turn as u64) << 1)
+            | ((has_pending as u64) << 2)
+            | ((comp_owed as u64) << 3),
+        Ordering::Relaxed,
+    );
+    PARK_SEQ[o].fetch_add(1, Ordering::Relaxed);
+}
+
+/// One line from the thread that is about to wedge, emitted before it parks.
+///
+/// Parking with entries present should be near-zero in healthy operation, so the first 32 per
+/// client are printed in full and the rest fall back to powers of two -- a wedge lands in the
+/// first few, while a genuinely common transient cannot flood the console.
+fn report_park_with_work(octet: u8, parts: (u64, u64, bool, bool), has_pending: bool) {
+    let (bell, tail, nonempty, turn) = parts;
+    if !nonempty || !twizzler_net::diag_enabled("net") {
+        return;
+    }
+    let n = PARK_WITH_WORK[octet as usize].fetch_add(1, Ordering::Relaxed) + 1;
+    // `turn` false is the fault state and must never be rate-limited: it happens at most once per
+    // wedge, and the benign `turn=1` transients below (a client process submitting between
+    // net-srv's two reads -- caught, since `rx_waiter` captured the bell before both) would
+    // otherwise spend the budget and suppress the one line worth having.
+    if turn && n > 32 && !n.is_power_of_two() {
+        return;
+    }
+    tracing::warn!(
+        "PARKWORK .{} n={} bell={} tail={} nonempty={} turn={} has_pending={} verdict={}",
+        octet,
+        n,
+        bell,
+        tail,
+        nonempty as u8,
+        turn as u8,
+        has_pending as u8,
+        // The whole point of splitting the conjuncts: these are different bugs.
+        if turn {
+            "visible-entry-race(benign if bell moved since arm)"
+        } else {
+            "INVISIBLE-ENTRIES-no-wake-can-help"
+        },
+    );
+}
+
+/// Census of every client whose *last* park found entries present, printed by whichever client
+/// thread is still running. This is what survives the wedge: the frozen `tail` repeating across
+/// strides while `bell` stands still is the signature.
+fn report_parked_with_work() {
+    use std::fmt::Write;
+    let mut s = String::new();
+    for o in 0..256usize {
+        let f = PARK_FLAGS[o].load(Ordering::Relaxed);
+        // Every client that has ever parked, including the ordinary empty-ring case. Printing
+        // only the faulty state would make a healthy run silent, and silence is exactly what a
+        // broken instrument produces too -- this line is its own positive control: `ne=0` rows
+        // prove it is running and looking, so `ne=1` with a frozen tail means something.
+        // Not `f & 0x80 == 0`: a thread wedged *before* its first park has no park record at
+        // all, and that is one of the outcomes this hunt has to be able to see. Anything with a
+        // loop count is a live client thread and belongs in the census.
+        if f & 0x80 == 0 && LOOPS[o].load(Ordering::Relaxed) == 0 {
+            continue;
+        }
+        let _ = write!(
+            s,
+            " .{}[bell={} tail={} ne={} turn={} pend={} compowed={} parks={} loops={} at={} \
+             w=0x{:x} armed={} now={}{}]",
+            o,
+            PARK_BELL[o].load(Ordering::Relaxed),
+            PARK_TAIL[o].load(Ordering::Relaxed),
+            f & 1,
+            (f >> 1) & 1,
+            (f >> 2) & 1,
+            (f >> 3) & 1,
+            PARK_SEQ[o].load(Ordering::Relaxed),
+            LOOPS[o].load(Ordering::Relaxed),
+            stage_name(STAGE[o].load(Ordering::Relaxed)),
+            PARK_WADDR[o].load(Ordering::Relaxed),
+            PARK_WARMED[o].load(Ordering::Relaxed),
+            PARK_WNOW[o].load(Ordering::Relaxed),
+            // The whole point: an Equal-op park is only legal when these agree.
+            if PARK_WARMED[o].load(Ordering::Relaxed) != PARK_WNOW[o].load(Ordering::Relaxed) {
+                " STALE-ARM"
+            } else {
+                ""
+            },
+        );
+    }
+    if !s.is_empty() {
+        tracing::warn!("PARKCENSUS{}", s);
+    }
+}
 static TX_FIN_LOCAL: AtomicU64 = AtomicU64::new(0);
 static TX_FIN_DEVICE: AtomicU64 = AtomicU64::new(0);
 static TX_FIN_FLOOD: AtomicU64 = AtomicU64::new(0);
@@ -766,7 +953,10 @@ fn client_thread(client: Arc<Client>) {
     // but the heap alloc/free per frame does not.
     let mut spare: Vec<Vec<u8>> = Vec::new();
     let mut local_macs: Vec<EthernetAddress> = Vec::new();
+    let octet = client.addr.ipv4()[3];
     while client.active() {
+        LOOPS[octet as usize].fetch_add(1, Ordering::Relaxed);
+        stage(octet, ST_HANDLES);
         // Snapshot sibling MACs *before* taking our own `ep`. Reading them inside the frame loop
         // would mean holding `ep` while taking the handles lock, inverting device_thread's
         // handles-then-ep order. A client that opens after this snapshot is simply not local yet,
@@ -784,7 +974,9 @@ fn client_thread(client: Arc<Client>) {
                 .filter(|a| *a != sender),
         );
 
+        stage(octet, ST_OWN_EP);
         let mut ep = client.ep.lock().unwrap();
+        stage(octet, ST_DRAIN);
         while let Some((rx, _tx)) = ep.receive(Instant::now()) {
             let packet = rx.packet;
             rx.consume(|buf| {
@@ -835,10 +1027,18 @@ fn client_thread(client: Arc<Client>) {
             })
         }
 
+        stage(octet, ST_UNDERLOCK);
         let rx_waiter = ep.rx_waiter();
         let comp_space_waiter = ep.completion_space_waiter();
         let has_pending_msg = ep.has_pending_msg_from_client();
+        // Same snapshot as `has_pending_msg`, but as its two conjuncts: that bool cannot say
+        // whether a false meant "nothing submitted" or "entries present with a turn the consumer
+        // will not accept". Read here, under the same lock, so it describes the state this
+        // iteration actually decided on; reported below, after the lock is dropped -- a console
+        // write under `ep` once took this suite from 13/50 failures to 50/50.
+        let park_parts = ep.client_tx_pending_parts();
         drop(ep);
+        stage(octet, ST_REPORT);
 
         // Unconditional totals on a fixed stride, not milestones: the question is whether a
         // handoff to the client's rx ring ever failed, and a report that only appears when the
@@ -849,6 +1049,11 @@ fn client_thread(client: Arc<Client>) {
             let tick = PQ_TICK.fetch_add(1, Ordering::Relaxed);
             if tick % 64 == 0 {
                 twizzler_net::report_pollq();
+            }
+            // The wedged thread cannot report itself; this runs on whichever client thread is
+            // still alive. Coarser stride than the counters above because it walks 256 slots.
+            if tick % 1024 == 0 && twizzler_net::diag_enabled("net") {
+                report_parked_with_work();
             }
             if tick % 1024 == 0 && twizzler_net::diag_enabled("net") {
                 let c = SRV_UDPSTAMP_CNT.load(Ordering::Relaxed);
@@ -918,6 +1123,7 @@ fn client_thread(client: Arc<Client>) {
         if REPORT_DELIVERY_TOTALS && !pending.is_empty() && taken.is_power_of_two() {
             tracing::warn!("RXFROMCLIENT total={} this_batch={}", taken, pending.len());
         }
+        stage(octet, ST_DELIVER);
         deliver_local(&pending, sender);
         for (body, _) in pending.drain(..) {
             if spare.len() < 64 {
@@ -928,6 +1134,11 @@ fn client_thread(client: Arc<Client>) {
         if has_pending_msg {
             continue;
         }
+
+        // About to park. Record unconditionally so a sibling's census can read it after this
+        // thread stops running, and emit one line here so the wedging thread names itself.
+        note_park(octet, park_parts, has_pending_msg, comp_space_waiter.is_some());
+        report_park_with_work(octet, park_parts, has_pending_msg);
 
         // Every word this thread can be woken by, and no others. It reads client submissions
         // (rx_waiter) and writes completions (comp_space_waiter, only while one is owed). It also
@@ -943,6 +1154,9 @@ fn client_thread(client: Arc<Client>) {
         } else {
             1
         };
+        note_park_word(octet, &rx_waiter);
+        stage(octet, ST_PARK);
         let _ = sys_thread_sync(&mut sleeps[..n], None);
+        stage(octet, ST_WOKE);
     }
 }

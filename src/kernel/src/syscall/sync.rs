@@ -145,14 +145,46 @@ pub fn requeue_all() {
             let mut list = requeue.list.lock();
             let mut cursor = list.front_mut();
             while !batch.is_full() && !cursor.is_null() {
-                if cursor
-                    .get()
-                    .is_some_and(|v| !v.is_critical() && v.reset_sync_sleep_done())
-                {
-                    if let Some(t) = cursor.remove() {
-                        assert!(!t.get_mutex_wait());
-                        // Safety: not full, checked above.
-                        unsafe { batch.push_unchecked(t) };
+                // Token first, then execution state: see add_to_requeue. An owner that is not
+                // parked gets its token back and keeps its entry -- it is either on its way to
+                // the scheduler (a later pass claims it) or returning awake (its cleanup or a
+                // later round's claim_own_wakeup collects the entry).
+                if cursor.get().is_some_and(|v| v.reset_sync_sleep_done()) {
+                    // Parked off-cpu AND not owned by the mutex handoff path.
+                    //
+                    // `mutex_wait` is set across the whole of `Mutex::lock`'s block -- the thread
+                    // sets it, sets itself Sleeping, pushes onto the mutex queue and only clears
+                    // it after acquiring (mutex.rs). So a mutex waiter satisfies the state test on
+                    // its own, and a late sync wake landing on a thread that has since gone to
+                    // block on a mutex would be scheduled from here while the mutex queue still
+                    // intends to hand it off -- the double-schedule `assert!(!t.get_mutex_wait())`
+                    // below exists to catch. It fired twice in 40 rounds (parkhunt1 r2/r22).
+                    //
+                    // HEAD's gate was `!v.is_critical() && reset_sync_sleep_done()`, which
+                    // excluded these incidentally; replacing it with the execution-state test lost
+                    // that. Test for the condition directly instead of relying on `is_critical` to
+                    // stand in for it.
+                    //
+                    // Skipping is not dropping: the `else` arm hands the DONE token back and
+                    // leaves the entry in place, so the wake is deferred to a later drain rather
+                    // than lost -- which matters here more than anywhere, since a lost wake on
+                    // this exact path is the mode-A wedge. The outer loop terminates on an empty
+                    // batch, so an entry that is never claimable cannot spin it.
+                    if cursor.get().is_some_and(|v| {
+                        matches!(
+                            v.get_state(),
+                            ExecutionState::Sleeping | ExecutionState::Suspended
+                        ) && !v.get_mutex_wait()
+                    }) {
+                        if let Some(t) = cursor.remove() {
+                            assert!(!t.get_mutex_wait());
+                            t.note_requeue_event(4);
+                            // Safety: not full, checked above.
+                            unsafe { batch.push_unchecked(t) };
+                        }
+                    } else {
+                        cursor.get().map(|v| v.set_sync_sleep_done());
+                        cursor.move_next();
                     }
                 } else {
                     cursor.move_next();
@@ -213,15 +245,35 @@ fn do_add_to_requeue(
     // If already on the list, skip. This can happen with spurious wakeups.
     // The find() + insert() is protected by the caller's lock, so no TOCTOU race.
     if !list.find(&thread.objid()).is_null() {
+        thread.note_requeue_event(2);
         return Some(thread);
     }
+    // Stamp after the insert, not before: rq=1 must prove the entry landed, or a silently
+    // no-op'd insert is indistinguishable from a vanished entry (the wakehunt6 gap). The clone
+    // is dropped under the caller's lock, which is safe here alone: the list now holds a
+    // reference, so this cannot be the last one.
+    let t = thread.clone();
     list.insert(thread);
+    t.note_requeue_event(if t.requeue_link.is_linked() { 1 } else { 8 });
     None
 }
 
 #[track_caller]
 pub fn add_to_requeue(thread: ThreadRef) {
-    if !thread.is_critical() && thread.reset_sync_sleep_done() {
+    // Token first, then the thread's execution state -- never criticality. The old
+    // `!is_critical && reset_done` pair was a straddle race (read not-critical while the
+    // target was mid-prep, stall, win the fresh token, schedule a running thread: run-queue
+    // double insert). Winning the token first proves the owner is past its commit point; the
+    // state read then splits cleanly: Sleeping means committed to the scheduler (safe to
+    // schedule -- mid-deschedule is the ordinary race switch_lock serializes), anything else
+    // means the token is handed back and an entry queued instead. Losing the token means
+    // someone else owns the wake; fall through to the slow path so the entry exists for
+    // whoever resolves it.
+    if thread.reset_sync_sleep_done() {
+        if matches!(
+            thread.get_state(),
+            ExecutionState::Sleeping | ExecutionState::Suspended
+        ) {
         log::trace!(
             "adding {} ({}) to immediate schedule, from {}",
             thread.id(),
@@ -230,6 +282,7 @@ pub fn add_to_requeue(thread: ThreadRef) {
         );
         let id = thread.objid();
         assert!(!thread.get_mutex_wait());
+        thread.note_requeue_event(3);
         crate::processor::sched::schedule_thread(thread);
         let requeue = get_requeue_list();
         // See `remove_from_requeue`: the removed reference must not be dropped under the spinlock.
@@ -246,6 +299,18 @@ pub fn add_to_requeue(thread: ThreadRef) {
         };
         drop(removed);
         return;
+        }
+        // Token won but the thread is not parked: it is somewhere between commit and the
+        // scheduler (finish_blocking pre-Sleeping), in its no-block window, or already back in
+        // userspace -- states a waker cannot tell apart, and scheduling a thread in any of
+        // them double-inserts a run queue (wakefix1/2/3 panics), while consuming the token
+        // against one that is still going to park is the lost wake again (wakefix4 wedges).
+        // Both are avoided the same way: hand the token back and queue an entry. If the
+        // thread parks, a drain claims it (token + Sleeping); if it returns instead, its
+        // cleanup or next round's claim_own_wakeup collects the entry. `Sleeping` set
+        // mid-deschedule is fine to schedule into -- that is the ordinary wake race
+        // switch_lock already serializes.
+        thread.set_sync_sleep_done();
     }
     log::trace!(
         "adding {} ({}) to requeue, from {}",
@@ -290,7 +355,23 @@ pub fn add_all_to_requeue(iter: impl IntoIterator<Item = ThreadRef>) {
     // more, and only per transition.
     let mut list = None;
     for thread in iter.into_iter() {
-        if !thread.is_critical() && thread.reset_sync_sleep_done() {
+        // Token first, then execution state: see add_to_requeue.
+        let woke = if thread.reset_sync_sleep_done() {
+            if matches!(
+            thread.get_state(),
+            ExecutionState::Sleeping | ExecutionState::Suspended
+        ) {
+                true
+            } else {
+                // Not parked: hand the token back and queue an entry instead; see
+                // add_to_requeue for why neither scheduling nor consuming is sound here.
+                thread.set_sync_sleep_done();
+                false
+            }
+        } else {
+            false
+        };
+        if woke {
             // Before the schedule, not after: see above.
             drop(list.take());
             assert!(!thread.get_mutex_wait());
@@ -334,6 +415,7 @@ pub fn remove_from_requeue(thread: &ThreadRef) {
         let mut list = requeue.list.lock();
         let removed = list.find_mut(&thread.objid()).remove();
         if removed.is_some() {
+            thread.note_requeue_event(7);
             // Exactly one decrement per removal. Two of these shipped in 1348d6f1 and stranded
             // threads: the count reached zero with an entry still linked, and `requeue_all`, the
             // idle-loop drain and the hardtick backstop all early-out on `count == 0`, so none of
@@ -384,21 +466,71 @@ pub fn claim_own_wakeup(thread: &ThreadRef) -> bool {
     let requeue = get_requeue_list();
     let (removed, claimed) = {
         let mut list = requeue.list.lock();
-        let removed = list.find_mut(&thread.objid()).remove();
-        if removed.is_some() {
-            requeue.count.fetch_sub(1, Ordering::SeqCst);
-        }
-        // Both under the lock, so no other holder of it can catch the half-state where the entry is
-        // gone but the flag is still set: against `requeue_all` and the two slow paths, taking the
-        // entry and taking the flag are one step. Order still matters within it -- the flag is
-        // taken only once the entry is ours, so losing leaves the wakeup with whoever won rather
-        // than eating it here.
-        let claimed = removed.is_some() && thread.reset_sync_sleep_done();
+        let mut cursor = list.find_mut(&thread.objid());
+        // Win the flag BEFORE removing the entry, not after. The old order removed first and
+        // tested second, so the (supposedly unreachable) lose case ate the entry while the
+        // caller went on to block -- converting a doc-comment's impossibility argument into a
+        // permanent park if it ever had a hole. This order makes the lose case self-healing:
+        // the entry stays, and whichever drain runs next schedules us out of the block. A
+        // stale entry left by the lose case is cleaned by our own remove_from_requeue in the
+        // post-sleep cleanup, same as any other stale entry.
+        let (removed, claimed) = if cursor.is_null() {
+            (None, false)
+        } else if thread.reset_sync_sleep_done() {
+            let removed = cursor.remove();
+            if removed.is_some() {
+                requeue.count.fetch_sub(1, Ordering::SeqCst);
+            }
+            thread.note_requeue_event(5);
+            (removed, true)
+        } else {
+            thread.note_requeue_event(6);
+            (None, false)
+        };
         (removed, claimed)
     };
     // See remove_from_requeue: the removed reference must not be dropped under the spinlock.
     drop(removed);
     claimed
+}
+
+/// Commit this thread to blocking, or consume the wake that pre-empted its park -- never both,
+/// never neither.
+///
+/// This is the lost-wake fix (wakehunt2-6), in its sound form. The naive form -- "if SYNC_SLEEP
+/// was consumed, just don't block" -- returns with the waker's requeue handoff still armed, and
+/// when a drain later claims that entry it calls `schedule_thread` on a thread that is already
+/// running: a run-queue double insert, which panics ("attempted to insert an object that is
+/// already linked", 24/24 boots). The wake must not outlive the decision.
+///
+/// So: if our SYNC flag is still ours, block (the normal path, unchanged). If a waker consumed
+/// it, its handoff MUST manifest as a requeue-list entry -- we hold our critical guard, so both
+/// `add_to_requeue`'s fast path and every drain skip us, meaning no one else can schedule us and
+/// the waker's only move is the slow-path insert. Spin until that insert lands and consume it
+/// with `claim_own_wakeup` (DONE is ours and set, so under criticality only we can win it), then
+/// return without blocking. The spin is bounded by the waker finishing one locked insert.
+fn block_or_claim(thread: &ThreadRef, guard: CriticalGuard) {
+    if claim_own_wakeup(thread) {
+        drop(guard);
+        return;
+    }
+    if thread.has_sync_sleep() {
+        finish_blocking(guard);
+        return;
+    }
+    // A waker consumed our park mid-round. Its handoff -- a slow-path requeue entry, the only
+    // move available to it while our critical guard bars the fast path -- may or may not have
+    // landed yet. Blocking now stakes our liveness on that handoff (the lost-wake bug);
+    // returning while it is claimable lets a drain later schedule a *running* thread (run-queue
+    // double insert, a panic). So neutralize it: win our own DONE token. Uncontended by
+    // construction -- every other taker (the drains, `add_to_requeue`'s fast path) is barred by
+    // `is_critical` while we hold `guard` -- so once it is ours, the entry, present or future,
+    // is inert: no drain will ever claim it. If it has landed it is collected by our cleanup's
+    // `remove_from_requeue`; if it lands later, a subsequent round's `claim_own_wakeup`
+    // consumes it as a spurious wake. The wake itself is not lost: we are awake, and the caller
+    // returns to userspace, which re-checks its words.
+    thread.reset_sync_sleep_done();
+    drop(guard);
 }
 
 /// Whether this thread must return from a thread-sync sleep instead of entering one.
@@ -768,12 +900,9 @@ fn simple_timed_sleep(timeout: &&mut Duration) {
     // requeue_all() above cannot rescue *us*: it skips any thread that is_critical(), and we
     // hold `guard`. So check for ourselves -- if a waker parked us on the requeue list before
     // set_sync_sleep_done() above, that wakeup has already happened and blocking on it now
-    // would mean sleeping until some unrelated requeue_all() came along.
-    if claim_own_wakeup(&thread) {
-        drop(guard);
-    } else {
-        finish_blocking(guard);
-    }
+    // would mean sleeping until some unrelated requeue_all() came along. block_or_claim closes
+    // the lost-wake class: see its doc.
+    block_or_claim(&thread, guard);
     let _guard = thread.enter_critical();
     // Before anything else, and before releasing the key: retiring the token is the only thing that
     // stops a callback already past `soft_advance`, and it has to happen while the sleep flags are
@@ -800,12 +929,8 @@ pub fn optimized_single_sleep(op: ThreadSyncSleep) -> Result<bool> {
     requeue_all();
     let prep_done = trace_now();
     // See simple_timed_sleep: requeue_all() skips critical threads, so it can never rescue the
-    // caller. Take a wakeup that raced in ahead of set_sync_sleep_done() ourselves.
-    if claim_own_wakeup(&thread) {
-        drop(guard);
-    } else {
-        finish_blocking(guard);
-    }
+    // caller. block_or_claim closes the lost-wake class: see its doc.
+    block_or_claim(&thread, guard);
     let woke_up = trace_now();
     let _guard = thread.enter_critical();
     if thread.reset_sync_sleep() {
@@ -862,12 +987,8 @@ fn optimized_single_sleep_timed(
     requeue_all();
     thread.set_sync_sleep_done();
     // See do_sys_thread_sync: a wake that raced in before sync_sleep_done was set must be claimed
-    // by us -- requeue_all() skips critical threads.
-    if claim_own_wakeup(&thread) {
-        drop(guard);
-    } else {
-        finish_blocking(guard);
-    }
+    // by us -- requeue_all() skips critical threads. block_or_claim closes the lost-wake class.
+    block_or_claim(&thread, guard);
     let _guard = thread.enter_critical();
     // Retire any outstanding timeout callback before touching the flags it would consume.
     thread.end_sync_sleep();
@@ -1033,21 +1154,42 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
             // requeue_all(): that call skips any is_critical() thread, and we hold `guard`.
             // Only on the sleeping path -- if we aren't about to block, claiming here would
             // consume a waker's wakeup and throw it away.
-            if claim_own_wakeup(&thread) {
-                drop(guard);
-            } else {
-                finish_blocking(guard);
-            }
+            //
+            // See block_or_claim for the second half: once a waker has consumed our SYNC flag,
+            // blocking stakes liveness on its requeue handoff (the lost-wake bug), and NOT
+            // blocking without consuming that handoff lets a drain schedule a running thread
+            // (run-queue double insert). block_or_claim does exactly one of the two, safely.
+            block_or_claim(&thread, guard);
             thread.enter_critical()
         } else {
+            requeue_all();
+            // This branch has a ready result, so its job is to return it, not to block. The old
+            // code consumed its own SYNC, self-requeued, and blocked -- staking a thread with
+            // results in hand on the requeue handoff whose loss is the lost-wake bug (hang rows
+            // cs=4: consumed own SYNC here, blocked, entry vanished, parked forever). Three
+            // cases now, none of which block on that handoff:
+            //  - we win our own SYNC: nobody else can ever claim us this round; no entry is
+            //    left armed (the old self-requeue entry was only there to bounce the block) and
+            //    none is owed to us. Return.
+            //  - we lose it and some op had armed (SYNC existed): a waker owns our round and
+            //    its handoff is in flight; block_or_claim consumes it (and cannot block --
+            //    SYNC is already gone).
+            //  - no op armed at all (pure-wake call or every arm declined): SYNC was never set;
+            //    nothing to consume. Return.
+            // The armed entries in `unsleeps` are undone in the cleanup below in every case.
+            // Both drop arms consume the DONE token before releasing the guard. Leaving it set
+            // across the drop -> enter_critical gap lets a drain claim a straggler requeue
+            // entry (one that landed after an earlier round's cleanup) with THIS round's token
+            // and schedule a running thread -- the run-queue double insert. block_or_claim's
+            // outcomes all consume or keep the token; these two exits must too.
             if thread.reset_sync_sleep() {
                 thread.note_sync_consumer(4);
-                add_to_requeue(thread.clone());
-            }
-            requeue_all();
-            if unsleeps.len() > 0 {
-                finish_blocking(guard);
+                thread.reset_sync_sleep_done();
+                drop(guard);
+            } else if !unsleeps.is_empty() {
+                block_or_claim(&thread, guard);
             } else {
+                thread.reset_sync_sleep_done();
                 drop(guard);
             }
 

@@ -8,7 +8,7 @@ use twizzler_rt_abi::{
 };
 
 use crate::runtime::{
-    file::{get_fd_slots, FileDesc},
+    file::{get_fd_slots, FdImpl},
     ReferenceRuntime,
 };
 
@@ -43,7 +43,7 @@ impl FdSet {
 }
 
 pub struct SelectFds {
-    set: HashMap<(RawFd, wait_kind), FileDesc>,
+    set: HashMap<(RawFd, wait_kind), FdImpl>,
 }
 
 pub struct SelectState {
@@ -71,20 +71,14 @@ impl SelectState {
             if read.contains(fd) {
                 fds.set.insert(
                     (fd, WAIT_READ),
-                    binding
-                        .get(fd as usize)
-                        .cloned()
-                        .ok_or(TwzError::BAD_HANDLE)?,
+                    binding.io_parts(fd as usize).ok_or(TwzError::BAD_HANDLE)?.0,
                 );
                 read.remove(fd);
             }
             if write.contains(fd) {
                 fds.set.insert(
                     (fd, WAIT_WRITE),
-                    binding
-                        .get(fd as usize)
-                        .cloned()
-                        .ok_or(TwzError::BAD_HANDLE)?,
+                    binding.io_parts(fd as usize).ok_or(TwzError::BAD_HANDLE)?.0,
                 );
                 write.remove(fd);
             }
@@ -140,7 +134,7 @@ impl SelectState {
         // sys_thread_sync call below) -- see WaitpointResult::keepalive.
         let mut keepalives = Vec::new();
         for ((fd, kind), fd_desc) in self.fds.set.iter() {
-            let Ok(wp) = fd_desc.file.waitpoint(*kind) else {
+            let Ok(wp) = fd_desc.waitpoint(*kind) else {
                 continue;
             };
             let sleep = ThreadSync::new_sleep(wp.sleep);

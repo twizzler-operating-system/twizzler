@@ -893,8 +893,7 @@ impl Waiters {
                 let rose = wait.read.swap(1, Ordering::SeqCst) == 0;
                 if rose {
                     MARK_READ_RISE.fetch_add(1, Ordering::Relaxed);
-                    READ_RISE_LAST_NS
-                        .store(RISE_CLOCK.get().as_nanos() as u64, Ordering::Relaxed);
+                    READ_RISE_LAST_NS.store(RISE_CLOCK.get().as_nanos() as u64, Ordering::Relaxed);
                 } else {
                     MARK_READ_LEVEL.fetch_add(1, Ordering::Relaxed);
                 }
@@ -1283,37 +1282,37 @@ impl Engine {
         // engine legitimately sits still well past 2s, which is what made it emit 450 STALL
         // lines in an 8-round sweep where every round passed.
         if STALL_WATCHDOG {
-        std::thread::spawn(|| {
-            let mut last = u64::MAX;
-            let mut ticks: u64 = 0;
-            loop {
-                WD_SLEEP_ENTER.fetch_add(1, Ordering::Relaxed);
-                std::thread::sleep(std::time::Duration::from_secs(2));
-                WD_SLEEP_EXIT.fetch_add(1, Ordering::Relaxed);
-                ticks += 1;
-                WATCHDOG_TICKS.fetch_add(1, Ordering::Relaxed);
-                let iters = POLL_ITERS.load(Ordering::Relaxed);
-                // Stalled = not advancing AND demonstrably owing work: either a timed sleep has
-                // overrun its own request, or frames are queued that nothing is collecting.
-                let overdue = sleep_inflight_ms().is_some_and(|age| {
-                    let req = POLL_SLEEP_REQ_MS.load(Ordering::Relaxed);
-                    req != u64::MAX && age > req.saturating_mul(4).max(2000)
-                });
-                let rx_waiting = matches!(EXT_CORE.load(Ordering::Relaxed), 1);
-                if iters == last && (overdue || rx_waiting) {
-                    pollprobe("STALL");
-                } else if ticks == 1 || ticks % 30 == 0 {
-                    // Tick 1, not just every 30th. A peer compartment lives ~20s and the 60s
-                    // heartbeat never fired inside one, so the control covered only the two
-                    // long-lived compartments and said nothing about the ones under test --
-                    // "no stall" and "watchdog never ran here" were the same silence in exactly
-                    // the population this exists to describe. One line per compartment at ~2s
-                    // arms it per path, inside the window.
-                    pollprobe("alive");
+            std::thread::spawn(|| {
+                let mut last = u64::MAX;
+                let mut ticks: u64 = 0;
+                loop {
+                    WD_SLEEP_ENTER.fetch_add(1, Ordering::Relaxed);
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    WD_SLEEP_EXIT.fetch_add(1, Ordering::Relaxed);
+                    ticks += 1;
+                    WATCHDOG_TICKS.fetch_add(1, Ordering::Relaxed);
+                    let iters = POLL_ITERS.load(Ordering::Relaxed);
+                    // Stalled = not advancing AND demonstrably owing work: either a timed sleep has
+                    // overrun its own request, or frames are queued that nothing is collecting.
+                    let overdue = sleep_inflight_ms().is_some_and(|age| {
+                        let req = POLL_SLEEP_REQ_MS.load(Ordering::Relaxed);
+                        req != u64::MAX && age > req.saturating_mul(4).max(2000)
+                    });
+                    let rx_waiting = matches!(EXT_CORE.load(Ordering::Relaxed), 1);
+                    if iters == last && (overdue || rx_waiting) {
+                        pollprobe("STALL");
+                    } else if ticks == 1 || ticks % 30 == 0 {
+                        // Tick 1, not just every 30th. A peer compartment lives ~20s and the 60s
+                        // heartbeat never fired inside one, so the control covered only the two
+                        // long-lived compartments and said nothing about the ones under test --
+                        // "no stall" and "watchdog never ran here" were the same silence in exactly
+                        // the population this exists to describe. One line per compartment at ~2s
+                        // arms it per path, inside the window.
+                        pollprobe("alive");
+                    }
+                    last = iters;
                 }
-                last = iters;
-            }
-        });
+            });
         }
 
         Self {
@@ -1455,9 +1454,12 @@ impl Engine {
         loop {
             match f(&mut *core) {
                 Ok(r) => {
-                    // We have done work, so again, notify the polling thread.
-                    self.wake();
+                    // We have done work, so again, notify the polling thread -- but only after
+                    // dropping the guard. `wake()` is a syscall, and the fast path above already
+                    // establishes the rule: holding `core` across it serialises every other
+                    // socket operation, the poll thread this is trying to wake included.
                     drop(core);
+                    self.wake();
                     return Ok(r);
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
@@ -1465,6 +1467,11 @@ impl Engine {
                         ENGINE_NB_SLOW.fetch_add(1, Ordering::Relaxed);
                         return Err(e);
                     }
+                    // Deliberately *under* the guard, unlike the arms above. `f` just reported
+                    // not-ready and `waiter.wait` atomically releases `core` as it blocks, so the
+                    // guard is what closes the window between the two: dropping it to make the
+                    // wake syscall outside the lock would let the poll thread run, notify, and
+                    // find no waiter -- a lost wakeup, and a hang rather than a slow path.
                     self.wake();
                     core = self.waiter.wait(core).unwrap();
                     if (ENGINE_WAKES.fetch_add(1, Ordering::Relaxed) + 1).is_power_of_two() {

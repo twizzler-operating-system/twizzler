@@ -43,6 +43,9 @@ pub fn pager_create_external(
 pub fn pager_set_mtime_external(id: ObjID, mtime: u64) -> Result<(), TwzError> {}
 
 #[secgate::gatecall]
+pub fn pager_nlink_external(id: ObjID) -> Result<u32, TwzError> {}
+
+#[secgate::gatecall]
 pub fn pager_unlink_external(desc: Descriptor, id: ObjID, namelen: usize) -> Result<(), TwzError> {}
 
 #[secgate::gatecall]

@@ -4,7 +4,7 @@ use core::time::Duration;
 use heapless::index_map::FnvIndexMap;
 use twizzler_abi::{
     device::CacheType,
-    meta::{MEXT_MTIME, MEXT_SIZED, MetaExt, MetaFlags, MetaInfo},
+    meta::{MetaExt, MetaFlags, MetaInfo, MEXT_MTIME, MEXT_NLINK, MEXT_SIZED},
     object::{ObjID, Protections},
     pager::{
         CompletionToKernel, CompletionToPager, KernelCommand, KernelCompletionFlags,
@@ -19,22 +19,22 @@ use twizzler_rt_abi::{
 };
 
 use super::{
-    DEFAULT_PAGER_OUTSTANDING_FRAMES, inflight::NR_REQUESTS, inflight_mgr, request::ReqKind,
-    request_pager_memory,
+    inflight::NR_REQUESTS, inflight_mgr, request::ReqKind, request_pager_memory,
+    DEFAULT_PAGER_OUTSTANDING_FRAMES,
 };
 use crate::{
-    arch::{PhysAddr, memory::phys_to_virt},
+    arch::{memory::phys_to_virt, PhysAddr},
     idcounter::{IdCounter, SimpleId},
     instant::Instant,
     is_test_mode,
     memory::{
-        context::{KernelMemoryContext, ObjectContextInfo, kernel_context},
-        frame::{FrameRef, PHYS_LEVEL_LAYOUTS, merge_frame},
+        context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
+        frame::{merge_frame, FrameRef, PHYS_LEVEL_LAYOUTS},
         pagetables::{ContiguousProvider, MappingCursor, MappingFlags, MappingSettings},
         sim_memory_pressure,
-        tracker::{FrameAllocFlags, FrameAllocator, start_reclaim_thread},
+        tracker::{start_reclaim_thread, FrameAllocFlags, FrameAllocator},
     },
-    obj::{LookupFlags, Object, ObjectRef, PageNumber, lookup_object},
+    obj::{lookup_object, LookupFlags, Object, ObjectRef, PageNumber},
     once::Once,
     queue::{ManagedQueueReceiver, QueueObject},
     security::KERNEL_SCTX,
@@ -496,28 +496,30 @@ fn synthesize_meta_page(obj: &ObjectRef, info: &ObjectInfo) {
         );
         return;
     };
+    // A zero value reads back as an absent extension, so an extension that would hold one is not
+    // worth a slot: no mtime, and a link count of one, are exactly what their absence means.
+    let exts = [
+        Some((MEXT_SIZED, info.size)),
+        (info.mtime != 0).then_some((MEXT_MTIME, info.mtime as u64)),
+        (info.nlink > 1).then_some((MEXT_NLINK, info.nlink as u64)),
+    ];
     let meta = MetaInfo {
         nonce: Nonce(info.nonce),
         kuid: info.kuid,
         flags: MetaFlags::empty(),
         default_prot: info.def_prot,
         fotcount: 0,
-        extcount: if info.mtime != 0 { 2 } else { 1 },
+        extcount: exts.iter().flatten().count() as u16,
     };
-    let ext = MetaExt::new(MEXT_SIZED, info.size);
     // Safety: the frame is freshly allocated, zeroed, and a whole page; all writes land inside it.
-    // Unaligned because the extension follows `MetaInfo` at its natural end, not at its alignment.
+    // Unaligned because the extensions follow `MetaInfo` at its natural end, not at its alignment.
     unsafe {
         let base = frame.virtaddr().as_mut_ptr::<u8>();
         base.cast::<MetaInfo>().write_unaligned(meta);
-        base.add(size_of::<MetaInfo>())
-            .cast::<MetaExt>()
-            .write_unaligned(ext);
-        if info.mtime != 0 {
-            let mt = MetaExt::new(MEXT_MTIME, info.mtime as u64);
-            base.add(size_of::<MetaInfo>() + size_of::<MetaExt>())
+        for (i, (tag, value)) in exts.iter().flatten().enumerate() {
+            base.add(size_of::<MetaInfo>() + i * size_of::<MetaExt>())
                 .cast::<MetaExt>()
-                .write_unaligned(mt);
+                .write_unaligned(MetaExt::new(*tag, *value));
         }
     }
     // No refcount dance, unlike `install_meta_page`: a fresh frame arrives at zero and `map_page`

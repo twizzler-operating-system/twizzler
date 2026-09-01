@@ -86,6 +86,7 @@ impl Fd for DirFile {
             accessed: std::time::Duration::ZERO,
             modified: std::time::Duration::ZERO,
             unix_mode: 0o755 | S_IFDIR,
+            nlink: 1,
         })
     }
 }

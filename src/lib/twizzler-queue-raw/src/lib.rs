@@ -570,15 +570,23 @@ impl RawQueueHdr {
     /// An abandoned arm is retired instead by the first producer to honour it
     /// (`take_consumer_waiting`), bounding it to one stray wake rather than one per submission.
     fn setup_rec_sleep_simple(&self) -> (&AtomicU64, u64) {
-        // Flag first, then load: a producer ringing after this point must see the flag and wake us.
+        // Load BEFORE arming, not after. The old order (arm, fence, load) had a one-ring hole:
+        // a producer ringing between the arm and the load consumes the arm (its wake lands on
+        // nobody -- the consumer has not parked) AND its bump is included in the captured
+        // value, so the kernel accepts the park and the consumer then sleeps with
+        // consumer_waiting clear -- every later ring takes the RING_NO_WAITER arm and the
+        // sleeper starves while the bell climbs (hang rows: SYNC/DONE intact, cw=0, wv
+        // drifting past av). Capturing first closes it: any ring that could consume the fresh
+        // arm bumps the bell past the captured value, and the kernel refuses the park -- a
+        // spurious return, which every caller loops on.
         //
         // The sleep value has to come from bell, the word being slept on -- not from tail. bell
         // free-runs while tail is masked to 31 bits, so the two agree only for the first 2^31
         // operations; past that a tail-derived value never matches bell, the sleep returns
         // immediately every time, and the caller spins instead of blocking.
+        let b = self.bell.load(Ordering::SeqCst);
         self.consumer_set_waiting(true);
         sc_fence();
-        let b = self.bell.load(Ordering::SeqCst);
         (&self.bell.0, b)
     }
 
@@ -614,9 +622,14 @@ impl RawQueueHdr {
             if sleep {
                 self.consumer_set_waiting(true);
                 sc_fence();
-                let b = self.bell.load(Ordering::SeqCst);
-                *waiter = (Some(&self.bell.0), b);
-                if !self.is_empty(b, t) && self.is_turn(t, item) {
+                // Keep the PRE-arm `b` as the sleep value; re-load only to detect readiness.
+                // Sleeping on the post-arm value re-opens the one-ring hole closed in
+                // setup_rec_sleep_simple: a ring between the arm and the re-load has consumed
+                // the arm, and a sleep armed on the newer value parks a consumer whose flag is
+                // already spent. With the pre-arm value, that ring makes the kernel refuse the
+                // park instead (bell moved past it) -- a spurious return the caller loops on.
+                let b2 = self.bell.load(Ordering::SeqCst);
+                if !self.is_empty(b2, t) && self.is_turn(t, item) {
                     return Ok(t);
                 }
             }

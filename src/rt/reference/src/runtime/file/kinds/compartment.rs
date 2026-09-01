@@ -89,6 +89,7 @@ impl Fd for CompartmentFile {
             accessed: Duration::ZERO,
             modified: Duration::ZERO,
             unix_mode: 0o755 | S_IFDIR,
+            nlink: 1,
         })
     }
 

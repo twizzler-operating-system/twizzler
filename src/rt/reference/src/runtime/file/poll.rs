@@ -1,4 +1,7 @@
-use std::sync::{atomic::AtomicU64, Arc};
+use std::{
+    cell::RefCell,
+    sync::{atomic::AtomicU64, Arc},
+};
 
 use secgate::TwzError;
 use twizzler_abi::syscall::{sys_thread_sync, ThreadSync};
@@ -6,16 +9,64 @@ use twizzler_rt_abi::bindings::{wait_kind, WAIT_READ, WAIT_WRITE};
 
 use crate::runtime::{file::get_fd_slots, ReferenceRuntime};
 
+/// The buffers one `poll` call fills, reused across calls on the same thread.
+///
+/// Same reasoning as `kqueue`'s `KeventScratch`: an event loop calls `poll` at the frequency of
+/// the workload, and these are the same three vectors every time. Emptied on release so an idle
+/// thread holds no `keepalive` `Arc`s from a call that already returned.
+#[derive(Default)]
+struct PollScratch {
+    wps: Vec<ThreadSync>,
+    info: Vec<(usize, wait_kind)>,
+    keepalives: Vec<Option<Arc<AtomicU64>>>,
+}
+
+impl PollScratch {
+    fn clear(&mut self) {
+        self.wps.clear();
+        self.info.clear();
+        self.keepalives.clear();
+    }
+}
+
+thread_local! {
+    static POLL_SCRATCH: RefCell<PollScratch> = RefCell::new(PollScratch::default());
+}
+
+struct ScratchGuard(Option<PollScratch>);
+
+impl ScratchGuard {
+    fn take() -> Self {
+        let mut s = POLL_SCRATCH.with(|c| core::mem::take(&mut *c.borrow_mut()));
+        s.clear();
+        Self(Some(s))
+    }
+
+    fn get(&mut self) -> &mut PollScratch {
+        // Unwrap-Ok: only `drop` takes the value, and that is the end of this guard's life.
+        self.0.as_mut().unwrap()
+    }
+}
+
+impl Drop for ScratchGuard {
+    fn drop(&mut self) {
+        if let Some(mut s) = self.0.take() {
+            s.clear();
+            POLL_SCRATCH.with(|c| *c.borrow_mut() = s);
+        }
+    }
+}
+
 pub struct PollState<'a> {
     pub timeout: Option<std::time::Duration>,
     pub fds: &'a mut [twizzler_rt_abi::bindings::pollfd],
-    pub wps: Vec<ThreadSync>,
-    pub info: Vec<(usize, wait_kind)>,
+    pub wps: &'a mut Vec<ThreadSync>,
+    pub info: &'a mut Vec<(usize, wait_kind)>,
     pub ready: usize,
     // Held alive for as long as `wps` may still be read -- see WaitpointResult::keepalive. Never
-    // read itself, only dropped, hence `allow(dead_code)`.
+    // read itself, only appended to, hence `allow(dead_code)`.
     #[allow(dead_code)]
-    pub keepalives: Vec<Option<Arc<AtomicU64>>>,
+    pub keepalives: &'a mut Vec<Option<Arc<AtomicU64>>>,
 }
 
 fn events_to_wait_kind_iter(events: libc::c_short) -> impl Iterator<Item = wait_kind> {
@@ -53,19 +104,16 @@ impl<'a> PollState<'a> {
     pub fn new(
         fds: &'a mut [twizzler_rt_abi::bindings::pollfd],
         timeout: Option<std::time::Duration>,
+        wps: &'a mut Vec<ThreadSync>,
+        info: &'a mut Vec<(usize, wait_kind)>,
+        keepalives: &'a mut Vec<Option<Arc<AtomicU64>>>,
     ) -> Result<Self, TwzError> {
         let slots = get_fd_slots().read().unwrap();
-        let mut wps = Vec::with_capacity(fds.len());
-        let mut info = Vec::with_capacity(fds.len());
         let mut ready = 0;
-        // Must be held alive for as long as `wps` may still be read -- see
-        // WaitpointResult::keepalive.
-        let mut keepalives = Vec::with_capacity(fds.len());
         fds.iter_mut().enumerate().try_for_each(|(idx, fd)| {
-            let file_desc = slots
-                .get(fd.fd as usize)
-                .ok_or(TwzError::BAD_HANDLE)?
-                .clone();
+            // Borrowed: `slots` is held for this whole loop either way, so cloning the
+            // descriptor only bumped four `Arc`s per fd to reach `.file`.
+            let file_desc = slots.get(fd.fd as usize).ok_or(TwzError::BAD_HANDLE)?;
             tracing::debug!("PollState::new: fd={}, events={:#x}", fd.fd, fd.events,);
             fd.revents = 0;
             for wk in events_to_wait_kind_iter(fd.events) {
@@ -137,7 +185,13 @@ impl ReferenceRuntime {
         timeout: Option<std::time::Duration>,
         _sigmask: *const libc::sigset_t,
     ) -> Result<usize, TwzError> {
-        let mut ps = PollState::new(fds, timeout)?;
+        let mut guard = ScratchGuard::take();
+        let PollScratch {
+            wps,
+            info,
+            keepalives,
+        } = guard.get();
+        let mut ps = PollState::new(fds, timeout, wps, info, keepalives)?;
         ps.wait()
     }
 }

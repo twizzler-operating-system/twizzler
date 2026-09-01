@@ -88,6 +88,27 @@ pub(crate) mod mapstats {
     /// accumulators stay unconditional -- they are relaxed adds and cost nothing.
     pub const REPORT_ON: bool = false;
 
+    /// Master switch for the *clock reads*, as opposed to the counters.
+    ///
+    /// The counters below are relaxed adds and genuinely cost nothing, but the `Instant::now()`
+    /// pairs feeding them do not: a cache-hit `map_object` takes six of them, which at ~12 ns a
+    /// read is a measurable fraction of the path they exist to measure. Off by default; when off
+    /// nothing is logged at all rather than logging zeros, so a sweep reads silence instead of
+    /// mistaking an ungated build's zeros for real values.
+    pub const TIMING: bool = false;
+
+    /// `Instant::now()`, if [`TIMING`] is on.
+    #[inline(always)]
+    pub fn t0() -> Option<std::time::Instant> {
+        TIMING.then(std::time::Instant::now)
+    }
+
+    /// Nanoseconds since `t`, or 0 when [`TIMING`] is off.
+    #[inline(always)]
+    pub fn ns(t: Option<std::time::Instant>) -> u64 {
+        t.map_or(0, |t| t.elapsed().as_nanos() as u64)
+    }
+
     static COUNT: AtomicU64 = AtomicU64::new(0);
     static HITS: AtomicU64 = AtomicU64::new(0);
     static LOCK: AtomicU64 = AtomicU64::new(0);
@@ -136,7 +157,7 @@ pub(crate) mod mapstats {
     /// whose console traffic lands inside whatever it is measuring.
     pub fn report() {
         let n = COUNT.load(Ordering::Relaxed);
-        if !REPORT_ON || n == 0 {
+        if !REPORT_ON || !TIMING || n == 0 {
             return;
         }
         let hits = HITS.load(Ordering::Relaxed).max(1);
@@ -165,7 +186,7 @@ pub(crate) mod mapstats {
     pub fn record(lock: u64) {
         let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
         let l = LOCK.fetch_add(lock, Ordering::Relaxed) + lock;
-        if secgate::statcadence::report_now(n) {
+        if TIMING && secgate::statcadence::report_now(n) {
             // `get_sctx_id` is a bare syscall. Deliberately not `get_comp_config().sctx`, which on
             // first use makes a gate call -- and this runs inside `map_object`, which the heap
             // growth path and the monitor's own compartment both go through.
@@ -228,10 +249,10 @@ impl ReferenceRuntime {
             return;
         }
         for key in &keys {
-            let t_gate = std::time::Instant::now();
+            let t_gate = mapstats::t0();
             let _ = monitor_api::monitor_rt_object_unmap(key.0, key.1)
                 .inspect_err(|e| warn!("failed to unmap {:?}: {}", key, e));
-            mapstats::record_unmap(t_gate.elapsed().as_nanos() as u64);
+            mapstats::record_unmap(mapstats::ns(t_gate));
         }
         let mut mgr = self.object_manager.lock();
         for key in &keys {
@@ -244,7 +265,7 @@ impl ReferenceRuntime {
     #[tracing::instrument(ret, skip(self), level = "trace")]
     pub fn map_object(&self, id: ObjID, flags: MapFlags) -> Result<ObjectHandle> {
         let key = ObjectMapKey(id.into(), flags);
-        let t_lock = std::time::Instant::now();
+        let t_lock = mapstats::t0();
         // Reassigned on each retry: on the waiting path this measures the whole time to the point
         // of doing work, in-flight wait included, not just the mutex.
         let mut lock_ns;
@@ -253,12 +274,12 @@ impl ReferenceRuntime {
             // the mutex, the generation has already moved and the sleep below returns at once.
             let gen = INFLIGHT_GEN.load(Ordering::SeqCst);
             let mut mgr = self.object_manager.lock();
-            lock_ns = t_lock.elapsed().as_nanos() as u64;
-            let t_crit = std::time::Instant::now();
+            lock_ns = mapstats::ns(t_lock);
+            let t_crit = mapstats::t0();
             if let Some(handle) = mgr.cached(key) {
                 let pending = mgr.begin_unmaps();
                 drop(mgr);
-                let crit_ns = t_crit.elapsed().as_nanos() as u64;
+                let crit_ns = mapstats::ns(t_crit);
                 mapstats::record_hit();
                 mapstats::record_hit_lock(lock_ns);
                 mapstats::record_crit(crit_ns);
@@ -267,7 +288,7 @@ impl ReferenceRuntime {
                 // Taken last so the total covers everything a hit pays, `finish_unmaps` included
                 // -- which is empty in steady state but is exactly the sort of thing that would
                 // otherwise sit in the unexplained remainder without being named.
-                mapstats::record_hit_total(t_lock.elapsed().as_nanos() as u64);
+                mapstats::record_hit_total(mapstats::ns(t_lock));
                 return Ok(handle);
             }
             if !mgr.begin_inflight(key) {
@@ -285,9 +306,9 @@ impl ReferenceRuntime {
         // block in the kernel on a pager round trip for a cold object, and holding a
         // per-compartment mutex across that serializes every unrelated map in the process
         // behind it.
-        let t_gate = std::time::Instant::now();
+        let t_gate = mapstats::t0();
         let mapping = monitor_api::monitor_rt_object_map(key.0, key.1);
-        mapstats::record_gate(t_gate.elapsed().as_nanos() as u64);
+        mapstats::record_gate(mapstats::ns(t_gate));
 
         let mut mgr = self.object_manager.lock();
         mgr.end_inflight(key);

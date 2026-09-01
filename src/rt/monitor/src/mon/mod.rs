@@ -58,6 +58,22 @@ pub(crate) fn reentrant_key() -> Result<ThreadKey, TwzError> {
 mod monmapstats {
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    /// Master switch for the clock reads; see `space::spacesplit::TIMING`, same reasoning. The
+    /// three `Instant::now()` pairs below sit on every object map in the system.
+    pub const TIMING: bool = false;
+
+    /// `Instant::now()`, if [`TIMING`] is on.
+    #[inline(always)]
+    pub fn t0() -> Option<std::time::Instant> {
+        TIMING.then(std::time::Instant::now)
+    }
+
+    /// Nanoseconds since `t`, or 0 when [`TIMING`] is off.
+    #[inline(always)]
+    pub fn ns(t: Option<std::time::Instant>) -> u64 {
+        t.map_or(0, |t| t.elapsed().as_nanos() as u64)
+    }
+
     static COUNT: AtomicU64 = AtomicU64::new(0);
     static SPACE: AtomicU64 = AtomicU64::new(0);
     static MGR: AtomicU64 = AtomicU64::new(0);
@@ -68,7 +84,7 @@ mod monmapstats {
         let s = SPACE.fetch_add(space, Ordering::Relaxed) + space;
         let m = MGR.fetch_add(mgr, Ordering::Relaxed) + mgr;
         let r = REC.fetch_add(rec, Ordering::Relaxed) + rec;
-        if secgate::statcadence::report_now(n) {
+        if TIMING && secgate::statcadence::report_now(n) {
             secgate::statlog::record("MONMAPST", n, &[s / 1000, m / 1000, r / 1000]);
         }
     }
@@ -472,20 +488,20 @@ impl Monitor {
     /// Map an object into a given compartment.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn map_object(&self, sctx: ObjID, info: MapInfo) -> Result<MapHandle, TwzError> {
-        let t_space = std::time::Instant::now();
+        let t_space = monmapstats::t0();
         let handle = Space::map(&self.space, info, sctx)?;
-        let space_ns = t_space.elapsed().as_nanos() as u64;
+        let space_ns = monmapstats::ns(t_space);
 
         // A read: recording the mapping only touches the compartment's own map, which has its own
         // lock. Taking the manager's *write* lock here made every map in the system serialize
         // against every other one, in any compartment.
-        let t_mgr = std::time::Instant::now();
+        let t_mgr = monmapstats::t0();
         let comp_mgr = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
         let rc = comp_mgr.get(sctx)?;
-        let mgr_ns = t_mgr.elapsed().as_nanos() as u64;
-        let t_rec = std::time::Instant::now();
+        let mgr_ns = monmapstats::ns(t_mgr);
+        let t_rec = monmapstats::t0();
         let handle = rc.map_object(info, handle)?;
-        monmapstats::record(space_ns, mgr_ns, t_rec.elapsed().as_nanos() as u64);
+        monmapstats::record(space_ns, mgr_ns, monmapstats::ns(t_rec));
         Ok(handle)
     }
 

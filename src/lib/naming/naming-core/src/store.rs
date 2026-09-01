@@ -5,17 +5,19 @@ use std::{
 };
 
 use bitflags::bitflags;
+use dev::DevNamespace;
 use ext::ExtNamespace;
 use nsobj::NamespaceObject;
 use pager_dynamic::objid_to_ino;
 use twizzler::marker::Invariant;
 use twizzler_rt_abi::{
-    error::{ArgumentError, GenericError, NamingError},
+    error::{ArgumentError, GenericError, NamingError, TwzError},
     object::ObjID,
 };
 
 use crate::{Result, MAX_KEY_SIZE};
 
+mod dev;
 mod ext;
 /// DIAG: external-namespace cache sizes. See [`ext::cache_stats`].
 pub use ext::cache_stats;
@@ -29,10 +31,43 @@ pub enum NsNodeKind {
     Namespace,
     Object,
     SymLink,
+    DevNode,
 }
 unsafe impl Invariant for NsNodeKind {}
 
+/// Which device a `DevNode` entry names. Carried in the entry's `id` field, which for a device
+/// names no object.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
+#[repr(u64)]
+pub enum DevFs {
+    Null = 0,
+    Zero = 1,
+    URandom = 2,
+    Tty = 3,
+    Stdin = 4,
+    Stdout = 5,
+    Stderr = 6,
+}
+
+impl TryFrom<u128> for DevFs {
+    type Error = TwzError;
+
+    fn try_from(value: u128) -> Result<Self> {
+        match value {
+            0 => Ok(DevFs::Null),
+            1 => Ok(DevFs::Zero),
+            2 => Ok(DevFs::URandom),
+            3 => Ok(DevFs::Tty),
+            4 => Ok(DevFs::Stdin),
+            5 => Ok(DevFs::Stdout),
+            6 => Ok(DevFs::Stderr),
+            _ => Err(ArgumentError::InvalidArgument.into()),
+        }
+    }
+}
+
 const NSID_EXTERNAL: ObjID = ObjID::new(1);
+const NSID_DEV: ObjID = ObjID::new(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, twizzler::Invariant)]
 #[repr(C)]
@@ -93,6 +128,22 @@ impl NsNode {
 
     pub fn symlink<P: AsRef<Path>, L: AsRef<Path>>(name: P, lname: L) -> Result<Self> {
         Self::new(NsNodeKind::SymLink, 0.into(), name, Some(lname))
+    }
+
+    pub fn dev<P: AsRef<Path>>(name: P, dev: DevFs) -> Result<Self> {
+        Self::new::<_, P>(
+            NsNodeKind::DevNode,
+            ObjID::new(dev as u64 as u128),
+            name,
+            None,
+        )
+    }
+
+    pub fn dev_type(&self) -> Result<DevFs> {
+        if self.kind != NsNodeKind::DevNode {
+            return Err(NamingError::WrongNameKind.into());
+        }
+        DevFs::try_from(self.id.raw())
     }
 
     pub fn name(&self) -> Result<&str> {
@@ -399,10 +450,10 @@ struct ParentInfo {
 }
 
 impl ParentInfo {
-    fn new(ns: Arc<dyn Namespace>, name_in_parent: impl ToString) -> Self {
+    fn new(ns: Arc<dyn Namespace>, name_in_parent: impl Into<String>) -> Self {
         Self {
             ns,
-            name_in_parent: name_in_parent.to_string(),
+            name_in_parent: name_in_parent.into(),
         }
     }
 }
@@ -437,6 +488,12 @@ trait Namespace {
 
     fn persist(&self) -> bool;
 
+    /// Whether this namespace lives in the object store, where names are store directory entries
+    /// and the store counts them.
+    fn is_external(&self) -> bool {
+        false
+    }
+
     fn create_file(&self, name: &str) -> Result<NsNode>;
 
     /// Create a child namespace in the backing store, for namespaces that have one (external).
@@ -462,6 +519,9 @@ impl NameStore {
         };
         this.nameroot
             .insert(NsNode::ns("ext", NSID_EXTERNAL).unwrap())
+            .unwrap();
+        this.nameroot
+            .insert(NsNode::ns("dev", NSID_DEV).unwrap())
             .unwrap();
         this
     }
@@ -649,7 +709,9 @@ impl NameSession<'_> {
         parent_info: Option<ParentInfo>,
     ) -> Result<Arc<dyn Namespace>> {
         let is_dataroot = id == self.store.dataroot;
-        Ok(if id == NSID_EXTERNAL || objid_to_ino(id.raw()).is_some() {
+        Ok(if id == NSID_DEV {
+            Arc::new(DevNamespace::open(id, persist, parent_info)?)
+        } else if id == NSID_EXTERNAL || objid_to_ino(id.raw()).is_some() {
             Arc::new(ExtNamespace::open(id, persist, parent_info)?)
         } else {
             Arc::new(NamespaceObject::open(
@@ -828,16 +890,17 @@ impl NameSession<'_> {
         // An external container makes the directory in its store (a native namespace object's id
         // could not be bound there -- see `ExtNamespace::insert`); `persist` is moot, the store is
         // inherently persistent.
-        if container.create_ns(&name.display().to_string())?.is_some() {
+        // Formatted once and then moved into the `ParentInfo`. This was two
+        // `name.display().to_string()` calls -- two allocations, each through the `fmt` machinery,
+        // for the same value. `ParentInfo::new` takes `Into<String>` so the second is a move.
+        let name_str = name.display().to_string();
+        if container.create_ns(&name_str)?.is_some() {
             return Ok(());
         }
         let ns = NamespaceObject::new(
             persist,
             Some(container.id()),
-            Some(ParentInfo::new(
-                container.clone(),
-                name.display().to_string(),
-            )),
+            Some(ParentInfo::new(container.clone(), name_str)),
         )?;
         container.insert(NsNode::ns(name, ns.id())?)
     }
@@ -848,6 +911,19 @@ impl NameSession<'_> {
         let Err(name) = node else {
             return Err(NamingError::AlreadyExists.into());
         };
+
+        // The mirror of [ext::ExtNamespace::insert]'s refusal of native ids. An ino-derived id
+        // names a store file whose links the store counts; a binding held anywhere else is a name
+        // the store cannot see, so unlinking the last name it does know about frees the inode --
+        // and ext4 reuses inode numbers, leaving this name resolving to an unrelated file.
+        //
+        // Ino 0 is exempt: `objid_to_ino` maps the bare id 1 to it, and that is the store's root
+        // directory -- the `/ext` namespace itself, not a file with links to count. It is also the
+        // one ino-derived value a small ObjID can collide with, since every other one carries a
+        // high bit pattern no real id has.
+        if objid_to_ino(id.raw()).is_some_and(|ino| ino != 0) && !container.is_external() {
+            return Err(TwzError::NOT_SUPPORTED);
+        }
 
         container.insert(NsNode::obj(name, id)?)
     }

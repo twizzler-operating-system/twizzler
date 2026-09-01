@@ -666,24 +666,19 @@ pub fn enumerate_names_nsid(
     skip: usize,
     count: usize,
 ) -> Result<usize> {
-    let t_lock = std::time::Instant::now();
+    let t_lock = srvenumstats::t0();
     let client = client_for(desc)?;
-    let lock_ns = t_lock.elapsed().as_nanos() as u64;
+    let lock_ns = srvenumstats::ns(t_lock);
 
-    let t_items = std::time::Instant::now();
+    let t_items = srvenumstats::t0();
     let nodes = client
         .session()
         .enumerate_namespace_nsid(id, skip, slot_entry_cap(count))?;
-    let items_ns = t_items.elapsed().as_nanos() as u64;
+    let items_ns = srvenumstats::ns(t_items);
 
-    let t_write = std::time::Instant::now();
+    let t_write = srvenumstats::t0();
     let written = write_enumeration(&client, offset, &nodes)?;
-    srvenumstats::record(
-        lock_ns,
-        items_ns,
-        t_write.elapsed().as_nanos() as u64,
-        written as u64,
-    );
+    srvenumstats::record(lock_ns, items_ns, srvenumstats::ns(t_write), written as u64);
 
     Ok(written)
 }
@@ -749,6 +744,23 @@ mod getphase {
 mod srvenumstats {
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    /// Master switch for the clock reads; see `getphase::GETPHASE_STATS` next door, which already
+    /// does this. Three `Instant::now()` and four shared-cacheline RMWs ran on every
+    /// `enumerate_names_nsid` gate call regardless of whether anything was ever reported.
+    pub const TIMING: bool = false;
+
+    /// `Instant::now()`, if [`TIMING`] is on.
+    #[inline(always)]
+    pub fn t0() -> Option<std::time::Instant> {
+        TIMING.then(std::time::Instant::now)
+    }
+
+    /// Nanoseconds since `t`, or 0 when [`TIMING`] is off.
+    #[inline(always)]
+    pub fn ns(t: Option<std::time::Instant>) -> u64 {
+        t.map_or(0, |t| t.elapsed().as_nanos() as u64)
+    }
+
     static COUNT: AtomicU64 = AtomicU64::new(0);
     static ENTRIES: AtomicU64 = AtomicU64::new(0);
     static LOCK: AtomicU64 = AtomicU64::new(0);
@@ -761,7 +773,7 @@ mod srvenumstats {
         let i = ITEMS.fetch_add(items, Ordering::Relaxed) + items;
         let w = WRITE.fetch_add(write, Ordering::Relaxed) + write;
         let e = ENTRIES.fetch_add(entries, Ordering::Relaxed) + entries;
-        if secgate::statcadence::report_now(n) {
+        if TIMING && secgate::statcadence::report_now(n) {
             secgate::statline!(
                 "SRVENUMSTATS {} calls, {} entries: lock {} us, items {} us, write {} us",
                 n,

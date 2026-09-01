@@ -269,6 +269,9 @@ pub struct ObjectInfo {
     /// Store-recorded modification time (seconds) for the `MEXT_MTIME` meta extension, or 0 when
     /// the backend keeps none. Only meaningful with [ObjectInfoFlags::SYNTH_META].
     pub mtime: u32,
+    /// Store-recorded hard link count for the `MEXT_NLINK` meta extension. Only meaningful with
+    /// [ObjectInfoFlags::SYNTH_META].
+    pub nlink: u32,
 }
 
 impl ObjectInfo {
@@ -289,6 +292,7 @@ impl ObjectInfo {
             meta_page: PhysRange::new(0, 0),
             size: 0,
             mtime: 0,
+            nlink: 1,
         }
     }
 
@@ -311,6 +315,12 @@ impl ObjectInfo {
     /// Record the store's mtime (seconds) for the synthesized meta page's `MEXT_MTIME`.
     pub fn with_mtime(mut self, mtime: u32) -> Self {
         self.mtime = mtime;
+        self
+    }
+
+    /// Record the store's hard link count for the synthesized meta page's `MEXT_NLINK`.
+    pub fn with_nlink(mut self, nlink: u32) -> Self {
+        self.nlink = nlink;
         self
     }
 

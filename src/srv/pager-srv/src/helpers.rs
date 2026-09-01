@@ -1,5 +1,5 @@
 use object_store::{objid_to_ino, PageRequest, PagedObjectStore, ProbeMiss};
-use twizzler::object::{MetaExt, MetaFlags, MetaInfo, ObjID, MEXT_MTIME, MEXT_SIZED};
+use twizzler::object::{MetaExt, MetaFlags, MetaInfo, ObjID, MEXT_MTIME, MEXT_NLINK, MEXT_SIZED};
 use twizzler_abi::{
     object::{Protections, MAX_SIZE},
     pager::{ObjectRange, PhysRange},
@@ -52,32 +52,35 @@ pub const EXTERNAL_META: MetaInfo = MetaInfo {
     flags: MetaFlags::empty(),
     default_prot: Protections::all(),
     fotcount: 0,
-    extcount: 2,
+    extcount: 3,
 };
 
-/// Write [EXTERNAL_META] plus its `MEXT_SIZED` (file length) and `MEXT_MTIME` (store mtime,
-/// seconds; 0 when the backend keeps none) extensions into a page-sized buffer.
-fn fill_external_meta(buffer: &mut [u8; PAGE as usize], len: u64, mtime: u32) {
+/// Write [EXTERNAL_META] plus its `MEXT_SIZED` (file length), `MEXT_MTIME` (store mtime, seconds;
+/// 0 when the backend keeps none) and `MEXT_NLINK` (store link count) extensions into a page-sized
+/// buffer.
+fn fill_external_meta(buffer: &mut [u8; PAGE as usize], len: u64, mtime: u32, nlink: u32) {
     unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
         ::core::slice::from_raw_parts((p as *const T) as *const u8, ::core::mem::size_of::<T>())
     }
-    let me = MetaExt::new(MEXT_SIZED, len);
-    let mt = MetaExt::new(MEXT_MTIME, mtime as u64);
+    let exts = [
+        MetaExt::new(MEXT_SIZED, len),
+        MetaExt::new(MEXT_MTIME, mtime as u64),
+        MetaExt::new(MEXT_NLINK, nlink.max(1) as u64),
+    ];
     unsafe {
         buffer[0..size_of::<MetaInfo>()].copy_from_slice(any_as_u8_slice(&EXTERNAL_META));
-        buffer[size_of::<MetaInfo>()..(size_of::<MetaInfo>() + size_of::<MetaExt>())]
-            .copy_from_slice(any_as_u8_slice(&me));
-        buffer[(size_of::<MetaInfo>() + size_of::<MetaExt>())
-            ..(size_of::<MetaInfo>() + 2 * size_of::<MetaExt>())]
-            .copy_from_slice(any_as_u8_slice(&mt));
+        for (i, ext) in exts.iter().enumerate() {
+            let start = size_of::<MetaInfo>() + i * size_of::<MetaExt>();
+            buffer[start..(start + size_of::<MetaExt>())].copy_from_slice(any_as_u8_slice(ext));
+        }
     }
 }
 
 /// Fill a fresh physical page with an external file's meta page.
 pub fn page_in_external_meta(ctx: &'static PagerContext, obj_id: ObjID) -> Result<PhysRange> {
-    let (len, mtime) = ctx
+    let (len, mtime, nlink) = ctx
         .paged_ostore(None)?
-        .len_and_mtime(obj_id.raw())
+        .len_mtime_nlink(obj_id.raw())
         .inspect_err(|e| tracing::warn!("failed to find extern inode: {}", e))?;
     let phys_range = {
         let page = match ctx.data.try_alloc_page() {
@@ -91,7 +94,7 @@ pub fn page_in_external_meta(ctx: &'static PagerContext, obj_id: ObjID) -> Resul
     };
     tracing::debug!("building meta page for external file, len: {}", len);
     let mut buffer = [0; PAGE as usize];
-    fill_external_meta(&mut buffer, len, mtime);
+    fill_external_meta(&mut buffer, len, mtime, nlink);
     crate::physrw::fill_physical_pages(&buffer, phys_range)?;
     Ok(phys_range)
 }

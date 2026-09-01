@@ -10,20 +10,20 @@ use lru::LruCache;
 use rustc_alloc::sync::Arc;
 use stable_vec::{self, StableVec};
 use twizzler_abi::{
-    object::{MAX_SIZE, NULLPAGE_SIZE, ObjID, Protections},
+    object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
     simple_mutex::Mutex,
     syscall::{
-        BackingType, KernelConsoleSource, LifetimeType, ObjectCreate, ObjectCreateFlags,
-        sys_object_create,
+        sys_object_create, BackingType, KernelConsoleSource, LifetimeType, ObjectCreate,
+        ObjectCreateFlags,
     },
 };
 use twizzler_rt_abi::{
-    Result,
     bindings::{io_ctx, iovec},
     error::{ArgumentError, GenericError, IoError},
     fd::RawFd,
     io::SeekFrom,
     object::{MapFlags, ObjectHandle},
+    Result,
 };
 
 use super::MinimalRuntime;
@@ -240,6 +240,7 @@ impl MinimalRuntime {
             modified: Duration::from_secs(0).into(),
             accessed: Duration::from_secs(0).into(),
             unix_mode: 0,
+            nlink: 1,
         })
     }
 

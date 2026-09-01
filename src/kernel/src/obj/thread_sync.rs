@@ -393,6 +393,31 @@ impl SleepInfo {
     }
 }
 
+/// Wake-delivery accounting for the mode-A lost-wake hunt.
+///
+/// The userspace side established that net-srv parks on a genuinely empty ring and is never
+/// resumed while the producer keeps ringing, and that the wake never reaches `add_to_requeue`
+/// (zero `rq1` rows in any wedge round). That leaves exactly three outcomes inside `wakeup_word`,
+/// and aggregate counters cannot tell them apart from userspace:
+///
+///   FASTSKIP -- `sleepers == 0`, so the wake returned without looking. If the wedged sleeper is
+///               still linked, this is the fast path dropping a wake at the door.
+///   NOCLAIM  -- sleepers were present but `claim_n` matched nothing at this offset: either the
+///               waker and the sleeper disagree about the offset, or the entry is present with a
+///               turn the consumer will not accept (invisible to `receive`, no wake can help).
+///   CLAIMED  -- normal.
+///
+/// Recorded unconditionally (three relaxed adds on a hot path); only the *reporting* is gated, so
+/// a sweep that forgot `--diag=wake` still leaves the counts behind for the summary.
+pub static WAKE_CALLS: AtomicU64 = AtomicU64::new(0);
+pub static WAKE_FASTSKIP: AtomicU64 = AtomicU64::new(0);
+pub static WAKE_NOCLAIM: AtomicU64 = AtomicU64::new(0);
+pub static WAKE_CLAIMED: AtomicU64 = AtomicU64::new(0);
+/// Offset of the most recent FASTSKIP/NOCLAIM, so the kernel-side record can be joined against
+/// net-srv's park word (its census reports `w=0x..001140`; the offset is the shared key).
+pub static WAKE_LAST_SKIP_OFF: AtomicU64 = AtomicU64::new(u64::MAX);
+pub static WAKE_LAST_NOCLAIM_OFF: AtomicU64 = AtomicU64::new(u64::MAX);
+
 impl Object {
     /// Wake up to `count` threads sleeping on `offset`, returning how many were woken.
     ///
@@ -458,10 +483,39 @@ impl Object {
         /// arms: only the read is removed, so every increment and decrement path stays exercised
         /// and a counting bug would still reach the drain assertion in
         /// `sleeper_count_wakes_and_drains`.
+        // Provenance, not a live arm: this was flipped to `false` from 2026-08-31 23:55 to
+        // 09-01 00:01 for the mode-A lost-wake A/B the const's own docs invite. The masters of
+        // sweep `many-noskip` carry `false`; every other build, before and after that window,
+        // carries `true`. Recorded because absolute numbers from that sweep are not comparable
+        // to any other, and because a reader who greps this const should be able to tell which
+        // images have which arm without reconstructing it from mtimes.
         const SLEEPERS_SKIP: bool = true;
+        // Periodic totals on a fixed stride, not milestones: the question this instrument exists
+        // to answer is a *ratio* (how many wakes bounced against how many landed), and a report
+        // that only appears when a count is non-zero cannot state the denominator.
+        let calls = WAKE_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+        if calls % (1 << 18) == 0 && crate::kdiag_wake() {
+            logln!(
+                "WAKESTAT calls={} claimed={} fastskip={} noclaim={} last_skip_off={:x} last_noclaim_off={:x}",
+                calls,
+                WAKE_CLAIMED.load(Ordering::Relaxed),
+                WAKE_FASTSKIP.load(Ordering::Relaxed),
+                WAKE_NOCLAIM.load(Ordering::Relaxed),
+                WAKE_LAST_SKIP_OFF.load(Ordering::Relaxed),
+                WAKE_LAST_NOCLAIM_OFF.load(Ordering::Relaxed),
+            );
+        }
         if SLEEPERS_SKIP {
             core::sync::atomic::fence(Ordering::SeqCst);
             if self.sleepers.load(Ordering::SeqCst) == 0 {
+                // Counted before the return: a wake that leaves here woke nobody, and whether
+                // that was correct depends on whether anyone was still linked -- which only the
+                // sleeper side can say. The offset is the join key against that side.
+                let n = WAKE_FASTSKIP.fetch_add(1, Ordering::Relaxed) + 1;
+                WAKE_LAST_SKIP_OFF.store(offset as u64, Ordering::Relaxed);
+                if n.is_power_of_two() && crate::kdiag_wake() {
+                    logln!("WAKESKIP off={:x} n={} (sleepers==0 at the door)", offset, n);
+                }
                 return 0;
             }
         }
@@ -503,6 +557,25 @@ impl Object {
         // wake can ever claim it again and it sleeps until something re-files it. Split from the
         // benign silent return (empty tree) so a transcript can tell "the wake was issued and
         // bounced" from "no wake was ever issued". Rate-limited on powers of two.
+        // Outcome accounting, complementing the bounced case below rather than duplicating it.
+        // `woken == 0 && skipped == 0` is the arm nothing currently records: the wake reached the
+        // kernel, took the sleep_info lock, and found *nothing linked at this offset* -- which is
+        // either a waker/sleeper offset disagreement or a sleeper that is registered elsewhere.
+        // Distinguishing it from `skipped > 0` (linked but unclaimable) matters because they
+        // indict different code: the former the offset resolution, the latter the turn protocol.
+        if woken > 0 {
+            WAKE_CLAIMED.fetch_add(1, Ordering::Relaxed);
+        } else {
+            let n = WAKE_NOCLAIM.fetch_add(1, Ordering::Relaxed) + 1;
+            WAKE_LAST_NOCLAIM_OFF.store(offset as u64, Ordering::Relaxed);
+            if skipped == 0 && n.is_power_of_two() && crate::kdiag_wake() {
+                logln!(
+                    "WAKENOENT off={:x} n={} (wake found nothing linked at this offset)",
+                    offset,
+                    n
+                );
+            }
+        }
         if woken == 0 && skipped > 0 {
             static CLAIM_BOUNCED: core::sync::atomic::AtomicU64 =
                 core::sync::atomic::AtomicU64::new(0);

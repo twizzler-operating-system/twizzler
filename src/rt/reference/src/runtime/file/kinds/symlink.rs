@@ -45,6 +45,7 @@ impl Fd for SymLinkFile {
             accessed: std::time::Duration::ZERO,
             modified: std::time::Duration::ZERO,
             unix_mode: 0o777 | libc::S_IFLNK,
+            nlink: 1,
         })
     }
 }

@@ -214,6 +214,7 @@ impl Fd for SocketKind {
             accessed: Duration::ZERO,
             modified: Duration::ZERO,
             unix_mode: S_IFSOCK | 0o777,
+            nlink: 1,
         })
     }
 

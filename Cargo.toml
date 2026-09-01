@@ -66,6 +66,7 @@ members = [
     "src/bin/ptest",
     "src/bin/spawn-test",
     "src/bin/kqueue_test",
+    "src/bin/devfs_test",
     "src/bin/net_test",
     "src/bin/net_test_peer",
     "src/bin/memhog-test",

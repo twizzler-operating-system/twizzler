@@ -30,6 +30,21 @@ const POLL: Duration = Duration::from_secs(2);
 const STALL_SAMPLES: u32 = 5;
 const MAX_REPORTS: u32 = 8;
 const KILLED_RING: usize = 32;
+/// Master switch for holder tracking.
+///
+/// Everything below is diagnostic, but unlike [`REPORT_LONG_HOLDS`] the slot bookkeeping was
+/// unconditional -- and it is not free. A monitor gate call runs on the caller's thread, so this
+/// sits on every compartment's object map, thread spawn and compartment operation, and each
+/// acquisition pays a `fetch_add` on one globally shared cache line plus a scan of [`SLOTS`] with
+/// a contended `compare_exchange` per occupied slot.
+///
+/// Left **on**: this exists to catch a lock left held by a force-exited thread, which otherwise
+/// presents as every compartment silently blocking, and turning it off by default would remove
+/// that with nothing in its place. Set it `false` to compile the tracking out entirely --
+/// `current_hold_site` then answers `None` and the watchdog reports nothing, which is the
+/// trade being made.
+const TRACK_HOLDERS: bool = true;
+
 /// One slot per live acquisition. A single global holder slot cannot express this: monitor code
 /// nests these guards, and the inner one's release erased the outer one's record on the way out --
 /// leaving the watchdog blind for exactly the case it exists to catch.
@@ -93,11 +108,19 @@ fn fnv16(s: &str) -> u64 {
 /// Wrap a freshly-acquired monitor lock guard so the holder is recorded for its lifetime.
 #[track_caller]
 pub fn watched<G>(inner: G) -> Watched<G> {
-    let id = self_id();
     let site_loc = Location::caller();
     let acquired = REPORT_LONG_HOLDS.then(std::time::Instant::now);
+    if !TRACK_HOLDERS {
+        return Watched {
+            inner,
+            slot: None,
+            site: site_loc,
+            acquired,
+        };
+    }
+    let id = self_id();
     let seq = EPOCH.fetch_add(1, Ordering::Relaxed) + 1;
-    let site = Location::caller() as *const Location<'static> as usize;
+    let site = site_loc as *const Location<'static> as usize;
     for slot in 0..SLOTS {
         if SLOT_SEQ[slot]
             .compare_exchange(0, seq, Ordering::AcqRel, Ordering::Relaxed)
@@ -183,6 +206,9 @@ impl<G: std::ops::DerefMut> std::ops::DerefMut for Watched<G> {
 /// the *monitor* code that is holding a lock, which is what a re-entrant arrival from the runtime
 /// otherwise cannot report: the gate call's own stack says only that the runtime called in.
 pub fn current_hold_site() -> Option<&'static Location<'static>> {
+    if !TRACK_HOLDERS {
+        return None;
+    }
     let id = self_id();
     for slot in 0..SLOTS {
         if SLOT_SEQ[slot].load(Ordering::Acquire) == 0 {

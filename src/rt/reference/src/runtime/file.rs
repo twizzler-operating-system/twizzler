@@ -206,15 +206,28 @@ struct FileDesc {
     cloexec: Arc<AtomicBool>,
 }
 
+/// Combine a descriptor's own flags with the per-call ones from an `io_ctx`.
+///
+/// Takes the descriptor flags by value rather than reading them through a `FileDesc`, so the
+/// caller can snapshot them under the slot lock and drop it before doing any I/O.
+fn io_flags(desc_flags: u32, ctx: *mut io_ctx) -> IoFlags {
+    IoFlags::from_bits_truncate(desc_flags)
+        | if ctx.is_null() {
+            IoFlags::empty()
+        } else {
+            IoFlags::from_bits_truncate(unsafe { (*ctx).flags })
+        }
+}
+
 impl FileDesc {
-    fn io_ctx_flags(&self, ctx: *mut io_ctx) -> IoFlags {
-        let flags = IoFlags::from_bits_truncate(self.flags.load(Ordering::SeqCst))
-            | if ctx.is_null() {
-                IoFlags::empty()
-            } else {
-                IoFlags::from_bits_truncate(unsafe { (*ctx).flags })
-            };
-        flags
+    /// The two things an I/O call actually needs: the backing object, and the flags to combine
+    /// with the call's own.
+    ///
+    /// Cloning the whole `FileDesc` to reach these bumps four `Arc`s (and drops three or four),
+    /// i.e. ~8 atomic RMWs per read/write, for one pointer and one `u32`. `binding` and `cloexec`
+    /// are never read on an I/O path at all.
+    fn io_parts(&self) -> (FdImpl, u32) {
+        (self.file.clone(), self.flags.load(Ordering::SeqCst))
     }
 
     pub fn new(
@@ -251,26 +264,11 @@ impl FileDesc {
         self.file.stat().into()
     }
 
-    pub fn fd_cmd(&mut self, cmd: u32, arg: *const u8, ret: *mut u8) -> Result<()> {
-        if cmd == twizzler_rt_abi::bindings::FD_CMD_SHUTDOWN {
-            let val = unsafe { arg.cast::<u32>().read() };
-            let shutdown = match val {
-                0 => return Err(TwzError::INVALID_ARGUMENT),
-                1 => std::net::Shutdown::Read,
-                2 => std::net::Shutdown::Write,
-                _ => std::net::Shutdown::Both,
-            };
-            let mut b = **self.binding;
-            let flags = match shutdown {
-                Shutdown::Read => b.flags & !OPEN_FLAG_READ,
-                Shutdown::Write => b.flags & !OPEN_FLAG_WRITE,
-                Shutdown::Both => b.flags & !(OPEN_FLAG_READ | OPEN_FLAG_WRITE),
-            };
-            b.flags = flags;
-            self.binding = MaybeNoDrop::new(Arc::new(b), true);
-            self.file.shutdown(shutdown)?;
-            return Ok(());
-        } else if cmd == FD_CMD_SYNC {
+    /// The `&self` part of `fd_cmd`: everything except the shutdown arm, which is the only one
+    /// that mutates the descriptor itself. Split out so the caller can serve these under the
+    /// slot table's *read* lock rather than taking it exclusively.
+    fn fd_cmd_shared(&self, cmd: u32, arg: *const u8, ret: *mut u8) -> Result<()> {
+        if cmd == FD_CMD_SYNC {
             self.file.flush()?;
             return Ok(());
         } else if cmd == FD_CMD_SET_TIMES {
@@ -283,38 +281,23 @@ impl FileDesc {
         self.file.fd_cmd(cmd, arg, ret).into()
     }
 
-    fn pread(&mut self, buf: &mut [u8], ctx: *mut io_ctx) -> Result<usize> {
-        let offset = io_ctx_offset(ctx);
-        let flags = self.io_ctx_flags(ctx);
-        self.file.read(buf, flags, offset, None)
-    }
-
-    fn pwrite(&mut self, buf: &[u8], ctx: *mut io_ctx) -> Result<usize> {
-        let offset = io_ctx_offset(ctx);
-        let flags = self.io_ctx_flags(ctx);
-        self.file.write(buf, flags, offset, None)
-    }
-
-    fn pread_from(
-        &mut self,
-        buf: &mut [u8],
-        ctx: *mut io_ctx,
-        ep: &mut twizzler_rt_abi::io::Endpoint,
-    ) -> Result<usize> {
-        let offset = io_ctx_offset(ctx);
-        let flags = self.io_ctx_flags(ctx);
-        self.file.read(buf, flags, offset, Some(ep))
-    }
-
-    fn pwrite_to(
-        &mut self,
-        buf: &[u8],
-        ctx: *mut io_ctx,
-        ep: &twizzler_rt_abi::io::Endpoint,
-    ) -> Result<usize> {
-        let offset = io_ctx_offset(ctx);
-        let flags = self.io_ctx_flags(ctx);
-        self.file.write(buf, flags, offset, Some(ep))
+    /// The shutdown arm, which rewrites `binding` and so needs the write lock.
+    fn fd_cmd_shutdown(&mut self, arg: *const u8) -> Result<()> {
+        let val = unsafe { arg.cast::<u32>().read() };
+        let shutdown = match val {
+            0 => return Err(TwzError::INVALID_ARGUMENT),
+            1 => std::net::Shutdown::Read,
+            2 => std::net::Shutdown::Write,
+            _ => std::net::Shutdown::Both,
+        };
+        let mut b = **self.binding;
+        b.flags = match shutdown {
+            Shutdown::Read => b.flags & !OPEN_FLAG_READ,
+            Shutdown::Write => b.flags & !OPEN_FLAG_WRITE,
+            Shutdown::Both => b.flags & !(OPEN_FLAG_READ | OPEN_FLAG_WRITE),
+        };
+        self.binding = MaybeNoDrop::new(Arc::new(b), true);
+        self.file.shutdown(shutdown)
     }
 }
 
@@ -341,6 +324,11 @@ impl FdSlots {
 
     pub fn get(&self, idx: usize) -> Option<&FileDesc> {
         self.slots.get(idx).and_then(Option::as_ref)
+    }
+
+    /// [`FileDesc::io_parts`] for a descriptor index, for the I/O entry points below.
+    fn io_parts(&self, idx: usize) -> Option<(FdImpl, u32)> {
+        self.get(idx).map(FileDesc::io_parts)
     }
 
     pub fn get_mut(&mut self, idx: usize) -> Option<&mut FileDesc> {
@@ -908,17 +896,24 @@ impl ReferenceRuntime {
             }
             return Ok(res.len().min(out_slice.len()) * size_of::<socket_address>());
         }
-        let path = PathBuf::from(str::from_utf8(name).map_err(|_| TwzError::INVALID_ARGUMENT)?);
-        let path = if !path.is_absolute() {
-            let mut cd = current_dir()?;
-            cd.push(path);
-            cd
+        // Borrowed, not owned: an absolute path needs no copy at all here, and a relative one
+        // needs exactly the `current_dir` clone it is pushed onto. The `PathBuf::from` this
+        // replaces allocated on every call and was then copied again by `push`.
+        let name = str::from_utf8(name).map_err(|_| TwzError::INVALID_ARGUMENT)?;
+        let rel = Path::new(name);
+        let joined;
+        let path: &Path = if rel.is_absolute() {
+            rel
         } else {
-            path
+            let mut cd = current_dir()?;
+            cd.push(rel);
+            joined = cd;
+            &joined
         };
 
-        let npath = path.normalize_lexically().unwrap_or(path);
-        let path = npath.to_str().unwrap().as_bytes();
+        let npath = path.normalize_lexically();
+        let path = npath.as_deref().unwrap_or(path);
+        let path = path.to_str().ok_or(TwzError::INVALID_ARGUMENT)?.as_bytes();
 
         let len = out_name.len().min(path.len());
         out_name[0..len].copy_from_slice(&path[0..len]);
@@ -973,6 +968,54 @@ impl ReferenceRuntime {
         let session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
 
         session.symlink(name, target)?;
+        Ok(())
+    }
+
+    /// Bind `name` to the object that `target` already names -- a hard link.
+    ///
+    /// The naming layer needs no link operation of its own: a name is a binding to an ObjID, so a
+    /// second binding to the same ID is a second link, and unbinding one never touches the object.
+    /// Only objects can be linked. A namespace is refused because nothing here checks the result
+    /// for cycles, and a symlink because its node carries link text rather than an object for a
+    /// second name to point at -- POSIX `link()` links the symlink itself, so quietly linking its
+    /// target instead would be the wrong answer rather than a missing one.
+    pub fn link(&self, name: &str, target: &str) -> Result<()> {
+        use twizzler_rt_abi::object::{MapFlags, MetaExt, MEXT_NLINK};
+
+        let session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
+        // No FOLLOW_SYMLINK: the final component must not be dereferenced.
+        let node = session.get(target, GetFlags::empty())?;
+        if node.kind != NsNodeKind::Object {
+            return Err(NamingError::WrongNameKind.into());
+        }
+
+        // `MEXT_NLINK` on a meta page that stays resident is never re-synthesized, so the store's
+        // new count would not reach `stat` on its own. Read it before the link: if the page is not
+        // resident, mapping it here synthesizes it from a store the link has not touched yet, so
+        // either way this is the pre-link count. Best-effort throughout -- a target that will not
+        // map for write just keeps a stale cache, which `stat` reconfirms against the store for
+        // any count above one.
+        //
+        // External ids only. A native object's meta page is its real, persistent one, and nothing
+        // decrements a count written there, so `stat` reports 1 for native objects rather than a
+        // number that only ever grows.
+        let handle = crate::pager::objid_to_ino(node.id.raw()).and_then(|_| {
+            OUR_RUNTIME
+                .map_object(node.id, MapFlags::READ | MapFlags::WRITE)
+                .ok()
+        });
+        let nlink = handle
+            .as_ref()
+            .and_then(|h| h.find_meta_ext(MEXT_NLINK))
+            .map(|me| me.value.load(Ordering::SeqCst))
+            .unwrap_or(1)
+            .max(1);
+
+        session.put(name, node.id)?;
+
+        if let Some(handle) = handle {
+            let _ = unsafe { handle.set_meta_ext(MetaExt::new(MEXT_NLINK, nlink + 1)) };
+        }
         Ok(())
     }
 
@@ -1122,16 +1165,12 @@ impl ReferenceRuntime {
 
     pub fn read(&self, fd: RawFd, buf: &mut [u8], ctx: *mut io_ctx) -> Result<usize> {
         let binding = get_fd_slots().read().unwrap();
-        let file_desc = binding
-            .get(fd.try_into().unwrap())
-            .cloned()
+        let (file, dflags) = binding
+            .io_parts(fd.try_into().unwrap())
             .ok_or(ArgumentError::BadHandle)?;
         drop(binding);
 
-        let len = file_desc
-            .file
-            .read(buf, file_desc.io_ctx_flags(ctx), None, None)?;
-        Ok(len)
+        file.read(buf, io_flags(dflags, ctx), None, None)
     }
 
     pub fn fd_pread_from(
@@ -1143,12 +1182,11 @@ impl ReferenceRuntime {
     ) -> Result<usize> {
         let ep = unsafe { ep.cast::<twizzler_rt_abi::io::Endpoint>().as_mut().unwrap() };
         let binding = get_fd_slots().read().unwrap();
-        let mut file_desc = binding
-            .get(fd.try_into().unwrap())
-            .cloned()
+        let (file, dflags) = binding
+            .io_parts(fd.try_into().unwrap())
             .ok_or(ArgumentError::BadHandle)?;
         drop(binding);
-        Ok(file_desc.pread_from(buf, ctx, ep)?)
+        file.read(buf, io_flags(dflags, ctx), io_ctx_offset(ctx), Some(ep))
     }
 
     pub fn fd_pwrite_to(
@@ -1160,69 +1198,68 @@ impl ReferenceRuntime {
     ) -> Result<usize> {
         let ep = unsafe { ep.cast::<twizzler_rt_abi::io::Endpoint>().as_ref().unwrap() };
         let binding = get_fd_slots().read().unwrap();
-        let mut file_desc = binding
-            .get(fd.try_into().unwrap())
-            .cloned()
+        let (file, dflags) = binding
+            .io_parts(fd.try_into().unwrap())
             .ok_or(ArgumentError::BadHandle)?;
         drop(binding);
-        Ok(file_desc.pwrite_to(buf, ctx, ep)?)
+        file.write(buf, io_flags(dflags, ctx), io_ctx_offset(ctx), Some(ep))
     }
 
     pub fn fd_pread(&self, fd: RawFd, buf: &mut [u8], ctx: *mut io_ctx) -> Result<usize> {
         let binding = get_fd_slots().read().unwrap();
-        let mut file_desc = binding
-            .get(fd.try_into().unwrap())
-            .cloned()
+        let (file, dflags) = binding
+            .io_parts(fd.try_into().unwrap())
             .ok_or(ArgumentError::BadHandle)?;
         drop(binding);
-        Ok(file_desc.pread(buf, ctx)?)
+        file.read(buf, io_flags(dflags, ctx), io_ctx_offset(ctx), None)
     }
 
     pub fn fd_pwrite(&self, fd: RawFd, buf: &[u8], ctx: *mut io_ctx) -> Result<usize> {
         let binding = get_fd_slots().read().unwrap();
-        let mut file_desc = binding
-            .get(fd.try_into().unwrap())
-            .cloned()
+        let (file, dflags) = binding
+            .io_parts(fd.try_into().unwrap())
             .ok_or(ArgumentError::BadHandle)?;
         drop(binding);
-        Ok(file_desc.pwrite(buf, ctx)?)
+        file.write(buf, io_flags(dflags, ctx), io_ctx_offset(ctx), None)
     }
 
     pub fn fd_pwritev(&self, fd: RawFd, iovs: &[iovec], ctx: *mut io_ctx) -> Result<usize> {
         let binding = get_fd_slots().read().unwrap();
-        let mut file_desc = binding
-            .get(fd.try_into().unwrap())
-            .cloned()
+        let (file, dflags) = binding
+            .io_parts(fd.try_into().unwrap())
             .ok_or(ArgumentError::BadHandle)?;
         drop(binding);
+        let flags = io_flags(dflags, ctx);
+        let offset = io_ctx_offset(ctx);
         let mut total = 0usize;
         for iov in iovs {
             let slice =
                 unsafe { core::slice::from_raw_parts(iov.iov_base.cast::<u8>(), iov.iov_len) };
-            total += file_desc.pwrite(slice, ctx)?;
+            total += file.write(slice, flags, offset, None)?;
         }
         Ok(total)
     }
 
     pub fn fd_preadv(&self, fd: RawFd, iovs: &[iovec], ctx: *mut io_ctx) -> Result<usize> {
         let binding = get_fd_slots().read().unwrap();
-        let mut file_desc = binding
-            .get(fd.try_into().unwrap())
-            .cloned()
+        let (file, dflags) = binding
+            .io_parts(fd.try_into().unwrap())
             .ok_or(ArgumentError::BadHandle)?;
         drop(binding);
+        let flags = io_flags(dflags, ctx);
+        let offset = io_ctx_offset(ctx);
         let mut total = 0usize;
         for iov in iovs {
             let slice =
                 unsafe { core::slice::from_raw_parts_mut(iov.iov_base.cast::<u8>(), iov.iov_len) };
-            total += file_desc.pread(slice, ctx)?;
+            total += file.read(slice, flags, offset, None)?;
         }
         Ok(total)
     }
 
     pub fn fd_get_info(&self, fd: RawFd) -> Option<twizzler_rt_abi::bindings::fd_info> {
-        let mut binding = get_fd_slots().write().unwrap();
-        let Some(fd) = binding.get_mut(fd.try_into().unwrap()) else {
+        let binding = get_fd_slots().read().unwrap();
+        let Some(fd) = binding.get(fd.try_into().unwrap()) else {
             return None;
         };
         fd.stat().ok().map(|x| x.into())
@@ -1235,8 +1272,8 @@ impl ReferenceRuntime {
         val: *mut c_void,
         val_len: usize,
     ) -> Result<()> {
-        let mut binding = get_fd_slots().write().unwrap();
-        let Some(fd) = binding.get_mut(fd.try_into().unwrap()) else {
+        let binding = get_fd_slots().read().unwrap();
+        let Some(fd) = binding.get(fd.try_into().unwrap()) else {
             return Err(TwzError::INVALID_ARGUMENT);
         };
 
@@ -1260,8 +1297,8 @@ impl ReferenceRuntime {
         val: *const c_void,
         val_len: usize,
     ) -> Result<()> {
-        let mut binding = get_fd_slots().write().unwrap();
-        let Some(fd) = binding.get_mut(fd.try_into().unwrap()) else {
+        let binding = get_fd_slots().read().unwrap();
+        let Some(fd) = binding.get(fd.try_into().unwrap()) else {
             return Err(TwzError::INVALID_ARGUMENT);
         };
 
@@ -1277,27 +1314,45 @@ impl ReferenceRuntime {
     }
 
     pub fn fd_cmd(&self, fd: RawFd, cmd: u32, arg: *const u8, ret: *mut u8) -> Result<()> {
-        let mut binding = get_fd_slots().write().unwrap();
-        let file_desc = binding.get_mut(fd.try_into().unwrap());
+        let idx: usize = fd.try_into().map_err(|_| TwzError::INVALID_ARGUMENT)?;
 
-        let file_desc = file_desc.ok_or(TwzError::INVALID_ARGUMENT)?;
+        // Everything but dup/dup2/shutdown is `&self` on the descriptor -- cloexec is an atomic
+        // cell, and the rest reach `Fd` methods that take `&self`. Taking the table exclusively
+        // for those serialised every fstat/fcntl in the process against every concurrent read and
+        // write, which is the opposite of why this table is an `RwLock`.
+        if cmd != FD_CMD_DUP
+            && cmd != FD_CMD_DUP2
+            && cmd != twizzler_rt_abi::bindings::FD_CMD_SHUTDOWN
+        {
+            let binding = get_fd_slots().read().unwrap();
+            let file_desc = binding.get(idx).ok_or(TwzError::INVALID_ARGUMENT)?;
 
-        if cmd == FD_CMD_GET_CLOEXEC {
-            if ret.is_null() {
-                return Err(TwzError::INVALID_ARGUMENT);
+            if cmd == FD_CMD_GET_CLOEXEC {
+                if ret.is_null() {
+                    return Err(TwzError::INVALID_ARGUMENT);
+                }
+                let v = file_desc.cloexec.load(Ordering::SeqCst) as u32;
+                unsafe { ret.cast::<u32>().write(v) };
+                return Ok(());
             }
-            let v = file_desc.cloexec.load(Ordering::SeqCst) as u32;
-            unsafe { ret.cast::<u32>().write(v) };
-            return Ok(());
+
+            if cmd == FD_CMD_SET_CLOEXEC {
+                if arg.is_null() {
+                    return Err(TwzError::INVALID_ARGUMENT);
+                }
+                let v = unsafe { arg.cast::<u32>().read() };
+                file_desc.cloexec.store(v != 0, Ordering::SeqCst);
+                return Ok(());
+            }
+
+            return file_desc.fd_cmd_shared(cmd, arg, ret);
         }
 
-        if cmd == FD_CMD_SET_CLOEXEC {
-            if arg.is_null() {
-                return Err(TwzError::INVALID_ARGUMENT);
-            }
-            let v = unsafe { arg.cast::<u32>().read() };
-            file_desc.cloexec.store(v != 0, Ordering::SeqCst);
-            return Ok(());
+        let mut binding = get_fd_slots().write().unwrap();
+        let file_desc = binding.get_mut(idx).ok_or(TwzError::INVALID_ARGUMENT)?;
+
+        if cmd == twizzler_rt_abi::bindings::FD_CMD_SHUTDOWN {
+            return file_desc.fd_cmd_shutdown(arg);
         }
 
         if cmd == FD_CMD_DUP {
@@ -1366,21 +1421,18 @@ impl ReferenceRuntime {
             return Ok(());
         }
 
-        file_desc.fd_cmd(cmd, arg, ret)
+        // Unreachable: the branch at the top routed everything else to the read-lock path.
+        Err(TwzError::INVALID_ARGUMENT)
     }
 
     pub fn write(&self, fd: RawFd, buf: &[u8], ctx: *mut io_ctx) -> Result<usize> {
         let binding = get_fd_slots().read().unwrap();
-        let file_desc = binding
-            .get(fd.try_into().unwrap())
-            .cloned()
+        let (file, dflags) = binding
+            .io_parts(fd.try_into().unwrap())
             .ok_or(ArgumentError::BadHandle)?;
         drop(binding);
 
-        let len = file_desc
-            .file
-            .write(buf, file_desc.io_ctx_flags(ctx), None, None)?;
-        Ok(len)
+        file.write(buf, io_flags(dflags, ctx), None, None)
     }
 
     pub fn close(&self, fd: RawFd) -> Option<()> {
@@ -1539,11 +1591,13 @@ impl ReferenceRuntime {
                             naming_core::NsNodeKind::SymLink => {
                                 twizzler_rt_abi::fd::FdKind::SymLink
                             }
+                            naming_core::NsNodeKind::DevNode => twizzler_rt_abi::fd::FdKind::Other,
                         },
                         flags: twizzler_rt_abi::fd::FdFlags::empty(),
                         id: name.id.raw(),
                         size: 0,
                         unix_mode: 0,
+                        nlink: 1,
                         accessed: std::time::Duration::ZERO,
                         modified: std::time::Duration::ZERO,
                         created: std::time::Duration::ZERO,
@@ -1562,11 +1616,13 @@ impl ReferenceRuntime {
                             naming_core::NsNodeKind::SymLink => {
                                 twizzler_rt_abi::fd::FdKind::SymLink
                             }
+                            naming_core::NsNodeKind::DevNode => twizzler_rt_abi::fd::FdKind::Other,
                         },
                         flags: twizzler_rt_abi::fd::FdFlags::empty(),
                         id: name.id.raw(),
                         size: 0,
                         unix_mode: 0,
+                        nlink: 1,
                         accessed: std::time::Duration::ZERO,
                         modified: std::time::Duration::ZERO,
                         created: std::time::Duration::ZERO,

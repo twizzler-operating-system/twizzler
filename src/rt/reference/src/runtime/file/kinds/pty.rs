@@ -76,6 +76,7 @@ impl Fd for PtyHandleKind {
             accessed: Duration::ZERO,
             modified: Duration::ZERO,
             unix_mode: S_IFCHR | 0o666,
+            nlink: 1,
         })
     }
 
@@ -213,6 +214,7 @@ impl Fd for Pipe {
             // whenever it carries type bits, so its FdKind_Pipe -> S_IFIFO fallback never runs
             // and whatever is written here is what fstat reports.
             unix_mode: S_IFIFO | 0o666,
+            nlink: 1,
         })
     }
 

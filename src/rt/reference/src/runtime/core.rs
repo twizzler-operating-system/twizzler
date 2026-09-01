@@ -216,10 +216,18 @@ impl ReferenceRuntime {
             return core::ptr::null();
         };
         let mut envmap = ENVMAP.lock().unwrap();
-        envmap
-            .entry(val.to_string())
-            .or_insert_with(|| CString::new(val.to_string()).unwrap())
-            .as_ptr()
+        // Look up by reference and only allocate on a miss. `entry(val.to_string())` needed an
+        // owned key on every call, so the hit path -- which exists precisely to avoid allocating
+        // -- allocated a `String` anyway, and the miss path allocated the same value three times.
+        if let Some(c) = envmap.get(&val) {
+            return c.as_ptr();
+        }
+        let Ok(cval) = CString::new(val.as_str()) else {
+            return core::ptr::null();
+        };
+        // Keyed by value, not by name: this is an interning table for the `CString` copy, and the
+        // authoritative value still comes from `env::var` on every call.
+        envmap.entry(val).or_insert(cval).as_ptr()
     }
 
     pub fn runtime_entry(

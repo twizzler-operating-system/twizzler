@@ -264,6 +264,15 @@ impl Thread {
             .fetch_or(THREAD_IS_SYNC_SLEEP_DONE, Ordering::SeqCst);
     }
 
+    /// Whether this thread still owns its in-flight thread-sync park. A waker's claim consumes
+    /// THREAD_IS_SYNC_SLEEP (`reset_sync_sleep`), so reading it clear on the park path means a
+    /// wake for this round is already in flight -- committing to block after that point stakes
+    /// the thread's liveness on that waker's requeue handoff landing, which is the lost-wake
+    /// class the pre-block check exists to close. See `do_sys_thread_sync`.
+    pub fn has_sync_sleep(&self) -> bool {
+        self.flags.load(Ordering::SeqCst) & THREAD_IS_SYNC_SLEEP != 0
+    }
+
     pub fn has_sync_sleep_done(&self) -> bool {
         self.flags.load(Ordering::SeqCst) & THREAD_IS_SYNC_SLEEP_DONE != 0
     }

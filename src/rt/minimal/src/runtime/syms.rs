@@ -151,8 +151,8 @@ check_ffi_type!(twz_rt_runtime_entry, _, _, _);
 // alloc.h
 
 use twizzler_rt_abi::bindings::{
-    ZERO_MEMORY, alloc_flags, endpoint, fd_flags, fd_set, io_ctx, object_create, object_source,
-    object_tie, objid_result, open_kind, open_kind_OpenKind_Path, release_flags, twz_error,
+    alloc_flags, endpoint, fd_flags, fd_set, io_ctx, object_create, object_source, object_tie,
+    objid_result, open_kind, open_kind_OpenKind_Path, release_flags, twz_error, ZERO_MEMORY,
 };
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_malloc(
@@ -612,6 +612,17 @@ pub unsafe extern "C-unwind" fn twz_rt_fd_symlink(
     TwzError::NOT_SUPPORTED.raw()
 }
 check_ffi_type!(twz_rt_fd_symlink, _, _, _, _);
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_fd_link(
+    _name: *const c_char,
+    _len: usize,
+    _target: *const c_char,
+    _target_len: usize,
+) -> twz_error {
+    TwzError::NOT_SUPPORTED.raw()
+}
+check_ffi_type!(twz_rt_fd_link, _, _, _, _);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_fd_readlink(
