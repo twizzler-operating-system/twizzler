@@ -742,7 +742,7 @@ pub(super) fn start_deleter() {
         queue: Spinlock::new(Vec::new()),
         work: CondVar::new(),
     });
-    start_new_kernel(Priority::USER, deleter_entry, 0);
+    start_new_kernel(Priority::USER, deleter_entry, 0, "pager-deleter");
 }
 
 pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) -> Result<(), TwzError> {
@@ -755,7 +755,7 @@ pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) -> Result<()
     }
 }
 
-fn do_sync_region(region: &MapRegion, req: ReqKind, wait: bool) {
+fn do_sync_region(obj: &ObjectRef, req: ReqKind, wait: bool) {
     // Backpressure: wait for any sync already in flight for this object before submitting
     // another. Every SyncRegion is unique (see `SyncRegionInfo`), so nothing coalesces them, and
     // the fire-and-forget path (`wait == false`, a null sync_info) otherwise lets a tight sync
@@ -767,8 +767,8 @@ fn do_sync_region(region: &MapRegion, req: ReqKind, wait: bool) {
         if !crate::pager::inflight::pager_ready() {
             return;
         }
-        let mut mgr = lock_inflight_for_obj(region.object().id());
-        let Some(prev) = mgr.find_sync_region(region.object().id()) else {
+        let mut mgr = lock_inflight_for_obj(obj.id());
+        let Some(prev) = mgr.find_sync_region(obj.id()) else {
             break mgr;
         };
         let thread = current_thread_ref().unwrap();
@@ -790,13 +790,13 @@ fn do_sync_region(region: &MapRegion, req: ReqKind, wait: bool) {
             log::warn!("out of pager request slots");
             drop(mgr);
             crate::pager::inflight::wait_for_slot(slot_gen);
-            return do_sync_region(region, rk, wait);
+            return do_sync_region(obj, rk, wait);
         }
     };
 
     drop(mgr);
     inflight.for_each_pager_req(None, |pager_req| {
-        queues::submit_pager_request(pager_req, Some(&region.object()), inflight.rk().clone());
+        queues::submit_pager_request(pager_req, Some(obj), inflight.rk().clone());
     });
 
     if !wait {
@@ -819,6 +819,18 @@ pub fn sync_region(
     version: u64,
     wait: bool,
 ) {
+    sync_object_region(region.object(), dirty, sync_info, version, wait)
+}
+
+/// The same, for a caller holding only the object -- the background sync thread, which has no
+/// region because the region it came from was unmapped before the work was picked up.
+pub fn sync_object_region(
+    obj: &ObjectRef,
+    dirty: DirtyList,
+    sync_info: Option<sync_info>,
+    version: u64,
+    wait: bool,
+) {
     // Writing these pages is what extends the store, so this is where the kernel learns its own new
     // length -- no reading of `MEXT_SIZED`, and nothing to ask the pager. Recorded before the write
     // is confirmed, on purpose: overstating the length only costs a round trip for a page that
@@ -834,10 +846,107 @@ pub fn sync_region(
         .map(|(pn, _, count)| pn.offset(*count).as_byte_offset())
         .max()
     {
-        region.object().extend_known_len(end as u64);
+        obj.extend_known_len(end as u64);
     }
-    let req = ReqKind::new_sync_region(region.object(), dirty, sync_info, version);
-    do_sync_region(region, req, wait);
+    let req = ReqKind::new_sync_region(obj, dirty, sync_info, version);
+    do_sync_region(obj, req, wait);
+}
+
+/// Objects an unmap left needing an async-durable sync.
+///
+/// A set rather than a queue, and keyed by object: `SYNC_FLAG_ASYNC_DURABLE` promises the work
+/// happens in the background, not that it happens once per unmap. Repeated map/unmap cycles of one
+/// file therefore coalesce into a single sync, and the backlog is bounded by the number of distinct
+/// dirty objects instead of by how often they were unmapped.
+struct BgSync {
+    work: CondVar,
+    inner: Spinlock<BgSyncInner>,
+}
+
+struct BgSyncInner {
+    pending: BTreeMap<ObjID, ObjectRef>,
+    parked: bool,
+}
+
+static BG_SYNC: Once<BgSync> = Once::new();
+
+/// Capture whatever `obj` has dirty and submit it. Runs on the background thread, so both the
+/// page-table walk and the pager backpressure in `do_sync_region` land there instead of on a
+/// thread that was only trying to unmap something.
+fn sync_object_dirty(obj: &ObjectRef) {
+    // A delete makes the data moot, and syncing here would race the reap that follows an unmap.
+    if obj.is_pending_delete() || !obj.use_pager() {
+        return;
+    }
+    let dirty = {
+        let mut pt = obj.lock_page_tables();
+        match pt.get_dirty_and_reset() {
+            Ok(dirty) => dirty,
+            Err(e) => {
+                log::warn!("background sync: failed to collect dirty pages for {}: {:?}", obj.id(), e);
+                return;
+            }
+        }
+    };
+    if dirty.is_empty() {
+        return;
+    }
+    sync_object_region(obj, dirty, None, 0, false);
+}
+
+/// Note that `obj` needs an async-durable sync, to happen off this thread.
+pub fn queue_background_sync(obj: &ObjectRef) {
+    let Some(bg) = BG_SYNC.poll() else {
+        // Before the thread exists (early boot): inline, rather than dropping the sync.
+        sync_object_dirty(obj);
+        return;
+    };
+    let parked = {
+        let mut inner = bg.inner.lock();
+        // Idempotent by construction -- this is why it is a map and not a queue.
+        inner.pending.insert(obj.id(), obj.clone());
+        // Claim the wake under the lock that published `parked`, so a burst of unmaps costs one
+        // signal rather than one per object.
+        let parked = inner.parked;
+        if parked {
+            inner.parked = false;
+        }
+        parked
+    };
+    if parked {
+        bg.work.signal();
+    }
+}
+
+pub fn start_background_sync_thread() {
+    extern "C" fn bg_sync_entry() {
+        let bg = BG_SYNC.wait();
+        let mut inner = bg.inner.lock();
+        loop {
+            // Popped one at a time, and the lock is dropped across the work: `do_sync_region`
+            // blocks, and holding a spinlock across it would stall every unmap trying to enqueue.
+            if let Some((_, obj)) = inner.pending.pop_first() {
+                drop(inner);
+                sync_object_dirty(&obj);
+                drop(obj);
+                inner = bg.inner.lock();
+                continue;
+            }
+            inner.parked = true;
+            inner = bg.work.wait(inner);
+            inner.parked = false;
+        }
+    }
+    BG_SYNC.call_once(|| BgSync {
+        work: CondVar::new(),
+        inner: Spinlock::new(BgSyncInner {
+            pending: BTreeMap::new(),
+            parked: false,
+        }),
+    });
+    // Background: this is deferred durability work with no thread waiting on it, and it must not
+    // compete with the userspace threads whose unmaps produce it.
+    start_new_kernel(Priority::BACKGROUND, bg_sync_entry, 0, "obj-bgsync");
 }
 
 /// Bring `reqs` into core, blocking until `required` is backed.
@@ -1116,7 +1225,7 @@ pub(super) fn start_memory_provider() {
         work: CondVar::new(),
         done: CondVar::new(),
     });
-    start_new_kernel(Priority::USER, provider_entry, 0);
+    start_new_kernel(Priority::USER, provider_entry, 0, "pager-mem-provider");
 }
 
 pub fn provide_pager_memory(min_frames: usize, wait: bool) {

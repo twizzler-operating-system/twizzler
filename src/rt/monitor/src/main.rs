@@ -78,7 +78,10 @@ pub fn main() {
         ))
     };
 
-    let main_thread = std::thread::spawn(monitor_init);
+    let main_thread = std::thread::Builder::new()
+        .name("monitor-init".into())
+        .spawn(monitor_init)
+        .unwrap();
     let _r = main_thread.join().unwrap().map_err(|e| {
         tracing::error!("{:?}", e);
     });

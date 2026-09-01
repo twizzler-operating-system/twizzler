@@ -36,9 +36,36 @@ pub struct NvmeRequesterInner {
     _bar_obj: MmioObject,
 }
 
+/// A per-thread token, so a queue can tell whether it is being used by more than one thread.
+fn thread_token() -> u64 {
+    #[thread_local]
+    static TOKEN: core::cell::Cell<u64> = core::cell::Cell::new(0);
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let mut t = TOKEN.get();
+    if t == 0 {
+        t = NEXT.fetch_add(1, Ordering::Relaxed);
+        TOKEN.set(t);
+    }
+    t
+}
+
 pub struct NvmeRequester {
     inner: Mutex<NvmeRequesterInner>,
     cv: Condvar,
+    /// The thread this queue belongs to, claimed by its first submitter.
+    ///
+    /// A data queue is single-consumer by construction: `reap_current_queue` consumes the queue's
+    /// interrupt edge and drains its completion queue on behalf of "the calling thread's queue",
+    /// and `wait_owned` consumes that edge and then arms a sleep on it. Both are sound only while
+    /// one thread uses the queue -- two can interleave so that one spends the edge raised for the
+    /// other's completion without reaping it, leaving the other asleep on a word that will not be
+    /// set again.
+    ///
+    /// `QUEUE_INDEX` defaults to 0, so every thread that is not a numbered worker borrows worker
+    /// 0's queue. That is only safe while such threads never touch the disk, which is an
+    /// assumption about call sites rather than something the types enforce -- so record who
+    /// claimed the queue and say so if anyone else submits on it.
+    owner: AtomicU64,
     /// Diagnostic only. Counted outside the lock so a dump can report them even when the lock is
     /// the thing that is stuck.
     submitted: AtomicU64,
@@ -311,6 +338,7 @@ impl NvmeRequester {
                 subq, comq, sub_bell, com_bell, bar_obj, sub_dma, com_dma,
             )),
             cv: Condvar::new(),
+            owner: AtomicU64::new(0),
             submitted: AtomicU64::new(0),
             completed: AtomicU64::new(0),
         }
@@ -357,8 +385,50 @@ impl NvmeRequester {
     }
 
     #[inline]
+    /// Claim this queue for the calling thread, reporting the first time anyone else submits.
+    ///
+    /// Warned rather than asserted: this is a latent race, not a live fault, and a panic here
+    /// would take the pager down over something that may never have mattered on this boot.
+    fn check_owner(&self, outstanding: usize) {
+        // Only a submit that overlaps someone else's in-flight request can race them for the
+        // queue's interrupt edge. Without this, sequential reuse -- init does I/O during startup
+        // with the default QUEUE_INDEX of 0, finishes, and a worker later claims the same queue --
+        // reports identically to genuine concurrency, which is the only case that matters.
+        if outstanding == 0 {
+            return;
+        }
+        let me = thread_token();
+        let prev = self
+            .owner
+            .compare_exchange(0, me, Ordering::Relaxed, Ordering::Relaxed)
+            .unwrap_or_else(|prev| prev);
+        if prev != 0 && prev != me {
+            // Counted, not reported once: a single warning cannot distinguish a one-off during
+            // startup from sharing that continues into the steady state, and only the latter can
+            // race a completion. Powers of two, so a constant rate is visible against the build
+            // log without drowning it.
+            static REPORTED: AtomicU64 = AtomicU64::new(0);
+            let n = REPORTED.fetch_add(1, Ordering::Relaxed) + 1;
+            if n.is_power_of_two() {
+                tracing::warn!(
+                    "nvme queue shared (n={}): thread {} ({:?}) submitting on a queue claimed by \
+                     thread {} with {} request(s) already in flight -- the queue's interrupt edge \
+                     is single-consumer (see NvmeRequester::owner)",
+                    n,
+                    me,
+                    std::thread::current().name().unwrap_or("<unnamed>"),
+                    prev,
+                    outstanding
+                );
+            }
+        }
+    }
+
     pub fn submit(&self, cmd: CommonCommand) -> Option<InflightRequest<'_>> {
-        let (id, entry) = self.inner.lock().unwrap().submit(cmd)?;
+        let mut inner = self.inner.lock().unwrap();
+        self.check_owner(inner.requests.len());
+        let (id, entry) = inner.submit(cmd)?;
+        drop(inner);
         self.submitted.fetch_add(1, Ordering::Relaxed);
         Some(InflightRequest {
             req: self,
@@ -374,6 +444,7 @@ impl NvmeRequester {
         timeout: Option<Duration>,
     ) -> Option<InflightRequest<'_>> {
         let mut inner = self.inner.lock().unwrap();
+        self.check_owner(inner.requests.len());
         loop {
             if let Some((id, entry)) = inner.submit(cmd) {
                 self.submitted.fetch_add(1, Ordering::Relaxed);

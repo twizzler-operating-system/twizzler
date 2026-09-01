@@ -483,6 +483,43 @@ impl Namespace for ExtNamespace {
         self.insert(node)
     }
 
+    fn rename_entry(&self, old: &str, to: ObjID, new: &str) -> Result<()> {
+        // Both ends have to live in this store for the pager to move the entry; a rename that
+        // crosses into a native namespace has to go the long way round.
+        if objid_to_ino(to.raw()).is_none() {
+            return Err(TwzError::NOT_SUPPORTED);
+        }
+        let mut guard = pager_handle();
+        let Some(h) = guard.as_mut() else {
+            tracing::warn!("failed to open handle to pager");
+            return Err(TwzError::NOT_SUPPORTED);
+        };
+        h.rename_external(self.id, old, to, new).inspect_err(|e| {
+            tracing::warn!(
+                "failed to rename external {} in namespace {} to {} in {}: {}",
+                old,
+                self.id,
+                new,
+                to,
+                e
+            )
+        })?;
+        drop(guard);
+
+        let mut cache = self.cache();
+        cache.invalidate_name(old);
+        cache.invalidate_order();
+        if to == self.id {
+            cache.invalidate_name(new);
+        } else {
+            drop(cache);
+            // The destination is a different namespace, whose cached listing just gained an
+            // entry it never saw created.
+            GLOBAL_CACHE.forget(to);
+        }
+        Ok(())
+    }
+
     fn remove(&self, name: &str) -> Result<NsNode> {
         tracing::debug!(
             "removing {} from external namespace {}, id = {}",

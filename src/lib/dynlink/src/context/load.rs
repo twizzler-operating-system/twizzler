@@ -182,6 +182,11 @@ impl Context {
         const EXPECTED_CLASS: Class = Class::ELF64;
         const EXPECTED_VERSION: u32 = 1;
         const EXPECTED_ABI: u8 = elf::abi::ELFOSABI_SYSV;
+        // LLD stamps ELFOSABI_GNU on any output carrying a GNU symbol type (STT_GNU_IFUNC,
+        // STB_GNU_UNIQUE), which anything linked against libstd can pick up -- a proc-macro
+        // cdylib built on target does. The two are interchangeable for loading; glibc's own
+        // header check accepts both, and rejecting GNU here made every such object unloadable.
+        const ACCEPTED_ABIS: [u8; 2] = [elf::abi::ELFOSABI_SYSV, elf::abi::ELFOSABI_GNU];
         const EXPECTED_ABI_VERSION: u8 = 0;
         const EXPECTED_TYPE: u16 = elf::abi::ET_DYN;
 
@@ -207,7 +212,7 @@ impl Context {
             .into());
         }
 
-        if elf.ehdr.osabi != EXPECTED_ABI {
+        if !ACCEPTED_ABIS.contains(&elf.ehdr.osabi) {
             return Err(DynlinkErrorKind::from(HeaderError::OSABIMismatch {
                 expect: EXPECTED_ABI,
                 got: elf.ehdr.osabi,

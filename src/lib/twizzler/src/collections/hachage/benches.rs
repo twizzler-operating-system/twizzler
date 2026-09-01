@@ -3,7 +3,7 @@
 extern crate test;
 use std::collections::HashMap;
 
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use test::Bencher;
 use twizzler_rt_abi::object::{ObjectCmd, Protections};

@@ -215,10 +215,46 @@ struct CompGroup<'a> {
 }
 
 impl CompGroup<'_> {
-    /// Fraction of one cpu the whole group used over the last interval. Summed from the same
+    /// Fractions of one cpu the whole group used over the last interval. Summed from the same
     /// per-thread figures the rows show, so a collapsed group still reports what it cost.
     fn cpu(&self, elapsed: u64) -> f64 {
         self.threads.iter().map(|t| t.cpu(elapsed)).sum()
+    }
+
+    fn user(&self, elapsed: u64) -> f64 {
+        self.threads.iter().map(|t| t.user(elapsed)).sum()
+    }
+
+    fn system(&self, elapsed: u64) -> f64 {
+        self.threads.iter().map(|t| t.system(elapsed)).sum()
+    }
+
+    fn cpu_ticks(&self) -> u64 {
+        self.threads
+            .iter()
+            .fold(0u64, |acc, t| acc.saturating_add(t.cpu_ticks()))
+    }
+
+    /// Threads the kernel calls Running, which covers both on-cpu and waiting on a run queue --
+    /// the state alone does not say which, so this is "not blocked" rather than "on a cpu now".
+    fn running(&self) -> usize {
+        self.threads
+            .iter()
+            .filter(|t| t.state == Some(ExecutionState::Running))
+            .count()
+    }
+
+    /// The `N threads, M cross` tail, which lands in the WHERE column.
+    fn tail(&self) -> String {
+        let mut s = format!(
+            "{} thread{}",
+            self.threads.len(),
+            if self.threads.len() == 1 { "" } else { "s" }
+        );
+        if self.cross > 0 {
+            s.push_str(&format!(", {} cross", self.cross));
+        }
+        s
     }
 }
 
@@ -381,7 +417,11 @@ impl ThreadTracker {
     /// How to label a security context in the display.
     fn comp_label(&self, id: ObjID) -> String {
         if id.raw() == 0 {
-            return "[no compartment]".to_string();
+            // The monitor's own instance id *is* zero (`MONITOR_INSTANCE_ID`), so this is where
+            // its threads land. It also catches the two other zero-home userspace populations,
+            // bootstrap and statically-linked programs, which are absent from a normal boot --
+            // nothing in the pair of context ids separates them from the monitor.
+            return "[monitor]".to_string();
         }
         match self.comps.get(&id) {
             Some(Some(name)) => name.clone(),
@@ -491,10 +531,14 @@ impl ThreadTracker {
     }
 
     fn time_str(&self, thread: &ThreadInfo) -> String {
+        self.time_str_ticks(thread.cpu_ticks())
+    }
+
+    fn time_str_ticks(&self, ticks: u64) -> String {
         if self.ticks_per_sec <= 0.0 {
             return "-".to_string();
         }
-        fmt_time(thread.cpu_ticks() as f64 / self.ticks_per_sec)
+        fmt_time(ticks as f64 / self.ticks_per_sec)
     }
 
     fn render_plain(&self, out: &mut impl Write) -> std::io::Result<()> {
@@ -513,22 +557,16 @@ impl ThreadTracker {
             if !self.show_rows(&group) {
                 writeln!(
                     out,
-                    "{:<20}  {:<22}  {:<18.18}  {:<9}  {:>5.1}%  {:>6}  {:>6}  {:>8}  {} thread{}{}",
+                    "{:<20.20}  {:<22.22}  {:<18.18}  {:<9.9}  {:>5.1}%  {:>5.1}%  {:>5.1}%  {:>8}  {}",
                     "",
                     "",
                     group.label,
-                    "-",
+                    format!("{} run", group.running()),
                     group.cpu(self.elapsed) * 100.0,
-                    "",
-                    "",
-                    "",
-                    group.threads.len(),
-                    if group.threads.len() == 1 { "" } else { "s" },
-                    if group.cross > 0 {
-                        format!(", {} cross", group.cross)
-                    } else {
-                        String::new()
-                    },
+                    group.user(self.elapsed) * 100.0,
+                    group.system(self.elapsed) * 100.0,
+                    self.time_str_ticks(group.cpu_ticks()),
+                    group.tail(),
                 )?;
                 continue;
             }
@@ -618,28 +656,46 @@ impl ThreadTracker {
                 break;
             }
             out.queue(MoveTo(0, body_start + row as u16))?;
+            // The label spans the ID and NAME columns, so the numeric columns below line up
+            // with the thread rows rather than sitting wherever the label happened to end.
+            let label_w = 20 + name_w;
             out.queue(SetAttribute(Attribute::Bold))?;
             out.queue(SetForegroundColor(Color::Magenta))?;
-            out.queue(Print(group.label.to_string()))?;
+            out.queue(Print(format!("{:<w$.w$}", group.label, w = label_w)))?;
             out.queue(ResetColor)?;
             out.queue(SetAttribute(Attribute::Reset))?;
-            out.queue(SetForegroundColor(Color::DarkGrey))?;
-            out.queue(Print(format!(
-                "  {} thread{}",
-                group.threads.len(),
-                if group.threads.len() == 1 { "" } else { "s" }
-            )))?;
+            out.queue(Print("  "))?;
+            // Running count in the STATE column: the one per-compartment fact the rows below
+            // can no longer supply once they are hidden.
+            let running = group.running();
+            out.queue(SetForegroundColor(if running > 0 {
+                Color::Green
+            } else {
+                Color::DarkGrey
+            }))?;
+            out.queue(Print(format!("{:<9.9}", format!("{} run", running))))?;
             out.queue(ResetColor)?;
-            if group.cross > 0 {
-                out.queue(SetForegroundColor(Color::Yellow))?;
-                out.queue(Print(format!(", {} cross", group.cross)))?;
+
+            for frac in [
+                group.cpu(self.elapsed),
+                group.user(self.elapsed),
+                group.system(self.elapsed),
+            ] {
+                out.queue(Print("  "))?;
+                out.queue(SetForegroundColor(pct_color(frac)))?;
+                out.queue(Print(format!("{:>5.1}%", frac * 100.0)))?;
                 out.queue(ResetColor)?;
             }
-            // The group's own cpu, so a collapsed group still says what it cost.
-            let group_cpu = group.cpu(self.elapsed);
-            out.queue(Print("  "))?;
-            out.queue(SetForegroundColor(pct_color(group_cpu)))?;
-            out.queue(Print(format!("{:.1}%", group_cpu * 100.0)))?;
+            out.queue(Print(format!(
+                "  {:>8}  ",
+                self.time_str_ticks(group.cpu_ticks())
+            )))?;
+            out.queue(SetForegroundColor(if group.cross > 0 {
+                Color::Yellow
+            } else {
+                Color::DarkGrey
+            }))?;
+            out.queue(Print(group.tail()))?;
             out.queue(ResetColor)?;
             row += 1;
 

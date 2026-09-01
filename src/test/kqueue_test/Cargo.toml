@@ -5,3 +5,6 @@ edition = "2021"
 
 [dependencies]
 twizzler-rt-abi = { path = "../../abi/rt-abi" }
+
+[package.metadata]
+twizzler-build = "test"

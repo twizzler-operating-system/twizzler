@@ -10,7 +10,7 @@ use twizzler::marker::Invariant;
 use std::fmt::Debug;
 use miette::{IntoDiagnostic, Result};
 use clap::Parser;
-use rand::{rng, Rng, SeedableRng};
+use rand::{rng, RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 fn open_or_create_hashtable_object<T: Debug + Invariant>(

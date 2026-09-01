@@ -1,4 +1,10 @@
-use std::{collections::BTreeMap, sync::Mutex};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
+};
 
 use monitor_api::{CompartmentHandle, LibraryHandle};
 use twizzler_abi::object::NULLPAGE_SIZE;
@@ -35,8 +41,48 @@ impl ReferenceRuntime {
     }
 
     pub fn get_image_info(&self, id: loaded_image_id) -> Option<loaded_image> {
-        let (cn, lib) = self.find_comp_dep_lib(id)?;
-        let mut info = lib.info();
+        match self.image_info(id) {
+            ImageLookup::Found(image) => Some(image),
+            ImageLookup::Skip | ImageLookup::End => None,
+        }
+    }
+
+    /// Look up one image index, distinguishing "past the end" from "exists but undescribable".
+    ///
+    /// Only [`Self::find_comp_dep_lib`] returning `None` means the end of the list; every other
+    /// failure is one library, and iteration has to continue past it. See [`ImageLookup::Skip`].
+    fn image_info(&self, id: loaded_image_id) -> ImageLookup {
+        let Some((cn, lib)) = self.find_comp_dep_lib(id) else {
+            return ImageLookup::End;
+        };
+        match self.build_image(id, cn, lib) {
+            Some(image) => ImageLookup::Found(image),
+            None => {
+                // Once, not per unwind: this runs on every panic.
+                static WARNED: AtomicBool = AtomicBool::new(false);
+                if !WARNED.swap(true, Ordering::Relaxed) {
+                    twizzler_abi::klog_println!(
+                        "dl_iterate_phdr: image {} cannot be described by the monitor; skipping it \
+                         (its frames will have no unwind info)",
+                        id
+                    );
+                }
+                ImageLookup::Skip
+            }
+        }
+    }
+
+    fn build_image(
+        &self,
+        id: loaded_image_id,
+        cn: Option<String>,
+        lib: LibraryHandle,
+    ) -> Option<loaded_image> {
+        // Fallible: this is the `dl_iterate_phdr` path, which the unwinder walks on every panic.
+        // The unwrap that used to be here turned a library the monitor could not describe into a
+        // panic while a panic was already in flight -- "thread panicked while processing panic",
+        // with whatever rustc was actually reporting destroyed.
+        let mut info = lib.try_info()?;
         tracing::trace!("get_image_info: {:?}", info);
         let mut lib_names = LIBNAMES.lock().ok()?;
         let fullname = if let Some(cn) = cn {
@@ -67,15 +113,33 @@ impl ReferenceRuntime {
     ) -> core::ffi::c_int {
         let mut n = 0;
         let mut ret = 0;
-        while let Some(image) = self.get_image_info(n) {
-            ret = f(image.dl_info);
-            if ret != 0 {
-                return ret;
+        loop {
+            match self.image_info(n) {
+                ImageLookup::Found(image) => {
+                    ret = f(image.dl_info);
+                    if ret != 0 {
+                        return ret;
+                    }
+                }
+                ImageLookup::Skip => {}
+                ImageLookup::End => return ret,
             }
             n += 1;
         }
-        ret
     }
+}
+
+/// Result of describing one loaded image, for [`ReferenceRuntime::iterate_phdr`].
+enum ImageLookup {
+    Found(loaded_image),
+    /// This index names a real library the monitor could not describe. Iteration must continue:
+    /// the unwinder finds `.eh_frame` through `dl_iterate_phdr`, so stopping here costs every
+    /// *later* library its FDEs too, and phase 1 then runs off the end of the stack -- reported as
+    /// `fatal runtime error: failed to initiate panic, error 5` (`_URC_END_OF_STACK`), which
+    /// aborts with the panic that was being raised never printed.
+    Skip,
+    /// Past the last library.
+    End,
 }
 
 /*

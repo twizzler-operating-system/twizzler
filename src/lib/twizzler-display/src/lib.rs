@@ -324,6 +324,27 @@ impl BufferObject {
         self.obj.base().flags.load(Ordering::SeqCst) & DBF_COMP_DONE == 0
     }
 
+    /// A sleep that releases when this buffer next needs reading, for a compositor that would
+    /// rather block than poll. `None` means data is already pending and the caller must not
+    /// sleep at all -- arming a sleep on the value just observed would miss the wake that has
+    /// already happened.
+    ///
+    /// Both sides of the protocol wake this word ([Self::read_done] and [Self::flip]), so a
+    /// sleep here is released by the client flipping a frame.
+    pub fn read_waitpoint(&self) -> Option<ThreadSyncSleep> {
+        let base = self.obj.base();
+        let flags = base.flags.load(Ordering::SeqCst);
+        if flags & DBF_COMP_DONE == 0 {
+            return None;
+        }
+        Some(ThreadSyncSleep::new(
+            ThreadSyncReference::Virtual(&base.flags),
+            flags,
+            ThreadSyncOp::Equal,
+            ThreadSyncFlags::empty(),
+        ))
+    }
+
     /// Read out the compositor buffer.
     pub fn read_buffer<R>(&self, mut f: impl FnMut(Buffer, u32, u32) -> R) -> R {
         let base = self.obj.base();

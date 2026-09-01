@@ -6,3 +6,5 @@ edition = "2024"
 [dependencies]
 rusqlite = {version = "0.33", features = ["bundled", "functions"]}
 naming = { path = "../..//lib/naming" }
+[package.metadata]
+twizzler-build = "test"

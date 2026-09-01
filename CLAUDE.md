@@ -131,8 +131,13 @@ target triple: Tools (host), Kernel (`*-none`), Userspace (`*-twizzler`,
 dynamically linked against the reference runtime), Userspace-static
 (`*-twizzler-minruntime`), plus opt-in Userspace-tests/Kernel-tests. A crate
 opts into a collection via `package.metadata.twizzler-build` in its
-`Cargo.toml` (`"tool"`, `"static"`, or unset = default dynamic userspace);
-`"kernel"`/`"xtask"` are reserved for the kernel and xtask themselves.
+`Cargo.toml` (`"tool"`, `"static"`, `"test"`, or unset = default dynamic
+userspace); `"kernel"`/`"xtask"` are reserved for the kernel and xtask
+themselves. `"test"` marks a test-only program (everything under `src/test`,
+plus the monitor's test crates): it is compiled into the Userspace collection,
+and packed into the initrd, only for a tests build
+(`--tests`/`--benches`/`--bench`/`--autostart`, or
+`build-all --test-programs`); `check-all`/`doc-all` always cover them.
 Programs that should ship in the boot image must additionally be listed in
 the root `Cargo.toml`'s `[workspace.metadata] initrd = [...]`.
 

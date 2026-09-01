@@ -9,13 +9,13 @@
 //! it as a synchronous step -- spawn, wait for exit, assert. Its address is pinned by
 //! `TWZ_NET_ADDR`, which `net_test` sets when spawning; see that crate's `PEER_ADDR`.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     env,
     io::{Read, Write},
     net::{TcpListener, TcpStream, UdpSocket},
     os::fd::AsRawFd,
     process::ExitCode,
+    sync::atomic::{AtomicU64, Ordering},
     thread::sleep,
     time::{Duration, Instant},
 };
@@ -427,9 +427,9 @@ impl ArmedWait {
     fn wait(&self, timeout: Duration) -> bool {
         let mut out = [ev(0, 0, 0); 4];
         let n = kev_call(self.kq, &[], &mut out, Some(timeout));
-        out[..n.min(out.len())]
-            .iter()
-            .any(|e| e.ident == self.fd as usize && e.filter == self.filter && e.flags & EV_ERROR == 0)
+        out[..n.min(out.len())].iter().any(|e| {
+            e.ident == self.fd as usize && e.filter == self.filter && e.flags & EV_ERROR == 0
+        })
     }
 }
 
@@ -550,7 +550,11 @@ fn wait_readable_until(rw: &ArmedWait, idle: Duration) -> bool {
             // blocking, which is precisely what drove this path -- so measure before tuning it.
             let c = BACKOFF_HITS.fetch_add(1, Ordering::Relaxed) + 1;
             if c.is_power_of_two() {
-                println!("WAITBACKOFF hits={} last_elapsed_us={}", c, elapsed.as_micros());
+                println!(
+                    "WAITBACKOFF hits={} last_elapsed_us={}",
+                    c,
+                    elapsed.as_micros()
+                );
             }
             std::thread::sleep(Duration::from_millis(1) - elapsed);
         }
@@ -791,7 +795,8 @@ fn serve_udp_echo(listen: &str, idle_ms: u64) -> std::io::Result<()> {
         // Draining is what an echo server should do regardless; it also makes the loop correct
         // under a readiness path that under-reports, which this one demonstrably does.
         let mut drained = 0usize;
-        loop {  // see MULTIDRAIN below: the count itself is the readiness tripwire
+        loop {
+            // see MULTIDRAIN below: the count itself is the readiness tripwire
             let (n, from) = match sock.recv_from(&mut buf) {
                 Ok(v) => v,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,

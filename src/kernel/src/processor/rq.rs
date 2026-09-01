@@ -545,7 +545,9 @@ mod test {
     const BUCKET_WIDTH: u16 = MAX_PRIORITY / NR_QUEUES as u16;
 
     fn thread_at(class: PriorityClass, value: u16) -> ThreadRef {
-        Arc::new(Thread::new(None, None, Priority { class, value }))
+        let thread = Arc::new(Thread::new(None, None, Priority { class, value }));
+        thread.set_name("idle");
+        thread
     }
 
     fn drain(pq: &mut PriorityQueue<NR_QUEUES>) -> Vec<Priority> {

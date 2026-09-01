@@ -60,10 +60,13 @@ fn main() {
     tracing::info!("ready for incomming connections");
     for _ in 0..4 {
         let listener = listener.clone();
-        std::thread::spawn(move || {
-            let ex = LocalExecutor::new();
-            async_io::block_on(ex.run(async { accept(&listener).await }));
-        });
+        let _ = std::thread::Builder::new()
+            .name("sshd-accept".into())
+            .spawn(move || {
+                let ex = LocalExecutor::new();
+                async_io::block_on(ex.run(async { accept(&listener).await }));
+            })
+            .unwrap();
     }
     let ex = LocalExecutor::new();
     async_io::block_on(ex.run(async { accept(&listener).await }));

@@ -237,6 +237,31 @@ fn initialize_sshd() {
     std::mem::forget(comp);
 }
 
+/// Map every `.so` directly in `dir` to its ObjID, for dynlink to resolve `DT_NEEDED` entries by
+/// name. Not recursive -- the directories worth scanning are known, and walking a package tree to
+/// find them would cost far more than naming them.
+fn cache_libdir(dir: &Path) {
+    use std::os::twizzler::fs::MetadataExt;
+
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.contains(".so") {
+            continue;
+        }
+        let path = dir.join(entry.file_name());
+        match path.metadata() {
+            Ok(md) => {
+                let _ = monitor_api::libname_map(&name, md.st_objid().into())
+                    .inspect_err(|e| tracing::warn!("failed to map {}: {}", name, e));
+            }
+            Err(e) => tracing::warn!("failed to stat library {}: {}", path.display(), e),
+        }
+    }
+}
+
 fn main() {
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
@@ -344,27 +369,16 @@ fn main() {
     let dir = std::fs::read_dir("/pkg").unwrap();
     use std::os::twizzler::fs::MetadataExt;
     tracing::info!("caching library directories");
+    // A Rust toolchain keeps its per-target `libstd-<hash>.so` under `lib/rustlib/<triple>/lib`,
+    // not in `lib` itself. Leaving that unmapped made dlopen of anything linked against libstd --
+    // every proc macro, so every on-target build using one -- fail to resolve its dependency.
+    let rustlib = Path::new("rustlib")
+        .join(format!("{}-unknown-twizzler", std::env::consts::ARCH))
+        .join("lib");
     for dir in dir {
-        let dir = dir.unwrap();
-        let libpath = Path::new("/pkg").join(dir.file_name()).join("lib");
-        if let Ok(libdir) = std::fs::read_dir(&libpath) {
-            for lib in libdir {
-                let lib = lib.unwrap();
-                let lib = libpath.join(lib.file_name());
-                if lib
-                    .file_name()
-                    .is_some_and(|s| s.to_string_lossy().contains(".so"))
-                {
-                    let md = lib.metadata().expect("failed to get metadata for library");
-                    let id = md.st_objid();
-                    monitor_api::libname_map(
-                        &lib.file_name().unwrap().to_string_lossy(),
-                        id.into(),
-                    )
-                    .unwrap();
-                }
-            }
-        }
+        let libdir = Path::new("/pkg").join(dir.unwrap().file_name()).join("lib");
+        cache_libdir(&libdir.join(&rustlib));
+        cache_libdir(&libdir);
     }
 
     if let Ok(libdir) = std::fs::read_dir("/sysroot/lib") {
@@ -418,7 +432,9 @@ fn main() {
     assert_eq!(client_fd, 2);
     let server_fd = twizzler_rt_abi::fd::twz_rt_fd_open_pty_server(pty.id().raw(), 0).unwrap();
 
-    std::thread::spawn(move || {
+    let _ = std::thread::Builder::new()
+        .name("pty-input".into())
+        .spawn(move || {
         // Ask for in-band resize notifications (mode 2048) first: a terminal that honors it
         // reports its size immediately and again on every resize, which is what makes the
         // polling query below unnecessary. Terminals that don't know the mode ignore it, so the
@@ -538,34 +554,41 @@ fn main() {
                 }
             }
         }
-    });
+    }).unwrap();
 
-    std::thread::spawn(move || loop {
-        let mut buf = [0; 1024];
-        let mut ioc = twizzler_rt_abi::io::IoCtx::default();
-        let count = twizzler_rt_abi::io::twz_rt_fd_pread(server_fd, &mut buf, &mut ioc).unwrap();
-        //tracing::info!("Read {} bytes from pty: {:?}", count, &buf[0..count]);
-        twizzler_abi::syscall::sys_kernel_console_write(
-            twizzler_abi::syscall::KernelConsoleSource::Console,
-            &buf[0..count],
-            KernelConsoleWriteFlags::empty(),
-        );
-    });
+    let _ = std::thread::Builder::new()
+        .name("pty-console".into())
+        .spawn(move || loop {
+            let mut buf = [0; 1024];
+            let mut ioc = twizzler_rt_abi::io::IoCtx::default();
+            let count =
+                twizzler_rt_abi::io::twz_rt_fd_pread(server_fd, &mut buf, &mut ioc).unwrap();
+            //tracing::info!("Read {} bytes from pty: {:?}", count, &buf[0..count]);
+            twizzler_abi::syscall::sys_kernel_console_write(
+                twizzler_abi::syscall::KernelConsoleSource::Console,
+                &buf[0..count],
+                KernelConsoleWriteFlags::empty(),
+            );
+        })
+        .unwrap();
 
-    std::thread::spawn(move || loop {
-        // Fallback for terminals that ignored mode 2048 above: poll for the size, since nothing
-        // else will tell us it changed. A terminal that does support it has already reported in
-        // by now and will keep doing so on its own, so stop querying and leave the line quiet.
-        std::thread::sleep(std::time::Duration::from_secs(3));
-        if INBAND_RESIZE.load(Ordering::Relaxed) {
-            return;
-        }
-        twizzler_abi::syscall::sys_kernel_console_write(
-            twizzler_abi::syscall::KernelConsoleSource::Console,
-            b"\x1b[18t",
-            KernelConsoleWriteFlags::empty(),
-        );
-    });
+    let _ = std::thread::Builder::new()
+        .name("pty-resize".into())
+        .spawn(move || loop {
+            // Fallback for terminals that ignored mode 2048 above: poll for the size, since nothing
+            // else will tell us it changed. A terminal that does support it has already reported in
+            // by now and will keep doing so on its own, so stop querying and leave the line quiet.
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            if INBAND_RESIZE.load(Ordering::Relaxed) {
+                return;
+            }
+            twizzler_abi::syscall::sys_kernel_console_write(
+                twizzler_abi::syscall::KernelConsoleSource::Console,
+                b"\x1b[18t",
+                KernelConsoleWriteFlags::empty(),
+            );
+        })
+        .unwrap();
 
     let end_time = Instant::now();
     tracing::info!(

@@ -8,3 +8,6 @@ edition = "2021"
 [dependencies]
 twizzler-runtime = { path = "../../rt" }
 getrandom = "0.2"
+
+[package.metadata]
+twizzler-build = "test"

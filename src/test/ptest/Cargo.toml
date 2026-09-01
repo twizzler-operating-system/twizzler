@@ -19,3 +19,6 @@ rand = "*"
 #rocksdb = "*"
 
 sgtest = { path = "../../lib/sgtest" }
+
+[package.metadata]
+twizzler-build = "test"

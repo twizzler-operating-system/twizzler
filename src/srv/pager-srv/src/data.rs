@@ -12,7 +12,7 @@ use object_store::{objid_to_ino, PageRequest, PagedObjectStore, PagedPhysMem, IN
 use secgate::util::{Descriptor, HandleMgr};
 use twizzler::{
     error::ObjectError,
-    object::{MetaExt, MetaInfo, ObjID, ObjectHandle},
+    object::{ObjID, ObjectHandle},
 };
 use twizzler_abi::{
     object::{Protections, MAX_SIZE},
@@ -147,15 +147,14 @@ impl PerObject {
                     if p.0.start == (MAX_SIZE as u64) - PAGE {
                         start_page = 0;
                         if objid_to_ino(self.id.raw()).is_some() {
-                            let mut buffer = [0; PAGE as usize];
-
-                            crate::physrw::read_physical_pages(&mut buffer, p.1[0].range).unwrap();
-                            let me_ptr = unsafe {
-                                buffer.as_ptr().add(size_of::<MetaInfo>()).cast::<MetaExt>()
-                            };
-                            let len = (unsafe { &*me_ptr }).value.load(Ordering::SeqCst);
+                            // The kernel read `MEXT_SIZED` out of this same meta page before
+                            // sending it. This used to be a `read_physical_pages` here, which is a
+                            // `CopyUserPhys` back into the kernel -- serviced by a single kernel
+                            // thread, and taken synchronously while holding a kernel request open,
+                            // so every worker needing it serialized behind one another.
+                            let len = info.len;
                             tracing::trace!(
-                                "read meta page for external file, len: {}, range: {:?}",
+                                "meta page for external file, len: {}, range: {:?}",
                                 len,
                                 p.1[0].range
                             );

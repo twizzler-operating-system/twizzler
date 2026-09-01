@@ -5,3 +5,6 @@ edition = "2021"
 
 [dependencies]
 logboi = { workspace = true }
+
+[package.metadata]
+twizzler-build = "test"

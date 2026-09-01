@@ -433,6 +433,19 @@ impl Ext4Fs {
             (*fs).block_alloc_unlock = Some(_ba_unlock);
         }
 
+        // Without this, `ext4_block_set` writes a buffer to the device the moment its last
+        // reference goes -- so every dirent, inode, bitmap and group-descriptor update is its own
+        // synchronous 4KB write. A metadata-heavy workload (an on-target build does hundreds of
+        // thousands of small file operations) turns into millions of them.
+        //
+        // Safe only because the store already has explicit flush points: `Ext4Store::flush` calls
+        // `ext4_cache_flush`, and page-out and sync both go through it. Dirty buffers now live in
+        // the 1024-entry bcache until one of those, which is the whole saving -- and the whole
+        // exposure, since a crash between flushes loses more than it used to.
+        if !read_only {
+            errno_to_result(unsafe { lwext4::ext4_cache_write_back(mnt_name.as_ptr(), true) })?;
+        }
+
         Ok(Self { bd, mnt_name })
     }
 
@@ -517,6 +530,24 @@ impl Ext4Fs {
             )
         });
 
+        // `search.dentry` points into a block buffer that `ext4_dir_find_entry` left referenced,
+        // so read the inode number out before releasing it. Every caller inside lwext4 pairs the
+        // find with this release on both the found and not-found paths (ext4.c); skipping it pins
+        // one bcache buffer per lookup for the life of the mount, and once the cache is exhausted
+        // writes land on buffers that no longer describe the block they were read from. A few
+        // commands never notice; a build doing thousands of lookups corrupts the directory tree.
+        let found = match &res {
+            Ok(_) if !search.dentry.is_null() => Some(unsafe { (*search.dentry).inode }),
+            _ => None,
+        };
+        // Nothing actionable if the writeback this triggers fails, and the reference has to be
+        // dropped either way.
+        let _ = unsafe { ext4_dir_destroy_result(&mut parent.inode, &mut search) };
+
+        if let Some(ino) = found {
+            return self.open_file_from_inode(ino, flags);
+        }
+
         if res.is_err() && flags & O_CREAT != 0 {
             // Match on the full S_IFMT field: a bare `mode & S_IFLNK != 0` also matches S_IFREG
             // (S_IFLNK == S_IFREG | S_IFCHR bit-wise), which typed regular files as symlinks.
@@ -537,23 +568,40 @@ impl Ext4Fs {
             let mut new_inode = MaybeUninit::uninit();
             unsafe {
                 ext4_journal_start(self.mnt_name.as_ptr());
-                errno_to_result(ext4_fs_alloc_inode(fs, new_inode.as_mut_ptr(), ft as i32))?;
-                let mp = ext4_get_mount(self.mnt_name.as_ptr());
-                errno_to_result(lwext4::ext4_link(
-                    mp,
-                    &mut parent.inode,
-                    new_inode.as_mut_ptr(),
-                    name.as_ptr().cast(),
-                    name.len() as u32,
-                    false,
-                ))?;
+                // Both steps used to `?` straight out, leaving the transaction open on any
+                // failure. Stop it on every path and report afterwards.
+                let res = errno_to_result(ext4_fs_alloc_inode(fs, new_inode.as_mut_ptr(), ft as i32))
+                    .and_then(|_| {
+                        let mp = ext4_get_mount(self.mnt_name.as_ptr());
+                        errno_to_result(lwext4::ext4_link(
+                            mp,
+                            &mut parent.inode,
+                            new_inode.as_mut_ptr(),
+                            name.as_ptr().cast(),
+                            name.len() as u32,
+                            false,
+                        ))
+                    });
                 ext4_journal_stop(self.mnt_name.as_ptr());
+                if res.is_err() {
+                    // Failing between the two steps leaves a half-created directory:
+                    // `ext4_fs_alloc_inode` initialises the new inode's block with '.' and '..'
+                    // both pointing at itself, and `ext4_link` is what rewrites '..' to the parent
+                    // and adds the parent's entry. The orphan it leaves behind is invisible until
+                    // something walks '..' -- which is how removal resolves a path.
+                    twizzler_abi::klog_println!(
+                        "lwext4: failed to link new {} '{}' into inode {}: {:?}",
+                        if ft == lwext4::EXT4_DE_DIR { "directory" } else { "file" },
+                        name,
+                        cont_ino,
+                        res
+                    );
+                }
+                res?;
                 return self.open_file_from_inode(new_inode.assume_init().index, flags);
             }
-        } else if res.is_err() {
-            return Err(res.err().unwrap());
         }
-        return self.open_file_from_inode(unsafe { (*search.dentry).inode }, flags);
+        Err(res.err().unwrap_or_else(|| ErrorKind::NotFound.into()))
     }
 
     pub fn open_file_from_inode(&mut self, index: u32, flags: u32) -> Result<Ext4File<'_>> {
@@ -652,6 +700,19 @@ impl Ext4Fs {
         let name = format!("{}{}", self.mnt_name.to_string_lossy(), name);
         let path = CString::new(name).unwrap();
         errno_to_result(unsafe { lwext4::ext4_dir_rm(path.as_ptr()) })
+    }
+
+    /// Rename `old` to `new`, both mount-relative.
+    ///
+    /// Not link-then-remove: `ext4_link` with `rename == false` *sets* a directory's link count
+    /// to 2 rather than incrementing it, so binding a second name and then removing the first
+    /// frees the inode out from under the name that remains. `ext4_frename` moves the entry in
+    /// one step and fixes up `..` itself.
+    pub fn frename(&mut self, old: &str, new: &str) -> Result<()> {
+        let mnt = self.mnt_name.to_string_lossy();
+        let old = CString::new(format!("{}{}", mnt, old)).unwrap();
+        let new = CString::new(format!("{}{}", mnt, new)).unwrap();
+        errno_to_result(unsafe { lwext4::ext4_frename(old.as_ptr(), new.as_ptr()) })
     }
 
     pub fn create_dir(&mut self, name: &str) -> Result<()> {
@@ -806,7 +867,8 @@ impl<'a> Iterator for DirIter<'a> {
 use pager_dynamic::ExternalKind;
 
 use crate::lwext4::{
-    ext4_dir_find_entry, ext4_dir_search_result, ext4_fs_alloc_inode, ext4_inode_get_mode,
+    ext4_dir_destroy_result, ext4_dir_find_entry, ext4_dir_search_result, ext4_fs_alloc_inode,
+    ext4_inode_get_mode,
     ext4_journal_start, ext4_journal_stop,
 };
 

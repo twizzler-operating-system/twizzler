@@ -3,6 +3,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use intrusive_collections::{KeyAdapter, LinkedList, RBTreeAtomicLink, intrusive_adapter};
 use twizzler_abi::{
+    meta::{MEXT_SIZED, MetaExt, MetaInfo},
     object::ObjID,
     pager::{
         KernelCommand, ObjectEvictFlags, ObjectEvictInfo, ObjectRange, PagerFlags, PhysRange,
@@ -13,7 +14,7 @@ use twizzler_abi::{
 use twizzler_rt_abi::bindings::sync_info;
 
 use crate::{
-    arch::PhysAddr,
+    arch::{PhysAddr, memory::phys_to_virt},
     instant::Instant,
     obj::{ObjectRef, PageNumber, pagetables::DirtyList},
     spinlock::Spinlock,
@@ -125,6 +126,30 @@ impl ReqKind {
         let unique_id = COUNTER_1.fetch_add(1, Ordering::Relaxed) as u128;
 
         let slices = consecutive_slices(dirty.pages()).collect::<Vec<_>>();
+        // Read `MEXT_SIZED` out of the meta page we are about to evict, so the pager does not have
+        // to ask for it. It needs the value to set an external file's length, and its only other
+        // route is a `CopyUserPhys` back into the kernel -- serviced by one kernel thread, taken
+        // synchronously from inside handling this very request.
+        //
+        // Read through the physical address the dirty list already carries rather than through
+        // `read_at`: this runs on the sync path, and going via the object risks `ensure_in_core`
+        // paging in what we are trying to page out.
+        let meta_len = slices
+            .iter()
+            .filter_map(|run| run.first())
+            .find(|(pn, _, _)| pn.is_meta())
+            .and_then(|(_, pa, _)| {
+                // Safety: a dirty meta page is resident, so this frame is mapped and page-sized;
+                // `MetaInfo` plus one `MetaExt` sits well inside it. The first extension is
+                // `MEXT_SIZED` by construction -- both `synthesize_meta_page` and userspace's
+                // `set_meta_ext` create it first.
+                unsafe {
+                    let base = phys_to_virt(*pa).as_ptr::<u8>();
+                    let ext = base.add(core::mem::size_of::<MetaInfo>()).cast::<MetaExt>();
+                    (*ext).tag.eq(&MEXT_SIZED).then(|| (*ext).value.load(Ordering::SeqCst))
+                }
+            })
+            .unwrap_or(0);
         let runs = slices.iter().enumerate().map(|(i, run)| {
             let is_last = i == slices.len() - 1;
             let first = &run[0];
@@ -157,6 +182,7 @@ impl ReqKind {
                 version,
                 flags,
                 unique_id.into(),
+                meta_len,
             )))
         });
 

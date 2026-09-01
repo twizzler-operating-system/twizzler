@@ -10,8 +10,8 @@ use syn::{
     parse2, parse_quote,
     punctuated::Punctuated,
     token::{Pub, Unsafe},
-    Attribute, BareFnArg, Error, ForeignItemFn, ItemFn, LitStr, ReturnType, Signature, Token, Type,
-    TypeBareFn, Visibility,
+    Attribute, Error, FnModifiers, ForeignItemFn, ItemFn, LitStr, NamedArg, ReturnType, Signature,
+    Token, Type, TypeFnPtr, Visibility,
 };
 
 const PREFIX: &str = "__twz_secgate_impl_";
@@ -138,6 +138,7 @@ fn build_extern_trampoline(tree: &ItemFn, names: &Info) -> Result<proc_macro2::T
     let mut ffn = ForeignItemFn {
         attrs: vec![],
         vis: Visibility::Public(Pub::default()),
+        modifiers: FnModifiers::default(),
         semi_token: Token![;](entry_sig.ident.span()),
         sig: entry_sig.clone(),
     };
@@ -243,13 +244,14 @@ fn build_types(tree: &ItemFn, names: &Info) -> Result<TokenStream, Error> {
         syn::FnArg::Typed(ty) => ty.ty,
     });
 
-    let inputs = Punctuated::from_iter(inputs.map(|ty| BareFnArg {
+    let inputs = Punctuated::from_iter(inputs.map(|ty| NamedArg {
         attrs: vec![],
         name: None,
         ty: *ty,
     }));
 
-    let ty = TypeBareFn {
+    let ty = TypeFnPtr {
+        attrs: vec![],
         lifetimes: None,
         unsafety: Some(Unsafe::default()),
         abi: entry_sig.abi,

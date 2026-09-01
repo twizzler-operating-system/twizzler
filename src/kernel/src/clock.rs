@@ -215,7 +215,11 @@ impl TimeoutQueue {
         let ticks = nano_to_ticks_ceil(time);
         let expire_ticks = self.current + ticks as usize;
         let window = expire_ticks % NR_WINDOWS;
-        let expire_ns = if now == 0 { 0 } else { now.saturating_add(time) };
+        let expire_ns = if now == 0 {
+            0
+        } else {
+            now.saturating_add(time)
+        };
         let key = self.next_key();
         let entry = TimeoutEntry {
             timeout,
@@ -248,9 +252,7 @@ impl TimeoutQueue {
 
     fn check_window(&mut self, window: usize, now_ns: u64) -> Option<TimeoutEntry> {
         if !self.queues[window].is_empty() {
-            let index = self.queues[window]
-                .iter()
-                .position(|x| x.is_ready(now_ns));
+            let index = self.queues[window].iter().position(|x| x.is_ready(now_ns));
             let entry = index.map(|index| self.queues[window].swap_remove(index));
             self.sync_occupied(window);
             return entry;
@@ -327,8 +329,7 @@ pub fn register_timeout_callback(
         let (key, expire_ns) = tq.insert(time, timeout);
         // A deadline sooner than the bsp's programmed wake would otherwise wait out that wake
         // (up to a full tick) — the quantization that made every sub-ms sleep cost ~1ms.
-        let kick =
-            expire_ns != 0 && expire_ns.saturating_add(KICK_SLACK_NS) < tq.next_wake_abs_ns;
+        let kick = expire_ns != 0 && expire_ns.saturating_add(KICK_SLACK_NS) < tq.next_wake_abs_ns;
         (key, kick)
     };
     if kick {
@@ -520,7 +521,9 @@ pub fn oneshot_clock_hardtick() {
         }
         // The scheduler pins the bsp to a one-tick cadence regardless (below), so the timer
         // gets the sooner of that and the nearest deadline.
-        let programmed = next.unwrap_or(u64::MAX).clamp(MIN_ONESHOT_NS, NANOS_PER_TICK);
+        let programmed = next
+            .unwrap_or(u64::MAX)
+            .clamp(MIN_ONESHOT_NS, NANOS_PER_TICK);
         timeout_queue.next_wake_abs_ns = now.saturating_add(programmed);
         Some(programmed)
     } else {
@@ -753,7 +756,12 @@ pub fn init() {
     materialize_sw_clocks();
     crate::arch::start_clock(127, statclock);
     TIMEOUT_THREAD.call_once(|| {
-        crate::thread::entry::start_new_kernel(Priority::INTERRUPT, soft_timeout_clock, 0)
+        crate::thread::entry::start_new_kernel(
+            Priority::INTERRUPT,
+            soft_timeout_clock,
+            0,
+            "soft-timeout-clock",
+        )
     });
 }
 

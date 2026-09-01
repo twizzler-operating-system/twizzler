@@ -14,3 +14,6 @@ twizzler-runtime = { path = "../../.." }
 twizzler-rt-abi = { path = "../../../../abi/rt-abi/" }
 twizzler-abi = { path = "../../../../lib/twizzler-abi" }
 montest-lib = { path = "../montest-lib" }
+
+[package.metadata]
+twizzler-build = "test"

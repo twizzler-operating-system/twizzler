@@ -1,5 +1,6 @@
 pub type DefaultHashBuilder = ahash::RandomState;
 
+#[cfg(test)]
 mod benches;
 mod control;
 pub mod map;

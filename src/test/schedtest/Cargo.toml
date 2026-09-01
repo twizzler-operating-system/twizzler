@@ -5,3 +5,6 @@ edition = "2024"
 
 [dependencies]
 rand = "*"
+
+[package.metadata]
+twizzler-build = "test"

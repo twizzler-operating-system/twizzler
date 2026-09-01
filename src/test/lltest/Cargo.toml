@@ -5,3 +5,6 @@ edition = "2024"
 
 [dependencies]
 libloading = { path = "../../ports/rust_libloading" }
+
+[package.metadata]
+twizzler-build = "test"

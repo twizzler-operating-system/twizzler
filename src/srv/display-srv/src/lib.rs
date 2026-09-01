@@ -8,7 +8,10 @@ use std::{
 
 use secgate::util::HandleMgr;
 use tracing::Level;
-use twizzler_abi::object::ObjID;
+use twizzler_abi::{
+    object::ObjID,
+    syscall::{sys_thread_sync, ThreadSync, ThreadSyncSleep},
+};
 use twizzler_display::{BufferObject, Rect, WindowConfig};
 use twizzler_rt_abi::{error::TwzError, Result};
 use virtio_gpu::{DeviceWrapper, TwizzlerTransport};
@@ -82,8 +85,14 @@ pub fn start_display() -> Result<()> {
         buffer: BufferObject::create_new(current_info.0, current_info.1)?,
     });
 
-    std::thread::spawn(compositor_thread);
-    std::thread::spawn(render_thread);
+    let _ = std::thread::Builder::new()
+        .name("compositor".into())
+        .spawn(compositor_thread)
+        .unwrap();
+    let _ = std::thread::Builder::new()
+        .name("render".into())
+        .spawn(render_thread)
+        .unwrap();
 
     Ok(())
 }
@@ -112,6 +121,12 @@ impl DisplayClient {
     }
 }
 
+/// Frame-rate cap once there is something to draw.
+const FRAME_MS: u64 = 16;
+/// How long a blocked loop waits before re-checking anyway. Only a safety net against a wake
+/// that never arrives; the wakes themselves are what drive the loops.
+const IDLE_BACKSTOP: Duration = Duration::from_secs(1);
+
 fn render_thread() {
     tracing::debug!("render thread started");
     let info = DISPLAY_INFO.get().unwrap();
@@ -120,7 +135,8 @@ fn render_thread() {
         let start = Instant::now();
 
         // We're the "compositor" here
-        if info.buffer.has_data_for_read() {
+        let did_render = info.buffer.has_data_for_read();
+        if did_render {
             info.buffer.read_buffer(|buf, w, h| {
                 let len = (w * h) as usize;
                 assert_eq!(len, buf.len());
@@ -146,15 +162,23 @@ fn render_thread() {
         }
 
         let elapsed = start.elapsed();
-        let remaining = Duration::from_millis(16).saturating_sub(elapsed);
-        if elapsed.as_millis() > 0 {
-            tracing::trace!(
-                "render took {}ms, sleep for {}ms",
-                elapsed.as_millis(),
-                remaining.as_millis()
-            );
+        if did_render {
+            // Cap the frame rate, but only after actually drawing something.
+            let remaining = Duration::from_millis(FRAME_MS).saturating_sub(elapsed);
+            if elapsed.as_millis() > 0 {
+                tracing::trace!(
+                    "render took {}ms, sleep for {}ms",
+                    elapsed.as_millis(),
+                    remaining.as_millis()
+                );
+            }
+            std::thread::sleep(remaining);
+        } else if let Some(sleep) = info.buffer.read_waitpoint() {
+            // Nothing to draw: block until a client flips a frame rather than waking 62 times a
+            // second to find the same empty screen. The timeout is a backstop against a missed
+            // wake, not the mechanism -- losing one costs a second of latency, not the display.
+            let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(sleep)], Some(IDLE_BACKSTOP));
         }
-        std::thread::sleep(remaining);
     }
 }
 
@@ -166,8 +190,10 @@ fn compositor_thread() {
     let mut done_comp = Instant::now();
     let mut damage = Vec::new();
     let mut client_damage = Vec::new();
+    let mut waits: Vec<ThreadSyncSleep> = Vec::new();
     loop {
         damage.clear();
+        waits.clear();
         let start = Instant::now();
 
         let mut clients = Vec::new();
@@ -192,6 +218,11 @@ fn compositor_thread() {
                     }
                 });
             }
+            // Collected here because `h.2` is only reachable under the lock; the sleep itself
+            // happens after the drop below.
+            if let Some(w) = h.2.window.read_waitpoint() {
+                waits.push(w);
+            }
             clients.push((h.2, config));
         }
         let done_count = Instant::now();
@@ -208,7 +239,8 @@ fn compositor_thread() {
             damage.push(Rect::full());
         }
 
-        if !damage.is_empty() {
+        let did_composite = !damage.is_empty();
+        if did_composite {
             tracing::debug!("damage = {:?}", damage);
             info.buffer.update_buffer(|mut fbbuf, fbw, fbh| {
                 if clients.len() != last_window_count {
@@ -278,18 +310,35 @@ fn compositor_thread() {
         drop(handles);
 
         let elapsed = start.elapsed();
-        let remaining = Duration::from_millis(16).saturating_sub(elapsed);
-        if elapsed.as_millis() > 0 {
-            tracing::trace!(
-                "composite took {}ms, sleep for {}ms : {} {} {}",
-                elapsed.as_millis(),
-                remaining.as_millis(),
-                (done_count - start).as_micros(),
-                (done_fill - done_count).as_micros(),
-                (done_comp - done_fill).as_micros(),
-            );
+        if did_composite {
+            let remaining = Duration::from_millis(FRAME_MS).saturating_sub(elapsed);
+            if elapsed.as_millis() > 0 {
+                tracing::trace!(
+                    "composite took {}ms, sleep for {}ms : {} {} {}",
+                    elapsed.as_millis(),
+                    remaining.as_millis(),
+                    (done_count - start).as_micros(),
+                    (done_fill - done_count).as_micros(),
+                    (done_comp - done_fill).as_micros(),
+                );
+            }
+            std::thread::sleep(remaining);
+        } else {
+            // Nothing changed. Sleep on every client's buffer at once -- `sys_thread_sync` takes
+            // the whole set and releases on the first to move -- so a window updating anywhere
+            // wakes us immediately, and an idle screen costs one wake per backstop instead of 62
+            // a second. A client connecting while we sleep is covered by the backstop, since a
+            // new window has no word here to wake.
+            //
+            // Waitpoints are collected after the handle lock is dropped: sleeping under it would
+            // block every gate call into this compartment, including the one creating a window.
+            let mut ops: Vec<ThreadSync> = waits.drain(..).map(ThreadSync::new_sleep).collect();
+            if ops.is_empty() {
+                std::thread::sleep(IDLE_BACKSTOP);
+            } else {
+                let _ = sys_thread_sync(&mut ops, Some(IDLE_BACKSTOP));
+            }
         }
-        std::thread::sleep(remaining);
     }
 }
 

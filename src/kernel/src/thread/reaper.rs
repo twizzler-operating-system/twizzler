@@ -50,7 +50,7 @@ pub fn start() {
         cv: CondVar::new(),
         lock: Spinlock::new(()),
     });
-    let th = start_new_kernel(Priority::BACKGROUND, reaper_start, 0);
+    let th = start_new_kernel(Priority::BACKGROUND, reaper_start, 0, "thread-reaper");
     // Printed so a boot log proves the arm it claims to be: an A/B whose treated arm silently
     // failed to start the thread reads exactly like a treatment that did nothing.
     logln!("[reap] reaper thread started (id {})", th.id());

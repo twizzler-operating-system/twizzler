@@ -8,3 +8,6 @@ twizzler = { workspace = true }
 twizzler-display = { workspace = true }
 secgate = { workspace = true }
 image = { workspace = true }
+
+[package.metadata]
+twizzler-build = "test"

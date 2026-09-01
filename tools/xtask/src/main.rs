@@ -127,6 +127,12 @@ struct BuildOptions {
     pub config: BuildConfig,
     #[clap(long, short, help = "Build tests-enabled system.")]
     tests: bool,
+    #[clap(
+        long,
+        help = "Also build the test-only programs (crates marked twizzler-build = \"test\"). \
+                Implied by --tests; on its own it builds them without the #[test] collection."
+    )]
+    test_programs: bool,
     #[clap(long, short, help = "Only build kernel part of system.")]
     kernel: bool,
     #[clap(long, short, help = "Only build runtime part of system.")]
@@ -244,6 +250,11 @@ impl From<ImageOptions> for BuildOptions {
         Self {
             config: io.config,
             tests: io.tests || io.benches || io.bench.is_some(),
+            // --autostart is how the harness drives a single program, and the program it names is
+            // routinely one of the test-only crates (`--autostart="pagepar ..."`). Those have to
+            // be built for it -- but not the whole #[test] collection, which the guest never runs
+            // on an autostart boot.
+            test_programs: io.tests || io.benches || io.bench.is_some() || io.autostart.is_some(),
             kernel: io.kernel,
             only_runtime: false,
         }

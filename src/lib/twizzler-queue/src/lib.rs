@@ -24,7 +24,6 @@ mod sender_queue;
 pub use callback_queue::CallbackQueueReceiver;
 pub use queue::{Queue, QueueBase, QueueError, ReceiveFlags, SubmissionFlags};
 pub use sender_queue::QueueSender;
-
 /// Ring accounting from the raw queue, re-exported so consumers of this crate can report it
 /// without depending on `twizzler-queue-raw` directly.
 pub use twizzler_queue_raw::{RING_NO_WAITER, RING_WOKE};

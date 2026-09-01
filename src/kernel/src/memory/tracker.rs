@@ -1415,7 +1415,7 @@ impl ReclaimThread {
             reclaim_main();
         }
         Self {
-            th: start_new_kernel(Priority::BACKGROUND, reclaim_start, 0),
+            th: start_new_kernel(Priority::BACKGROUND, reclaim_start, 0, "mem-reclaim"),
             state: Spinlock::new(Vec::new()),
             queued: AtomicUsize::new(0),
             cv: CondVar::new(),
@@ -2795,7 +2795,10 @@ fn ensure_pool_provisioned() {
     // its own event. The counter is kept for a boot-wide dump; the line is what makes the log
     // answer the question.
     if installed {
-        log::debug!("allocprofile: pool provisioned, {} slots", POOL_VEC_CAPACITY);
+        log::debug!(
+            "allocprofile: pool provisioned, {} slots",
+            POOL_VEC_CAPACITY
+        );
     }
     // `buf` is now the old, empty buffer. Freed here, outside the region.
     drop(buf);

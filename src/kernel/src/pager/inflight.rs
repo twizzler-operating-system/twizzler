@@ -96,6 +96,8 @@ impl Inflight {
                 version: 0,
                 flags: ObjectEvictFlags::SYNC | ObjectEvictFlags::FENCE,
                 uniq_id: 0.into(),
+                // Whole-object sync: no meta page is being moved, so there is no length to carry.
+                len: 0,
             }),
             ReqKind::Del(obj_id) => KernelCommand::ObjectDel(*obj_id),
             ReqKind::Create(obj_id, create, nonce) => KernelCommand::ObjectCreate(

@@ -58,6 +58,9 @@ lazy_gates! {
         = "pager_create_external",
     unlink_external: DynamicSecGate<'static, (Descriptor, ObjID, usize), ()>
         = "pager_unlink_external",
+    rename_external:
+        DynamicSecGate<'static, (Descriptor, ObjID, ObjID, usize, usize), ()>
+        = "pager_rename_external",
     set_mtime_external: DynamicSecGate<'static, (ObjID, u64), ()> = "pager_set_mtime_external",
     nlink_external: DynamicSecGate<'static, (ObjID,), u32> = "pager_nlink_external",
     readlink_external: DynamicSecGate<'static, (Descriptor, ObjID), usize>
@@ -185,6 +188,28 @@ impl PagerHandle {
         let namelen = self.buffer.write(name);
 
         (pager_api().unlink_external())(self.desc, id, namelen)
+    }
+
+    /// Rebind `old` in `old_id` to `new` in `new_id`, as one operation.
+    ///
+    /// Not `create_external_file(link_to)` followed by `unlink_external`: for a directory that
+    /// sequence frees the inode while the new name still refers to it.
+    pub fn rename_external(
+        &mut self,
+        old_id: ObjID,
+        old: impl AsRef<Path>,
+        new_id: ObjID,
+        new: impl AsRef<Path>,
+    ) -> Result<()> {
+        let old = old.as_ref().as_os_str().as_encoded_bytes();
+        let new = new.as_ref().as_os_str().as_encoded_bytes();
+        if old.len() > NAME_MAX || new.len() > NAME_MAX {
+            return Err(TwzError::INVALID_ARGUMENT);
+        }
+        let old_len = self.buffer.write(old);
+        let new_len = self.buffer.write_offset(new, old_len);
+
+        (pager_api().rename_external())(self.desc, old_id, new_id, old_len, new_len)
     }
 
     pub fn create_external_file(

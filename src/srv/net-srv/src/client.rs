@@ -39,7 +39,10 @@ impl Client {
             addr,
         });
         let _client = client.clone();
-        let jh = std::thread::spawn(move || client_thread(_client));
+        let jh = std::thread::Builder::new()
+            .name("net-client".into())
+            .spawn(move || client_thread(_client))
+            .unwrap();
         client.jh.set(jh).unwrap();
         client
     }
@@ -917,11 +920,10 @@ fn deliver_local(pending: &[(Vec<u8>, Dest)], sender: EthernetAddress) {
 /// report prints at the PQ_TICK stride below.
 static SRV_UDPSTAMP_SUM: AtomicU64 = AtomicU64::new(0);
 static SRV_UDPSTAMP_CNT: AtomicU64 = AtomicU64::new(0);
-static SRV_UDPSTAMP_CLOCK: twizzler_abi::syscall::FastClock =
-    twizzler_abi::syscall::FastClock::new(
-        twizzler_abi::syscall::ClockSource::BestMonotonic,
-        twizzler_abi::syscall::ReadClockFlags::empty(),
-    );
+static SRV_UDPSTAMP_CLOCK: twizzler_abi::syscall::FastClock = twizzler_abi::syscall::FastClock::new(
+    twizzler_abi::syscall::ClockSource::BestMonotonic,
+    twizzler_abi::syscall::ReadClockFlags::empty(),
+);
 
 fn srv_udpstamp(frame: &[u8]) {
     if frame.len() < 58
@@ -1137,7 +1139,12 @@ fn client_thread(client: Arc<Client>) {
 
         // About to park. Record unconditionally so a sibling's census can read it after this
         // thread stops running, and emit one line here so the wedging thread names itself.
-        note_park(octet, park_parts, has_pending_msg, comp_space_waiter.is_some());
+        note_park(
+            octet,
+            park_parts,
+            has_pending_msg,
+            comp_space_waiter.is_some(),
+        );
         report_park_with_work(octet, park_parts, has_pending_msg);
 
         // Every word this thread can be woken by, and no others. It reads client submissions

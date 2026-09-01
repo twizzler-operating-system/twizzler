@@ -384,6 +384,19 @@ pub unsafe extern "C-unwind" fn twz_rt_get_nameroot(
 }
 check_ffi_type!(twz_rt_get_nameroot, _, _, _);
 
+// The minimal runtime is not a naming client, so there is no working namespace to move. It still
+// has to *export* this: mlibc's chdir() calls it, and a symbol only the reference runtime defines
+// breaks every static link (bootstrap included), not just the callers that would use it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_set_nameroot(
+    _root: name_root,
+    _path: *const c_char,
+    _len: usize,
+) -> twz_error {
+    TwzError::NOT_SUPPORTED.raw()
+}
+check_ffi_type!(twz_rt_set_nameroot, _, _, _);
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_fd_open(
     kind: open_kind,

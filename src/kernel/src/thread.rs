@@ -979,8 +979,7 @@ impl Thread {
         self.sleep_word[1].store(parts[1], Ordering::Relaxed);
         self.sleep_word[2].store(offset as u64, Ordering::Relaxed);
         self.sleep_word[3].store(value, Ordering::Relaxed);
-        self.sleep_word[4]
-            .store((is32 as u64) | ((invert as u64) << 1), Ordering::Relaxed);
+        self.sleep_word[4].store((is32 as u64) | ((invert as u64) << 1), Ordering::Relaxed);
     }
 
     /// Record which path just won `reset_sync_sleep` on this thread; see the field. Called by the
@@ -999,6 +998,13 @@ impl Thread {
 
     /// Record the security context this thread must be running in before a pending force-exit is
     /// delivered. Zero clears the restriction.
+    /// Record a name for this thread as a note on its control object. Notes are where thread
+    /// names live system-wide -- there is no name field in `ThreadRepr` -- so this is what makes
+    /// a kernel thread show up labelled rather than blank.
+    pub fn set_name(&self, name: &str) {
+        self.control_object.object().add_note(name.as_bytes());
+    }
+
     /// The context stamped at spawn from `ThreadSpawnArgs::home_sctx`. Zero means the thread
     /// belongs to no compartment (kernel-spawned, statically linked, or the monitor's own).
     pub fn home_sctx_id(&self) -> ObjID {

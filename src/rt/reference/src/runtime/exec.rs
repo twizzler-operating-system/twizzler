@@ -99,7 +99,8 @@ fn expand_star(entry: &Path) -> Option<Vec<PathBuf>> {
 
     // Enumerated through the naming handle rather than `std::fs::read_dir`, which would re-enter
     // this crate through the `twz_rt_fd_*` symbols it exports.
-    let nsid = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), prefix.to_str()?).ok()?;
+    let nsid =
+        twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), prefix.to_str()?).ok()?;
     let session = crate::runtime::file::get_naming_handle()?;
     // `usize::MAX` is "all of them": the handle pages through its buffer and stops early, so this
     // asks for everything rather than silently truncating at some cap.
@@ -181,7 +182,15 @@ impl ReferenceRuntime {
             if (b.bind_len as usize) < size_of::<object_bind_info>() {
                 return None;
             }
-            Some(unsafe { b.bind_data.as_ptr().cast::<object_bind_info>().read_unaligned() }.id)
+            Some(
+                unsafe {
+                    b.bind_data
+                        .as_ptr()
+                        .cast::<object_bind_info>()
+                        .read_unaligned()
+                }
+                .id,
+            )
         };
         let stdio_pipes: Vec<u128> = bindings
             .iter()
@@ -191,8 +200,7 @@ impl ReferenceRuntime {
         let filtered: Vec<twizzler_rt_abi::bindings::binding_info> = bindings
             .iter()
             .filter(|b| {
-                let drop = b.fd > 2
-                    && pipe_obj(b).is_some_and(|id| stdio_pipes.contains(&id));
+                let drop = b.fd > 2 && pipe_obj(b).is_some_and(|id| stdio_pipes.contains(&id));
                 // Fires on every piped spawn, so the audit line is opt-in (`--diag=exec`); the
                 // drop itself is the validated behavior and stays.
                 if drop && twizzler_net::diag_enabled("exec") {

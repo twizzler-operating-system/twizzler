@@ -93,9 +93,18 @@ pub fn start_new_init() {
     schedule_new_thread(thread);
 }
 
+/// `name` is recorded as a note on the thread's control object, which is where every other
+/// reader of thread names looks (the reference runtime mirrors `set_name` there too). Without
+/// it a kernel thread is anonymous everywhere: `top`, the hang dump, and the wait tables.
 #[track_caller]
-pub fn start_new_kernel(pri: Priority, start: extern "C" fn(), arg: usize) -> ThreadRef {
+pub fn start_new_kernel(
+    pri: Priority,
+    start: extern "C" fn(),
+    arg: usize,
+    name: &str,
+) -> ThreadRef {
     let mut thread = Thread::new(None, None, pri);
+    thread.set_name(name);
     log::trace!(
         "started new kernel thread at {:?} with ID {}, from {}",
         thread.effective_priority(),
@@ -229,7 +238,9 @@ where
         main: Box::new(main),
         arg: raw as usize,
     });
-    let thr = start_new_kernel(pri, trampoline, Box::into_raw(arg) as usize);
+    // One name for every closure thread: the callers are mostly kernel tests, and a generic
+    // label still beats the blank a nameless thread shows.
+    let thr = start_new_kernel(pri, trampoline, Box::into_raw(arg) as usize, "kclosure");
     // Safety: this is our own Arc, from earlier, after we manually incremented the count on behalf
     // of the receiving thread.
     let info = unsafe { Arc::from_raw(raw) };

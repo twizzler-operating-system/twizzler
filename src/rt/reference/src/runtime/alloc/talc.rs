@@ -513,7 +513,22 @@ impl LocalAllocatorInner {
         if !self.early_allocs_frozen {
             return self.early_talc.malloc(layout).unwrap().as_ptr();
         }
-        self.talc.malloc(layout).unwrap().as_ptr()
+        // Null, not `unwrap`. `GlobalAlloc::alloc` holds `LocalAllocator::inner` across this call,
+        // so an `unwrap` panic here formats its message *inside* the allocator, re-enters `alloc`
+        // and self-deadlocks on that lock -- a silent wedge with the failing layout never reported.
+        // Null is the `GlobalAlloc` contract: `Global::allocate` turns it into `handle_alloc_error`
+        // (which aborts without allocating), and ferroc's base already maps it to `AllocError`.
+        match self.talc.malloc(layout) {
+            Ok(ptr) => ptr.as_ptr(),
+            Err(_) => {
+                twizzler_abi::klog_println!(
+                    "ALLOCFAIL: talc malloc failed for {} bytes (align {})",
+                    layout.size(),
+                    layout.align()
+                );
+                core::ptr::null_mut()
+            }
+        }
     }
 
     unsafe fn do_dealloc(&mut self, ptr: *mut u8, layout: Layout) {

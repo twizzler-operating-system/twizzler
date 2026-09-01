@@ -163,7 +163,11 @@ fn register(fd: RawFd, filter: i16, clear: bool) -> RawFd {
         .iter()
         .find(|e| e.flags & EV_ERROR == EV_ERROR)
         .expect("expected a receipt for the registration");
-    assert_eq!(receipt.data, 0, "registration failed: errno {}", receipt.data);
+    assert_eq!(
+        receipt.data, 0,
+        "registration failed: errno {}",
+        receipt.data
+    );
     kq
 }
 

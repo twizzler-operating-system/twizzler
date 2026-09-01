@@ -8,17 +8,17 @@ fn main() {
     let arch = target.split("-").next().unwrap();
     let cmake_build = format!("{}/cmake-build", outdir);
 
-    // A/B ARM: lwext4's block cache is CONFIG_BLOCK_DEV_CACHE_SIZE blocks, default 1024 (4 MiB at
-    // a 4 KiB block). `ext4_block_cache_flush` only walks the dirty list and never evicts clean
-    // buffers, so metadata should stay cached -- and measured on 08-26 it did, with block reads
-    // plateauing at 57,545 and stopping. From 08-27 they never plateau, which is the signature of
-    // a working set crossing a fixed bound. Set here rather than via the CFLAGS environment so the
-    // arm is visible in `git diff`; an env-var arm is invisible to every mtime and fingerprint
-    // check we have.
-    let cflags = format!(
-        "{} -DCONFIG_USE_DEFAULT_CFG -DCONFIG_BLOCK_DEV_CACHE_SIZE=1024 -g",
-        cflags
-    );
+    // A/B ARM: lwext4's block cache, in blocks (4 KiB each). See BLOCK_DEV_CACHE_SIZE below.
+    //
+    // This used to be passed here, in CFLAGS, alongside a comment claiming the value was 1024.
+    // It never reached the compiler: lwext4's own CMakeLists does
+    // `add_definitions(-DCONFIG_BLOCK_DEV_CACHE_SIZE=16)` in the LIB_ONLY branch, which lands on
+    // the compile line after CMAKE_C_FLAGS and wins -- so every build has run with a 16-block,
+    // 64 KiB cache, and the header's `#ifndef ... 1024` default never applied either. Verified by
+    // grepping the generated flags: 21 occurrences of `=16`, none of the intended value. Any A/B
+    // run through the old knob varied nothing, which is the likeliest reading of the 08-27
+    // "block reads never plateau" note this comment used to carry.
+    let cflags = format!("{} -DCONFIG_USE_DEFAULT_CFG -g", cflags);
 
     //let _ = std::fs::remove_dir_all(&cmake_build);
 
@@ -30,6 +30,10 @@ fn main() {
         .arg("-DCMAKE_SYSTEM_NAME=Generic")
         .arg("-DLIB_ONLY=True")
         .arg("-DCONFIG_HAVE_OWN_ERRNO=1")
+        // A cmake cache variable, so it actually reaches the compile *and* so changing it
+        // reconfigures -- the `remove_dir_all(&cmake_build)` below is commented out, and a warm
+        // build directory would otherwise silently rebuild nothing and report the old value.
+        .arg("-DBLOCK_DEV_CACHE_SIZE=8192")
         .arg(format!("-DCMAKE_SYSTEM_PROCESSOR={}", arch))
         .arg("-G")
         .arg("Ninja")

@@ -364,6 +364,13 @@ fn start_write_thread() {
     if current_thread_ref().is_some() {
         // TODO: dynamically adjust priority based on how many pending async events there are to
         // process.
-        WRITE_THREAD.call_once(|| start_new_kernel(Priority::BACKGROUND, kthread_trace_writer, 0));
+        WRITE_THREAD.call_once(|| {
+            start_new_kernel(
+                Priority::BACKGROUND,
+                kthread_trace_writer,
+                0,
+                "trace-writer",
+            )
+        });
     }
 }

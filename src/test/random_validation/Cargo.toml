@@ -10,3 +10,6 @@ getrandom = "0.2"
 diehardest = "1.0.0"
 twizzler-runtime = { path = "../../rt" }
 
+
+[package.metadata]
+twizzler-build = "test"

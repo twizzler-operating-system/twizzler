@@ -21,6 +21,10 @@ struct OtherOptions {
     message_format: MessageFormat,
     manifest_path: Option<PathBuf>,
     build_tests: bool,
+    /// Build the crates marked `twizzler-build = "test"` into the Userspace collection. Separate
+    /// from `build_tests`: an `--autostart` run needs a test-only program built without paying for
+    /// the whole `#[test]` collection.
+    build_test_programs: bool,
     needs_full_rebuild: bool,
     build_twizzler: bool,
     only_runtime: bool,
@@ -61,6 +65,18 @@ fn locate_packages(workspace: &Workspace, kind: Option<&str>) -> Vec<Package> {
         })
         .cloned()
         .collect()
+}
+
+/// `package.metadata.twizzler-build` value marking a crate as a test-only program: it joins the
+/// Userspace collection only when the build was asked for tests (or is a check/doc pass).
+const TEST_KIND: &str = "test";
+
+/// Whether `name` (a package or cdylib name, `-`/`_` insensitive) is a test-only program.
+pub(crate) fn is_test_only_package(workspace: &Workspace, name: &str) -> bool {
+    let norm = name.replace('-', "_");
+    locate_packages(workspace, Some(TEST_KIND))
+        .iter()
+        .any(|p| p.name().replace('-', "_") == norm)
 }
 
 fn get_cli_configs(
@@ -278,7 +294,12 @@ fn build_twizzler<'a>(
         crate::triple::Host::Twizzler,
         None,
     );
-    let packages = locate_packages(workspace, None);
+    let mut packages = locate_packages(workspace, None);
+    // Test-only programs join this collection only for a tests build. check/doc still cover them,
+    // so excluding them from a normal build cannot let them silently rot.
+    if other_options.build_test_programs || mode.is_check() || mode.is_doc() {
+        packages.extend(locate_packages(workspace, Some(TEST_KIND)));
+    }
     let mut options = CompileOptions::new(workspace.gctx(), mode)?;
     options.build_config =
         BuildConfig::new(workspace.gctx(), None, false, &[triple.to_string()], mode)?;
@@ -353,7 +374,8 @@ fn maybe_build_tests_dynamic<'a>(
         crate::triple::Host::Twizzler,
         None,
     );
-    let packages = locate_packages(workspace, None);
+    let mut packages = locate_packages(workspace, None);
+    packages.extend(locate_packages(workspace, Some(TEST_KIND)));
     let mut options = CompileOptions::new(workspace.gctx(), mode)?;
     options.build_config =
         BuildConfig::new(workspace.gctx(), None, false, &[triple.to_string()], mode)?;
@@ -647,6 +669,7 @@ pub(crate) fn do_docs(cli: DocOptions) -> anyhow::Result<TwizzlerCompilation> {
         message_format: MessageFormat::Human,
         manifest_path: None,
         build_tests: false,
+        build_test_programs: false,
         needs_full_rebuild: false,
         build_twizzler: true,
         only_runtime: false,
@@ -667,6 +690,7 @@ pub(crate) fn do_build(cli: BuildOptions) -> anyhow::Result<Option<TwizzlerCompi
         message_format: MessageFormat::Human,
         manifest_path: None,
         build_tests: cli.tests,
+        build_test_programs: cli.tests || cli.test_programs,
         needs_full_rebuild: false,
         build_twizzler: !cli.kernel,
         only_runtime: cli.only_runtime,
@@ -679,6 +703,7 @@ pub(crate) fn do_post_toolchain_runtime_build(_cli: &BootstrapOptions) -> anyhow
         message_format: MessageFormat::Human,
         manifest_path: None,
         build_tests: false,
+        build_test_programs: false,
         needs_full_rebuild: true,
         build_twizzler: true,
         only_runtime: true,
@@ -728,6 +753,7 @@ pub(crate) fn do_check(cli: CheckOptions) -> anyhow::Result<()> {
         },
         manifest_path: cli.manifest_path,
         build_tests: false,
+        build_test_programs: false,
         needs_full_rebuild: false,
         build_twizzler: !cli.kernel,
         only_runtime: false,

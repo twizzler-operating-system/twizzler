@@ -424,6 +424,14 @@ pub struct ObjectEvictInfo {
     pub version: u64,
     pub flags: ObjectEvictFlags,
     pub uniq_id: ObjID,
+    /// The object's `MEXT_SIZED`, read by the kernel from the meta page it is already evicting.
+    ///
+    /// Sent because the pager needs it to set an external file's length, and the only other way
+    /// for it to learn the value is to read the meta page's physical memory -- a `CopyUserPhys`
+    /// on the pager->kernel channel, which is serviced by a single kernel thread and so serializes
+    /// every worker that needs it, from inside handling a kernel request. Zero when the sync
+    /// carried no meta page, in which case the length did not change.
+    pub len: u64,
 }
 
 impl ObjectEvictInfo {
@@ -434,6 +442,7 @@ impl ObjectEvictInfo {
         version: u64,
         flags: ObjectEvictFlags,
         uniq_id: ObjID,
+        len: u64,
     ) -> Self {
         Self {
             uniq_id,
@@ -442,6 +451,7 @@ impl ObjectEvictInfo {
             phys,
             version,
             flags,
+            len,
         }
     }
 }

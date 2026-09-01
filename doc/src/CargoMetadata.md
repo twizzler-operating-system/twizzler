@@ -7,6 +7,7 @@ The xtask program organizes the build into a series of "collections" that get bu
  - Userspace (targets arch-machine-twizzler, optional, default yes)
  - Userspace-static (targets arch-machine-twizzler-minruntime, optional, default yes)
  - Userspace-tests (targets arch-machine-twizzler-minruntime, optional, default no)
+ - Test-only programs (part of Userspace, but built only for a tests build)
  - Kernel-tests (targets arch-machine-none, optional, default no)
 
 Programs may select which collection to be compiled in based on the metadata value set in Cargo.toml, described in more detail below.
@@ -27,6 +28,23 @@ Tools should be placed in the tools subdirectory, and should set the `package.me
 [package.metadata]
 twizzler-build = "tool"
 ```
+
+## Test-only programs
+
+Programs that only exist to be run by the test suite (the crates under `src/test`, and the
+monitor's test crates) set the key to "test":
+
+```{toml}
+[package.metadata]
+twizzler-build = "test"
+```
+
+These join the Userspace collection only when the build was asked for tests -- `cargo build-all
+--tests`, `cargo start-qemu --tests/--benches/--bench`, or an `--autostart` run, which is how a
+single test program gets driven directly. A plain `cargo build-all` or `cargo start-qemu` neither
+compiles them nor packs them into the initrd, even if they are listed there. `cargo build-all
+--test-programs` builds them without the `#[test]` collection; `cargo check-all` and `cargo
+doc-all` always cover them, so excluding them from normal builds cannot let them rot.
 
 ## The kernel and xtask
 Both the kernel and xtask themselves set the `package.metadata.twizzler-build` key to "kernel" or "xtask". Programs should not use these values. 

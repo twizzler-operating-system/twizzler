@@ -1405,7 +1405,15 @@ use std::cell::RefCell;
 #[thread_local]
 static DLAPI_ERROR: RefCell<Option<std::ffi::CString>> = const { RefCell::new(None) };
 
+// Also logged, not just stashed. The only way to read this is dlerror(), and a caller that drops
+// it (rustc's proc-macro loader is one: the error is swallowed by a `maybe_resolve_crate` caller
+// and resurfaces later as an unrelated "can't find crate") leaves a failed dlopen/dlsym with no
+// trace anywhere in the system.
 fn set_dl_error(msg: impl Into<Vec<u8>>) {
+    let msg = msg.into();
+    if let Ok(s) = core::str::from_utf8(&msg) {
+        twizzler_abi::klog_println!("dl error: {}", s);
+    }
     *DLAPI_ERROR.borrow_mut() = std::ffi::CString::new(msg).ok();
 }
 

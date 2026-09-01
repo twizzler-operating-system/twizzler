@@ -10,3 +10,6 @@ twizzler-rt-abi = { path = "../../abi/rt-abi" }
 twizzler-runtime = { workspace = true }
 pager = { path = "../../lib/pager" }
 naming = { workspace = true }
+
+[package.metadata]
+twizzler-build = "test"

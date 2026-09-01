@@ -481,6 +481,16 @@ trait Namespace {
     /// that very differently from the `NotFound` an `Option` would have flattened it to.
     fn remove(&self, name: &str) -> Result<NsNode>;
 
+    /// Rebind `old` in this namespace to `new` in namespace `to`, as one operation.
+    ///
+    /// Defaults to unsupported, and [`NameSession::rename`] falls back to insert-then-remove.
+    /// Only a backing store that can move an entry without it ever having two names should
+    /// implement this -- for a directory the two-step form is not merely non-atomic, it frees
+    /// the inode when the old name goes and leaves the new one dangling.
+    fn rename_entry(&self, _old: &str, _to: ObjID, _new: &str) -> Result<()> {
+        Err(TwzError::NOT_SUPPORTED)
+    }
+
     fn parent(&self) -> Option<&ParentInfo>;
 
     fn id(&self) -> ObjID;
@@ -762,7 +772,15 @@ impl NameSession<'_> {
                     node = Some(NsNode::ns("/", namespace.id())?);
                 }
                 Component::CurDir => {
-                    node = namespace.find(".");
+                    // A namespace is its own `.`, so synthesize the self-entry when the backing
+                    // store does not keep one. External (store-backed) namespaces enumerate
+                    // through the pager and never yield `.`, so `ls` in one failed with
+                    // "cannot access '.': No such file or directory" even though the ext4
+                    // directory has a perfectly good `.` dirent. Same shape as the `..`-at-root
+                    // arm below, and for the same reason.
+                    node = namespace
+                        .find(".")
+                        .or_else(|| NsNode::ns(".", namespace.id()).ok());
                 }
                 Component::ParentDir => {
                     // `..` at the root is the root, as it is at `/` on any Unix -- a path must
@@ -1115,9 +1133,14 @@ impl NameSession<'_> {
             new_entry,
             new_container.id()
         );
-        // Insert at new location, then remove from old location
-        new_container.replace(new_entry)?;
-        old_container.remove(old_name).map(|_| ())
+        // One operation where the store can do it; insert-then-remove only otherwise.
+        match old_container.rename_entry(old_name, new_container.id(), &new_name) {
+            Err(e) if e == TwzError::NOT_SUPPORTED => {
+                new_container.replace(new_entry)?;
+                old_container.remove(old_name).map(|_| ())
+            }
+            r => r,
+        }
     }
 
     pub fn link<P: AsRef<Path>, L: AsRef<Path>>(&self, name: P, link: L) -> Result<()> {

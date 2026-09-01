@@ -316,6 +316,12 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
             .get("initrd")
             .expect("no initrd specification in Cargo.toml");
 
+        // Same predicate `BuildOptions::test_programs` uses, so what the initrd asks for and what
+        // the Userspace collection actually built agree: test-only crates exist only under one of
+        // these.
+        let test_programs_built =
+            cli.tests || cli.benches || cli.bench.is_some() || cli.autostart.is_some();
+
         let mut initrd_files = vec![];
         for item in initrd_meta
             .as_array()
@@ -325,6 +331,11 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
             let split: Vec<_> = spec.split(':').into_iter().collect();
             if split.len() != 2 {
                 anyhow::bail!("initrd item must be of the form `x:y'");
+            }
+            if !test_programs_built
+                && crate::build::is_test_only_package(comp.borrow_user_workspace(), split[1])
+            {
+                continue;
             }
             match split[0] {
                 "lib" => {

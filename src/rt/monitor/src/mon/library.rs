@@ -138,7 +138,19 @@ impl Monitor {
             let mut load_ctx = LoadCtx::default();
             let loads = dynlink
                 .load_library_in_compartment(comp_id, unlib, AllowedGates::Private, &mut load_ctx)
-                .map_err(|_| TwzError::NOT_FOUND)?;
+                // Flattening this to NOT_FOUND discards the only account of what went wrong --
+                // and it reaches userspace as `Naming(NotFound)`, which reads as "no such file"
+                // even when the file was found and a *dependency* of it was not.
+                .map_err(|e| {
+                    tracing::warn!(
+                        "failed to load library '{}' (id {:?}) into compartment {}: {:?}",
+                        name,
+                        id,
+                        comp_id,
+                        e
+                    );
+                    TwzError::NOT_FOUND
+                })?;
             tracing::debug!("loaded library '{}'", name);
             // This compartment's gate addresses and library count were cached on the assumption
             // that its dynlink state is fixed. This is the one path that adds a library to a

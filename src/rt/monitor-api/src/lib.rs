@@ -459,6 +459,18 @@ pub struct LibraryHandle {
 }
 
 impl LibraryHandle {
+    /// Get the library info, or `None` if the monitor cannot describe this library.
+    ///
+    /// Use this, not [`Self::info`], on anything reachable from `dl_iterate_phdr`: that runs on
+    /// every unwind, so a panic here is a panic *inside* the panic path and aborts with the
+    /// original message lost. The monitor answers `Internal` for a library it can no longer find
+    /// in the dynlink graph, and for one whose program headers it cannot locate.
+    pub fn try_info(&self) -> Option<LibraryInfo<'_>> {
+        Some(LibraryInfo::from_raw(
+            monitor_rt_get_library_info(self.desc).ok()?,
+        ))
+    }
+
     /// Get the library info.
     pub fn info(&self) -> LibraryInfo<'_> {
         LibraryInfo::from_raw(monitor_rt_get_library_info(self.desc).unwrap())

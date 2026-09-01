@@ -1085,6 +1085,7 @@ pub fn start_reaper_thread() {
         crate::thread::priority::Priority::USER,
         reaper_entry,
         0,
+        "obj-reaper",
     );
 }
 

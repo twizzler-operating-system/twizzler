@@ -638,7 +638,9 @@ pub fn runtime_preentry(info: &GateCallInfo) -> Result<(), TwzError> {
     // `cross_compartment_entry` adds on top of it.
     // Three clock reads on the entry side of every gate call, static and dynamic, when
     // unconditional -- `transitstats` is the only consumer and it is off.
-    let transit_ns = statcadence::STATS_ON.then(|| info.inbound_transit_ns()).flatten();
+    let transit_ns = statcadence::STATS_ON
+        .then(|| info.inbound_transit_ns())
+        .flatten();
     let t_entry = statcadence::STATS_ON.then(twizzler_rt_abi::time::twz_rt_get_monotonic_time);
     let res = twizzler_rt_abi::core::twz_rt_cross_compartment_entry();
     let t_done = statcadence::STATS_ON.then(twizzler_rt_abi::time::twz_rt_get_monotonic_time);

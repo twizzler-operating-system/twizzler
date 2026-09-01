@@ -125,10 +125,13 @@ pub fn start_sampler() {
     if !ENABLED {
         return;
     }
-    std::thread::spawn(|| loop {
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        snapshot();
-    });
+    let _ = std::thread::Builder::new()
+        .name("pager-heapdiag".into())
+        .spawn(|| loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            snapshot();
+        })
+        .unwrap();
     klog_println!("PAGER-HEAPCENSUS-SAMPLER started period_ms=1000");
 }
 

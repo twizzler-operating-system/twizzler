@@ -4,7 +4,7 @@ use core::time::Duration;
 use heapless::index_map::FnvIndexMap;
 use twizzler_abi::{
     device::CacheType,
-    meta::{MetaExt, MetaFlags, MetaInfo, MEXT_MTIME, MEXT_NLINK, MEXT_SIZED},
+    meta::{MEXT_MTIME, MEXT_NLINK, MEXT_SIZED, MetaExt, MetaFlags, MetaInfo},
     object::{ObjID, Protections},
     pager::{
         CompletionToKernel, CompletionToPager, KernelCommand, KernelCompletionFlags,
@@ -19,22 +19,22 @@ use twizzler_rt_abi::{
 };
 
 use super::{
-    inflight::NR_REQUESTS, inflight_mgr, request::ReqKind, request_pager_memory,
-    DEFAULT_PAGER_OUTSTANDING_FRAMES,
+    DEFAULT_PAGER_OUTSTANDING_FRAMES, inflight::NR_REQUESTS, inflight_mgr, request::ReqKind,
+    request_pager_memory,
 };
 use crate::{
-    arch::{memory::phys_to_virt, PhysAddr},
+    arch::{PhysAddr, memory::phys_to_virt},
     idcounter::{IdCounter, SimpleId},
     instant::Instant,
     is_test_mode,
     memory::{
-        context::{kernel_context, KernelMemoryContext, ObjectContextInfo},
-        frame::{merge_frame, FrameRef, PHYS_LEVEL_LAYOUTS},
+        context::{KernelMemoryContext, ObjectContextInfo, kernel_context},
+        frame::{FrameRef, PHYS_LEVEL_LAYOUTS, merge_frame},
         pagetables::{ContiguousProvider, MappingCursor, MappingFlags, MappingSettings},
         sim_memory_pressure,
-        tracker::{start_reclaim_thread, FrameAllocFlags, FrameAllocator},
+        tracker::{FrameAllocFlags, FrameAllocator, start_reclaim_thread},
     },
-    obj::{lookup_object, LookupFlags, Object, ObjectRef, PageNumber},
+    obj::{LookupFlags, Object, ObjectRef, PageNumber, lookup_object},
     once::Once,
     queue::{ManagedQueueReceiver, QueueObject},
     security::KERNEL_SCTX,
@@ -143,6 +143,7 @@ pub(super) fn pager_request_handler_main() {
 
                 start_reclaim_thread();
                 crate::obj::start_reaper_thread();
+                crate::pager::start_background_sync_thread();
                 // TODO
                 if is_test_mode() && false {
                     run_closure_in_new_thread(Priority::USER, || {
@@ -758,8 +759,18 @@ pub fn init_pager_queue(id: ObjID, outgoing: bool) {
         super::start_memory_provider();
         super::start_deleter();
         // TODO: these should be higher?
-        start_new_kernel(Priority::REALTIME, pager_compl_handler_entry, 0);
-        start_new_kernel(Priority::USER, pager_request_handler_entry, 0);
+        start_new_kernel(
+            Priority::REALTIME,
+            pager_compl_handler_entry,
+            0,
+            "pager-completion",
+        );
+        start_new_kernel(
+            Priority::USER,
+            pager_request_handler_entry,
+            0,
+            "pager-request",
+        );
         log::debug!("pager queues and handlers initialized");
     }
 }

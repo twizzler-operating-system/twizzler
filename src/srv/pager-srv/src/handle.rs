@@ -286,12 +286,58 @@ pub fn pager_unlink_external(desc: Descriptor, dir: ObjID, namelen: usize) -> Re
     let namelen = pager
         .data
         .with_handle(comp, desc, |pc| pc.buffer.read(&mut namebuf[0..namelen]))?;
-    let name =
-        str::from_utf8(namebuf[..namelen].as_ref()).map_err(|_| TwzError::INVALID_ARGUMENT)?;
+    let name = str::from_utf8(namebuf[..namelen].as_ref()).map_err(|_| {
+        tracing::warn!(
+            "pager_unlink_external: non-UTF-8 name of {} bytes: {:?}",
+            namelen,
+            &namebuf[..namelen]
+        );
+        TwzError::INVALID_ARGUMENT
+    })?;
 
     pager
         .paged_ostore(None)?
         .unlink_external(Some(dir.raw()), name)?;
+
+    Ok(())
+}
+
+#[secgate::entry(lib = "pager")]
+pub fn pager_rename_external(
+    desc: Descriptor,
+    old_id: ObjID,
+    new_id: ObjID,
+    old_len: usize,
+    new_len: usize,
+) -> Result<(), TwzError> {
+    let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
+    let comp = info.source_context().unwrap_or(0.into());
+    let pager = &PAGER_CTX.get().unwrap();
+
+    // Both names share one buffer, the second at `old_len`, so the pair has to fit together.
+    let total = old_len
+        .checked_add(new_len)
+        .filter(|t| *t <= NAME_DATA_MAX)
+        .ok_or(TwzError::INVALID_ARGUMENT)?;
+    let mut namebuf = [0u8; NAME_DATA_MAX];
+    let total = pager
+        .data
+        .with_handle(comp, desc, |pc| pc.buffer.read(&mut namebuf[0..total]))?;
+    if total < old_len {
+        return Err(TwzError::INVALID_ARGUMENT);
+    }
+    let split = |b: &[u8]| str::from_utf8(b).map(str::to_string);
+    let (Ok(old), Ok(new)) = (split(&namebuf[..old_len]), split(&namebuf[old_len..total])) else {
+        tracing::warn!(
+            "pager_rename_external: non-UTF-8 name(s) in {:?}",
+            &namebuf[..total]
+        );
+        return Err(TwzError::INVALID_ARGUMENT);
+    };
+
+    pager
+        .paged_ostore(None)?
+        .rename_external(Some(old_id.raw()), old, Some(new_id.raw()), new)?;
 
     Ok(())
 }

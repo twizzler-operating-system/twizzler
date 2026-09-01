@@ -102,6 +102,26 @@ const MAX_DATA_QUEUE_LEN: u32 = (DMA_PAGE_SIZE / size_of::<CommonCommand>()) as 
 /// other tasks their depth rather than buying this one any.
 const PIPELINE_DEPTH: usize = 4;
 
+/// What `pipelined_transfer` actually manages to batch.
+///
+/// The chunk size it builds is bounded by two different things -- the controller's MDTS, and how
+/// many *disk-consecutive* pages the caller handed it -- and the command count alone cannot tell
+/// them apart. A `max_chunk` at the MDTS cap with a low mean says the runs are short; a
+/// `max_chunk` of 1 says the cap is.
+mod xferstats {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    pub static CMDS: AtomicU64 = AtomicU64::new(0);
+    pub static PAGES: AtomicU64 = AtomicU64::new(0);
+    pub static MAX_CHUNK: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record(chunk_pages: usize) {
+        CMDS.fetch_add(1, Ordering::Relaxed);
+        PAGES.fetch_add(chunk_pages as u64, Ordering::Relaxed);
+        MAX_CHUNK.fetch_max(chunk_pages as u64, Ordering::Relaxed);
+    }
+}
+
 /// Largest transfer we will build for one command when the controller reports no MDTS limit, and
 /// the ceiling we clamp a reported limit to.
 const MAX_TRANSFER_PAGES: usize = 512;
@@ -422,6 +442,19 @@ impl NvmeController {
 
     /// Called by the pager watchdog when a work item has been stuck long enough to report.
     pub fn dump_stall(&self) {
+        {
+            use core::sync::atomic::Ordering;
+            let cmds = xferstats::CMDS.load(Ordering::Relaxed);
+            let pages = xferstats::PAGES.load(Ordering::Relaxed);
+            tracing::warn!(
+                "nvme xfer: {} cmds, {} pages, {:.2} pages/cmd, max chunk {}, cap {} pages",
+                cmds,
+                pages,
+                if cmds == 0 { 0.0 } else { pages as f64 / cmds as f64 },
+                xferstats::MAX_CHUNK.load(Ordering::Relaxed),
+                self.blocking_get_max_transfer_pages::<{ crate::helpers::PAGE as usize }>(),
+            );
+        }
         tracing::warn!(
             "nvme dump: int_loops {} int_parks {}",
             self.inner.int_loops.load(Ordering::Relaxed),
@@ -1075,6 +1108,7 @@ impl NvmeController {
             let Some(inflight) = inflight else {
                 break;
             };
+            xferstats::record(chunk.len());
             batch.push((prp, inflight, chunk.len()));
             submitted += chunk.len();
         }

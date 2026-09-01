@@ -400,7 +400,12 @@ extern "C" fn boot_sequence() {
         test_main();
     }
     start_new_init();
-    let _ = crate::thread::entry::start_new_kernel(Priority::BACKGROUND, background_worker, 0);
+    let _ = crate::thread::entry::start_new_kernel(
+        Priority::BACKGROUND,
+        background_worker,
+        0,
+        "background-worker",
+    );
     if reap_thread_enabled() {
         crate::thread::reaper::start();
     }
@@ -448,9 +453,13 @@ pub fn idle_main() -> ! {
             crate::thread::priority::Priority::REALTIME,
             boot_sequence,
             0,
+            "boot-sequence",
         );
     }
-    ::log::debug!("processor {} entering main idle loop", current_processor().id);
+    ::log::debug!(
+        "processor {} entering main idle loop",
+        current_processor().id
+    );
     let mut iter = 0u32;
     loop {
         // Deliver wakeups parked on the requeue list. A signal that lands between a waiter's

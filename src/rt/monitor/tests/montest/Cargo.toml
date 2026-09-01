@@ -14,3 +14,6 @@ ctor = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 twizzler-abi = { path = "../../../../lib/twizzler-abi" }
+
+[package.metadata]
+twizzler-build = "test"

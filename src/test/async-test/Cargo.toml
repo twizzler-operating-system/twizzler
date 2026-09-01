@@ -5,3 +5,6 @@ edition = "2024"
 
 [dependencies]
 tokio = { version = "=1.40", features = ["io-std", "macros", "rt", "rt-multi-thread", "sync", "time"] }
+
+[package.metadata]
+twizzler-build = "test"

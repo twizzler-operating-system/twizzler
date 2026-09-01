@@ -48,5 +48,17 @@ pub fn pager_nlink_external(id: ObjID) -> Result<u32, TwzError> {}
 #[secgate::gatecall]
 pub fn pager_unlink_external(desc: Descriptor, id: ObjID, namelen: usize) -> Result<(), TwzError> {}
 
+/// Rebind `old` (in `old_id`) to `new` (in `new_id`). Both names are packed into the handle's
+/// buffer, the second at `old_len`.
+#[secgate::gatecall]
+pub fn pager_rename_external(
+    desc: Descriptor,
+    old_id: ObjID,
+    new_id: ObjID,
+    old_len: usize,
+    new_len: usize,
+) -> Result<(), TwzError> {
+}
+
 #[secgate::gatecall]
 pub fn pager_readlink_external(desc: Descriptor, id: ObjID) -> Result<usize, TwzError> {}

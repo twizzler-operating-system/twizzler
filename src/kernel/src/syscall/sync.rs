@@ -274,31 +274,32 @@ pub fn add_to_requeue(thread: ThreadRef) {
             thread.get_state(),
             ExecutionState::Sleeping | ExecutionState::Suspended
         ) {
-        log::trace!(
-            "adding {} ({}) to immediate schedule, from {}",
-            thread.id(),
-            thread.objid(),
-            core::panic::Location::caller(),
-        );
-        let id = thread.objid();
-        assert!(!thread.get_mutex_wait());
-        thread.note_requeue_event(3);
-        crate::processor::sched::schedule_thread(thread);
-        let requeue = get_requeue_list();
-        // See `remove_from_requeue`: the removed reference must not be dropped under the spinlock.
-        // `schedule_thread` above returns early for an exiting thread without storing the one it
-        // was given, so a stale entry here can hold the last reference, and `Thread::drop` ->
-        // `IdCounter::release` takes a sleeping mutex.
-        let removed = {
-            let mut list = requeue.list.lock();
-            let removed = list.find_mut(&id).remove();
-            if removed.is_some() {
-                requeue.count.fetch_sub(1, Ordering::SeqCst);
-            }
-            removed
-        };
-        drop(removed);
-        return;
+            log::trace!(
+                "adding {} ({}) to immediate schedule, from {}",
+                thread.id(),
+                thread.objid(),
+                core::panic::Location::caller(),
+            );
+            let id = thread.objid();
+            assert!(!thread.get_mutex_wait());
+            thread.note_requeue_event(3);
+            crate::processor::sched::schedule_thread(thread);
+            let requeue = get_requeue_list();
+            // See `remove_from_requeue`: the removed reference must not be dropped under the
+            // spinlock. `schedule_thread` above returns early for an exiting thread
+            // without storing the one it was given, so a stale entry here can hold the
+            // last reference, and `Thread::drop` -> `IdCounter::release` takes a
+            // sleeping mutex.
+            let removed = {
+                let mut list = requeue.list.lock();
+                let removed = list.find_mut(&id).remove();
+                if removed.is_some() {
+                    requeue.count.fetch_sub(1, Ordering::SeqCst);
+                }
+                removed
+            };
+            drop(removed);
+            return;
         }
         // Token won but the thread is not parked: it is somewhere between commit and the
         // scheduler (finish_blocking pre-Sleeping), in its no-block window, or already back in
@@ -358,9 +359,9 @@ pub fn add_all_to_requeue(iter: impl IntoIterator<Item = ThreadRef>) {
         // Token first, then execution state: see add_to_requeue.
         let woke = if thread.reset_sync_sleep_done() {
             if matches!(
-            thread.get_state(),
-            ExecutionState::Sleeping | ExecutionState::Suspended
-        ) {
+                thread.get_state(),
+                ExecutionState::Sleeping | ExecutionState::Suspended
+            ) {
                 true
             } else {
                 // Not parked: hand the token back and queue an entry instead; see
@@ -1168,12 +1169,12 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
             // results in hand on the requeue handoff whose loss is the lost-wake bug (hang rows
             // cs=4: consumed own SYNC here, blocked, entry vanished, parked forever). Three
             // cases now, none of which block on that handoff:
-            //  - we win our own SYNC: nobody else can ever claim us this round; no entry is
-            //    left armed (the old self-requeue entry was only there to bounce the block) and
-            //    none is owed to us. Return.
-            //  - we lose it and some op had armed (SYNC existed): a waker owns our round and
-            //    its handoff is in flight; block_or_claim consumes it (and cannot block --
-            //    SYNC is already gone).
+            //  - we win our own SYNC: nobody else can ever claim us this round; no entry is left
+            //    armed (the old self-requeue entry was only there to bounce the block) and none is
+            //    owed to us. Return.
+            //  - we lose it and some op had armed (SYNC existed): a waker owns our round and its
+            //    handoff is in flight; block_or_claim consumes it (and cannot block -- SYNC is
+            //    already gone).
             //  - no op armed at all (pure-wake call or every arm declined): SYNC was never set;
             //    nothing to consume. Return.
             // The armed entries in `unsleeps` are undone in the cleanup below in every case.

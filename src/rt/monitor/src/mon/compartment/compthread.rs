@@ -47,6 +47,10 @@ impl CompThread {
         let mt = tmgr
             .start_thread(mon, comp_main_entry, args, main_thread_comp, instance)
             .into_diagnostic()?;
+        // Name it here because nothing else will: the runtime's `set_name` only fires if the
+        // program calls it, and a compartment's main thread never does. Notes are where thread
+        // names live, so this is the same channel `set_name` and the kernel's kthread names use.
+        let _ = twizzler_abi::syscall::sys_object_add_note(mt.id, b"main");
         Ok(Self {
             stack_object: stack,
             thread: mt,

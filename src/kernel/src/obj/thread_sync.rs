@@ -514,7 +514,11 @@ impl Object {
                 let n = WAKE_FASTSKIP.fetch_add(1, Ordering::Relaxed) + 1;
                 WAKE_LAST_SKIP_OFF.store(offset as u64, Ordering::Relaxed);
                 if n.is_power_of_two() && crate::kdiag_wake() {
-                    logln!("WAKESKIP off={:x} n={} (sleepers==0 at the door)", offset, n);
+                    logln!(
+                        "WAKESKIP off={:x} n={} (sleepers==0 at the door)",
+                        offset,
+                        n
+                    );
                 }
                 return 0;
             }

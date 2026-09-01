@@ -24,3 +24,6 @@ features = [
     "socket-dns", "socket-mdns", "packetmeta-id", "async", "multicast",
     "auto-icmp-echo-reply",
 ]
+
+[package.metadata]
+twizzler-build = "test"

@@ -9,3 +9,6 @@ twizzler-abi = { path = "../../lib/twizzler-abi" }
 twizzler-rt-abi = { path = "../../abi/rt-abi" }
 twizzler-runtime = { workspace = true }
 monitor-api = { workspace = true }
+
+[package.metadata]
+twizzler-build = "test"

@@ -1379,9 +1379,9 @@ mod benches {
                 std::sync::atomic::Ordering::Relaxed,
             );
             FD_WAITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            out[..n.min(out.len())]
-                .iter()
-                .any(|e| e.ident == self.fd as usize && e.filter == self.filter && e.flags & EV_ERROR == 0)
+            out[..n.min(out.len())].iter().any(|e| {
+                e.ident == self.fd as usize && e.filter == self.filter && e.flags & EV_ERROR == 0
+            })
         }
     }
 
@@ -1809,8 +1809,7 @@ mod benches {
         // only this split can tell a slow delivery from a stalled sender.
         let mut seg_send = 0i128;
         let mut seg_n = 0u64;
-        let mono_ns =
-            || twizzler_rt_abi::time::twz_rt_get_monotonic_time().as_nanos() as u64;
+        let mono_ns = || twizzler_rt_abi::time::twz_rt_get_monotonic_time().as_nanos() as u64;
         let (mut stale, mut ahead, mut runt) = (0u64, 0u64, 0u64);
         let mut seq: u32 = 0;
         b.iter(|| {

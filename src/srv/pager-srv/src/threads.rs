@@ -390,12 +390,22 @@ pub fn set_granted_queues(n: usize) {
 ///
 /// `desired_queues()` is the fallback for configurations with no nvme controller at all (the
 /// virtio-mem store), where nothing ever records a grant.
+///
+/// This used to apply `.max(2)` to the granted count while the queue array was built from that
+/// count unmodified, so a device granting one queue produced two workers on it -- the 1-1 invariant
+/// above broken by construction, from the first submission, with `QUEUE_INDEX` handing out an index
+/// no queue answered to.
 pub fn nr_workers() -> usize {
+    nr_queues()
+}
+
+/// Queue pairs that actually exist, and the ceiling on both worker count and `QUEUE_INDEX`.
+pub fn nr_queues() -> usize {
     GRANTED_QUEUES
         .get()
         .copied()
         .unwrap_or_else(desired_queues)
-        .max(2)
+        .max(1)
 }
 
 /// Holds a lane's depth raised for the lifetime of one unit of work.
@@ -427,48 +437,55 @@ impl WorkerThread {
         let depth = Arc::new(AtomicUsize::new(0));
         let thread_depth = depth.clone();
         Self {
-            _handle: std::thread::spawn(move || {
-                boost_priority(if fast {
-                    FAST_LANE_PRIORITY
-                } else {
-                    BULK_LANE_PRIORITY
-                });
-                QUEUE_INDEX.set(index);
-                loop {
-                    let wi = recv.recv_blocking().unwrap();
-                    let _depth = DepthGuard::adopt(thread_depth.clone());
-                    // Labelled by the *lane's* class, not the request's: a fast request that
-                    // borrowed an idle bulk lane waited in that lane's queue, which is what this
-                    // measures.
-                    DISPATCH_STATS.pickup(fast, wi.start.elapsed().as_nanos() as u64);
-                    if matches!(wi.req.cmd(), KernelCommand::ObjectInfoReq(_)) {
-                        DISPATCH_STATS.info_pickup(wi.start.elapsed().as_nanos() as u64);
-                    }
-                    tracing::trace!(
-                        "{}: starting handling after {}us",
-                        wi.qid,
-                        wi.start.elapsed().as_micros()
-                    );
+            _handle: std::thread::Builder::new()
+                .name(name.into())
+                .spawn(move || {
+                    boost_priority(if fast {
+                        FAST_LANE_PRIORITY
+                    } else {
+                        BULK_LANE_PRIORITY
+                    });
+                    // Clamped rather than trusted: `nr_workers` follows `nr_queues`, so a lane
+                    // index is in range today, but the two are derived in different places and a
+                    // divergence here would index past the end of `data_requesters` -- or silently
+                    // put two lanes on one queue, which is the bug this clamp descends from.
+                    QUEUE_INDEX.set(index.min(nr_queues().saturating_sub(1)));
+                    loop {
+                        let wi = recv.recv_blocking().unwrap();
+                        let _depth = DepthGuard::adopt(thread_depth.clone());
+                        // Labelled by the *lane's* class, not the request's: a fast request that
+                        // borrowed an idle bulk lane waited in that lane's queue, which is what
+                        // this measures.
+                        DISPATCH_STATS.pickup(fast, wi.start.elapsed().as_nanos() as u64);
+                        if matches!(wi.req.cmd(), KernelCommand::ObjectInfoReq(_)) {
+                            DISPATCH_STATS.info_pickup(wi.start.elapsed().as_nanos() as u64);
+                        }
+                        tracing::trace!(
+                            "{}: starting handling after {}us",
+                            wi.qid,
+                            wi.start.elapsed().as_micros()
+                        );
 
-                    let work = watchdog::begin(name, wi.qid, wi.req);
-                    let resp =
-                        handle_kernel_request(PAGER_CTX.get().unwrap(), wi.qid, wi.req, &work);
-                    tracing::trace!(
-                        "{}: done handling after {}us",
-                        wi.qid,
-                        wi.start.elapsed().as_micros()
-                    );
-                    work.phase("notify-kernel");
-                    if let Some(resp) = resp {
-                        PAGER_CTX
-                            .get()
-                            .unwrap()
-                            .kernel_notify
-                            .complete(wi.qid, resp, SubmissionFlags::empty())
-                            .unwrap();
+                        let work = watchdog::begin(name, wi.qid, wi.req);
+                        let resp =
+                            handle_kernel_request(PAGER_CTX.get().unwrap(), wi.qid, wi.req, &work);
+                        tracing::trace!(
+                            "{}: done handling after {}us",
+                            wi.qid,
+                            wi.start.elapsed().as_micros()
+                        );
+                        work.phase("notify-kernel");
+                        if let Some(resp) = resp {
+                            PAGER_CTX
+                                .get()
+                                .unwrap()
+                                .kernel_notify
+                                .complete(wi.qid, resp, SubmissionFlags::empty())
+                                .unwrap();
+                        }
                     }
-                }
-            }),
+                })
+                .unwrap(),
             pending: send,
             depth,
         }
@@ -624,7 +641,10 @@ impl PagerThreadPool {
         let pool = Arc::new(Workers::new());
         PagerThreadPool {
             _workers: pool.clone(),
-            _kq_handler: std::thread::spawn(move || kq_handler_main(pool, queue)),
+            _kq_handler: std::thread::Builder::new()
+                .name("pager-kq".into())
+                .spawn(move || kq_handler_main(pool, queue))
+                .unwrap(),
         }
     }
 }

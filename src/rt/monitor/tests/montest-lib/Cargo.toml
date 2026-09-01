@@ -10,3 +10,6 @@ secgate = { workspace = true }
 twizzler-runtime = { workspace = true }
 twizzler-rt-abi = { path = "../../../../abi/rt-abi/" }
 twizzler-abi = { path = "../../../../lib/twizzler-abi" }
+
+[package.metadata]
+twizzler-build = "test"

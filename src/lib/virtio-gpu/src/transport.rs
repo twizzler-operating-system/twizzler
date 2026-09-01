@@ -172,24 +172,27 @@ impl TwizzlerTransport {
         let notify_region = notify_region.ok_or(VirtioPciError::MissingNotifyConfig)?;
         let isr_status = isr_status.ok_or(VirtioPciError::MissingIsrConfig)?;
 
-        let _thread = std::thread::spawn(move || loop {
-            //for _ in 0..10 {
-            //    for _ in 0..100 {
-            if int_device.repr().check_for_interrupt(0).is_some() {
-                //tracing::info!("virtio int");
-                let _ = notifier.send(None);
-            }
-            //      core::hint::spin_loop();
-            //  }
-            // twizzler_abi::syscall::sys_thread_yield();
-            // }
+        let _thread = std::thread::Builder::new()
+            .name("virtio-gpu-int".into())
+            .spawn(move || loop {
+                //for _ in 0..10 {
+                //    for _ in 0..100 {
+                if int_device.repr().check_for_interrupt(0).is_some() {
+                    //tracing::info!("virtio int");
+                    let _ = notifier.send(None);
+                }
+                //      core::hint::spin_loop();
+                //  }
+                // twizzler_abi::syscall::sys_thread_yield();
+                // }
 
-            if int_device.repr().check_for_interrupt(0).is_none() {
-                let int_sleep = int_device.repr().setup_interrupt_sleep(0);
-                //tracing::info!("virtio int: sleep");
-                let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(int_sleep)], None);
-            }
-        });
+                if int_device.repr().check_for_interrupt(0).is_none() {
+                    let int_sleep = int_device.repr().setup_interrupt_sleep(0);
+                    //tracing::info!("virtio int: sleep");
+                    let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(int_sleep)], None);
+                }
+            })
+            .unwrap();
 
         Ok(Self {
             device,

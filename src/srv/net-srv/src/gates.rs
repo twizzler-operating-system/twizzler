@@ -36,7 +36,10 @@ pub fn start_network() -> Result<()> {
 
     let device = virtio_net::get_device();
     let _device = device.clone();
-    std::thread::spawn(move || device_thread(_device));
+    let _ = std::thread::Builder::new()
+        .name("net-device".into())
+        .spawn(move || device_thread(_device))
+        .unwrap();
     tracing::info!("network ready: gateway = {}", GATEWAY);
 
     let _ = PORTS.set(PortAssigner::new());

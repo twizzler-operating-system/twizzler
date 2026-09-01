@@ -992,257 +992,274 @@ impl Engine {
         // 1. when smoltcp says to based on poll_time() (calls poll_delay internally)
         // 2. when the state changes (eg a new socket is added)
         // 3. when blocking threads need to poll (we get a message on the channel)
-        let thread = std::thread::spawn(move || {
-            let inner = _inner;
-            let waiter = _waiter;
-            let notify = _notify;
+        let thread = std::thread::Builder::new()
+            .name("net-engine".into())
+            .spawn(move || {
+                let inner = _inner;
+                let waiter = _waiter;
+                let notify = _notify;
 
-            fn check_tracking() {
-                if TRACKING_LEN.load(Ordering::Relaxed) == 0 {
-                    return;
-                }
-                // Collected under the lock, returned after it: return_port takes the port
-                // allocator's lock, and taking that while holding `core` would invert the order
-                // the original established by dropping `core` first.
-                let mut ports: Vec<u16> = Vec::new();
-                {
-                    let mut core = ENGINE.core.lock().unwrap();
-                    let mut idx = 0;
-                    while idx < core.tracking.len() {
-                        let item = core.tracking[idx];
-                        // A handle already gone from the set has nothing left to release, and
-                        // get_mutable_socket would panic on it.
-                        let gone = !core.live.contains(&item.0);
-                        let is_closed = gone
-                            || match item.2 {
-                                SockKind::Tcp => {
-                                    core.get_mutable_socket(item.0).state() == State::Closed
+                fn check_tracking() {
+                    if TRACKING_LEN.load(Ordering::Relaxed) == 0 {
+                        return;
+                    }
+                    // Collected under the lock, returned after it: return_port takes the port
+                    // allocator's lock, and taking that while holding `core` would invert the order
+                    // the original established by dropping `core` first.
+                    let mut ports: Vec<u16> = Vec::new();
+                    {
+                        let mut core = ENGINE.core.lock().unwrap();
+                        let mut idx = 0;
+                        while idx < core.tracking.len() {
+                            let item = core.tracking[idx];
+                            // A handle already gone from the set has nothing left to release, and
+                            // get_mutable_socket would panic on it.
+                            let gone = !core.live.contains(&item.0);
+                            let is_closed = gone
+                                || match item.2 {
+                                    SockKind::Tcp => {
+                                        core.get_mutable_socket(item.0).state() == State::Closed
+                                    }
+                                    // TODO: this causes some kind of stall.
+                                    SockKind::Udp => false, /* not core.get_mutable_udp_socket(item.
+                                                             * 0).
+                                                             * is_open(), */
+                                };
+                            if is_closed {
+                                if !gone {
+                                    core.release_socket(item.0);
                                 }
-                                // TODO: this causes some kind of stall.
-                                SockKind::Udp => false, /* not core.get_mutable_udp_socket(item.
-                                                         * 0).
-                                                         * is_open(), */
-                            };
-                        if is_closed {
-                            if !gone {
-                                core.release_socket(item.0);
+                                core.tracking.remove(idx);
+                                TRACKING_LEN.fetch_sub(1, Ordering::Relaxed);
+                                // `track` stores 0 for a socket whose port it does not own (see
+                                // Engine::track); returning it would decrement a refcount net-srv
+                                // never incremented.
+                                if item.1 != 0 {
+                                    ports.push(item.1);
+                                }
+                            } else {
+                                idx += 1;
                             }
-                            core.tracking.remove(idx);
-                            TRACKING_LEN.fetch_sub(1, Ordering::Relaxed);
-                            // `track` stores 0 for a socket whose port it does not own (see
-                            // Engine::track); returning it would decrement a refcount net-srv
-                            // never incremented.
-                            if item.1 != 0 {
-                                ports.push(item.1);
-                            }
-                        } else {
-                            idx += 1;
                         }
                     }
+                    // Bracket the secgate rather than inferring its state from elsewhere:
+                    // `return_port` calls into net-srv, so a poll thread
+                    // stopped here is stopped in another compartment, and no
+                    // counter in this one can say so.
+                    //
+                    // (An earlier version of this comment claimed phase 3 was stored inside the
+                    // core block above. It is not -- phase 3 is set later,
+                    // around `inner.poll`. The wrong claim was load-bearing for
+                    // a hypothesis that cost a sweep, so it is corrected
+                    // here rather than deleted.)
+                    //
+                    //   8 = core released, nothing left to return
+                    //   6 = inside `return_port`, i.e. blocked in the secgate into net-srv
+                    //   7 = a return completed, going round again
+                    POLL_PHASE.store(8, Ordering::Relaxed);
+                    for port in ports {
+                        POLL_PHASE.store(6, Ordering::Relaxed);
+                        ENGINE.return_port(port);
+                        POLL_PHASE.store(7, Ordering::Relaxed);
+                    }
                 }
-                // Bracket the secgate rather than inferring its state from elsewhere: `return_port`
-                // calls into net-srv, so a poll thread stopped here is stopped in another
-                // compartment, and no counter in this one can say so.
-                //
-                // (An earlier version of this comment claimed phase 3 was stored inside the core
-                // block above. It is not -- phase 3 is set later, around `inner.poll`. The wrong
-                // claim was load-bearing for a hypothesis that cost a sweep, so it is corrected
-                // here rather than deleted.)
-                //
-                //   8 = core released, nothing left to return
-                //   6 = inside `return_port`, i.e. blocked in the secgate into net-srv
-                //   7 = a return completed, going round again
-                POLL_PHASE.store(8, Ordering::Relaxed);
-                for port in ports {
-                    POLL_PHASE.store(6, Ordering::Relaxed);
-                    ENGINE.return_port(port);
-                    POLL_PHASE.store(7, Ordering::Relaxed);
-                }
-            }
 
-            // Refilled, not rebuilt: the set changes only when an interface comes or goes, but the
-            // loop below runs on every poll cycle.
-            let mut waiters: Vec<ThreadSync> = Vec::new();
-            /// How many consecutive immediate re-polls before the loop is made to sleep once.
-            /// High enough that genuine back-to-back work is unaffected; low enough that a
-            /// livelock yields in well under a millisecond.
-            const MAX_IMMEDIATE_REPOLLS: u32 = 1000;
-            let mut immediate_repolls: u32 = 0;
-            loop {
-                POLL_PHASE.store(1, Ordering::Relaxed);
-                // Reset each iteration. Without this a `sub` left over from the previous poll
-                // reads exactly like a thread stopped at that point -- which is how `sub=15`
-                // ("ifaceset loop finished, nothing ready") got mistaken for a position when it
-                // was simply the last thing the previous poll wrote. A stale reading that looks
-                // current is the defect this whole probe exists to avoid.
-                POLL_SUB.store(1, Ordering::Relaxed);
-                check_tracking();
-                POLL_PHASE.store(2, Ordering::Relaxed);
-                let __t_held = std::time::Instant::now();
-                let time = {
-                    let mut inner = inner.lock().unwrap();
-                    POLL_PHASE.store(3, Ordering::Relaxed);
-                    inner.poll(&*waiter);
-                    POLL_SUB.store(20, Ordering::Relaxed);
-                    let time = inner.poll_time();
-                    POLL_SUB.store(21, Ordering::Relaxed);
-
-                    // We may need to poll immediately!
-                    //
-                    // **Bounded -- as hardening for a latent hazard, NOT as a fix for any
-                    // observed wedge.** This `continue` was unconditional, which makes the loop a
-                    // hard spin if smoltcp ever keeps naming a sub-100us deadline: no sleep, no
-                    // yield, `core` re-taken every pass, starving every other socket operation in
-                    // the compartment. It also skips `POLL_ITERS`, so such a spin would be
-                    // invisible to the loop's own counters.
-                    //
-                    // I hypothesised that this caused the net-throughput wedge and added
-                    // `POLL_SPIN_BREAKS` to test it. **It read 0 across 3459 samples in a 12-round
-                    // sweep: the bound has never once engaged, so the loop does not spin in
-                    // practice and this is not the cause of anything.** Do not credit it for a
-                    // wedge-rate change; the measured improvement belongs to the bounded reap in
-                    // sysbench's `EchoPeer::shutdown` and the peer-liveness check in the bench
-                    // body. If the counter is ever seen non-zero, that is new information.
-                    //
-                    // Falling through costs one bounded sleep -- `timeout` below is
-                    // `time.min(50ms)`, i.e. <100us here -- so the fast path keeps its speed
-                    // (one syscall per MAX_IMMEDIATE_REPOLLS polls) and a livelock becomes a
-                    // yield instead of a hang.
-                    if time.is_some_and(|time| time.total_micros() < 100) {
-                        POLL_SUB.store(22, Ordering::Relaxed);
+                // Refilled, not rebuilt: the set changes only when an interface comes or goes, but
+                // the loop below runs on every poll cycle.
+                let mut waiters: Vec<ThreadSync> = Vec::new();
+                /// How many consecutive immediate re-polls before the loop is made to sleep once.
+                /// High enough that genuine back-to-back work is unaffected; low enough that a
+                /// livelock yields in well under a millisecond.
+                const MAX_IMMEDIATE_REPOLLS: u32 = 1000;
+                let mut immediate_repolls: u32 = 0;
+                loop {
+                    POLL_PHASE.store(1, Ordering::Relaxed);
+                    // Reset each iteration. Without this a `sub` left over from the previous poll
+                    // reads exactly like a thread stopped at that point -- which is how `sub=15`
+                    // ("ifaceset loop finished, nothing ready") got mistaken for a position when it
+                    // was simply the last thing the previous poll wrote. A stale reading that looks
+                    // current is the defect this whole probe exists to avoid.
+                    POLL_SUB.store(1, Ordering::Relaxed);
+                    check_tracking();
+                    POLL_PHASE.store(2, Ordering::Relaxed);
+                    let __t_held = std::time::Instant::now();
+                    let time = {
+                        let mut inner = inner.lock().unwrap();
+                        POLL_PHASE.store(3, Ordering::Relaxed);
                         inner.poll(&*waiter);
-                        POLL_SUB.store(23, Ordering::Relaxed);
-                        immediate_repolls += 1;
-                        if immediate_repolls < MAX_IMMEDIATE_REPOLLS {
-                            core_held_note(0, __t_held.elapsed());
-                            continue;
-                        }
-                        immediate_repolls = 0;
-                        POLL_SPIN_BREAKS.fetch_add(1, Ordering::Relaxed);
-                    } else {
-                        POLL_SUB.store(24, Ordering::Relaxed);
-                        immediate_repolls = 0;
-                    }
-                    POLL_SUB.store(25, Ordering::Relaxed);
-                    time
-                };
-                core_held_note(0, __t_held.elapsed());
+                        POLL_SUB.store(20, Ordering::Relaxed);
+                        let time = inner.poll_time();
+                        POLL_SUB.store(21, Ordering::Relaxed);
 
-                POLL_PHASE.store(4, Ordering::Relaxed);
-                let __t_held2 = std::time::Instant::now();
-                let core = inner.lock().unwrap();
-                // Time-spaced, not event-spaced: a stalled listener produces no events, which is
-                // exactly when its state matters.
-                if POLL_ITERS.load(Ordering::Relaxed) % 64 == 0 {
-                    core.census_groups();
-                }
-                waiters.clear();
-                // Both directions, not just rx. A wait set that misses one of its wake reasons is
-                // what makes a fallback timeout load-bearing instead of merely a safety net.
-                for iface in core.ifaceset.iter() {
-                    waiters.push(ThreadSync::new_sleep(iface.device.rx_waiter()));
-                    if POLL_WAIT_COMPLETIONS {
-                        waiters.push(ThreadSync::new_sleep(iface.device.tx_completions_waiter()));
-                    }
-                    // Self-gating: `None` unless a completion is actually owed, which cannot
-                    // happen in the blocking control arm.
-                    if let Some(w) = iface.device.rx_completion_space_waiter() {
-                        waiters.push(ThreadSync::new_sleep(w));
-                    }
-                }
-                waiters.push(ThreadSync::new_sleep(ThreadSyncSleep::new(
-                    ThreadSyncReference::Virtual(&*notify),
-                    0,
-                    twizzler_abi::syscall::ThreadSyncOp::Equal,
-                    ThreadSyncFlags::empty(),
-                )));
-
-                let any_ready = core
-                    .ifaceset
-                    .iter()
-                    .any(|iface| iface.device.has_rx_pending());
-                // Sampled here, not in `pollprobe`: this is the pass that decides to sleep, and the
-                // question is what the ring looked like at that decision rather than whenever a
-                // probe next fires.
-                if let Some(iface) = core.ifaceset.iter().next() {
-                    let (bell, tail, nonempty, turn) = iface.device.rx_pending_parts();
-                    RX_BELL.store(bell, Ordering::Relaxed);
-                    RX_TAIL.store(tail, Ordering::Relaxed);
-                    RX_NONEMPTY.store(nonempty as u64, Ordering::Relaxed);
-                    RX_TURN.store(turn as u64, Ordering::Relaxed);
-                    let (tbell, ttail, _, _) = iface.device.tx_pending_parts();
-                    TX_BELL.store(tbell, Ordering::Relaxed);
-                    TX_TAIL.store(ttail, Ordering::Relaxed);
-                }
-                drop(core);
-                core_held_note(1, __t_held2.elapsed());
-                let n = notify.swap(0, Ordering::SeqCst);
-                POLL_ITERS.fetch_add(1, Ordering::Relaxed);
-                if !any_ready && n == 0 {
-                    POLL_SLEEPS.fetch_add(1, Ordering::Relaxed);
-                    POLL_PHASE.store(5, Ordering::Relaxed);
-                    // A bounded fallback when smoltcp has no deadline of its own. `poll_delay`
-                    // returns None for an idle compartment, which made this an *unbounded* sleep
-                    // on the rx waiter -- so a single missed wake wedged the compartment
-                    // permanently rather than delaying it. Measured (udpdiag2): the UDP peer's
-                    // poll thread ran five iterations and its last sleep never returned while 128
-                    // frames sat queued for it. A poll thread that can only be woken by a waiter
-                    // it does not control should not stake liveness on that waiter being perfect.
-                    // Capped, not just defaulted. Two separate ways this sleep could run long:
-                    // `poll_delay()` returns None for an idle compartment (unbounded sleep), and
-                    // it can also return a *large* deadline when no socket has near-term work.
-                    // Either way the thread's liveness rests entirely on a waiter it does not
-                    // control, which is why a UDP echo server parked in kevent never woke while
-                    // 128 frames sat queued for it. Capping makes a missed wake cost <=50ms
-                    // instead of costing the compartment.
-                    //
-                    // The `missed` counter that used to sit after this sleep is gone with the rest
-                    // of the SLEEPPROBE diagnostics (stripped for timing arms, prereg-mss-0827.md)
-                    // and should not be restored as it was: `rx pending && !notified` is equally
-                    // the signature of the rx waiter firing *correctly*, so it could not tell a
-                    // dropped wake from a working one. Time the sleep and compare against
-                    // FALLBACK if that question is asked again.
-                    // smoltcp's own deadline, or nothing. There is no fallback floor any more.
-                    //
-                    // A poll thread that wakes periodically "in case it missed something" cannot
-                    // tell a complete wait set from a broken one: every missed wake becomes
-                    // latency rather than a fault, permanently invisible, and it was the only
-                    // reason `Pair::progress` had to exist. The wait set above is now the whole
-                    // set the client can be woken by -- it reads exactly two queue sides, rx
-                    // submissions via `recv_msg` and tx completions via `check_completions`, and
-                    // both are in it, plus `notify` for same-compartment state changes. Anything
-                    // still missing is now a hang the stall watchdog names, which is the point.
-                    let timeout: Option<std::time::Duration> = match POLL_FALLBACK_MS {
-                        Some(ms) => {
-                            let cap = std::time::Duration::from_millis(ms);
-                            Some(time.map(|t| t.into()).unwrap_or(cap).min(cap))
+                        // We may need to poll immediately!
+                        //
+                        // **Bounded -- as hardening for a latent hazard, NOT as a fix for any
+                        // observed wedge.** This `continue` was unconditional, which makes the loop
+                        // a hard spin if smoltcp ever keeps naming a
+                        // sub-100us deadline: no sleep, no yield, `core`
+                        // re-taken every pass, starving every other socket operation in
+                        // the compartment. It also skips `POLL_ITERS`, so such a spin would be
+                        // invisible to the loop's own counters.
+                        //
+                        // I hypothesised that this caused the net-throughput wedge and added
+                        // `POLL_SPIN_BREAKS` to test it. **It read 0 across 3459 samples in a
+                        // 12-round sweep: the bound has never once engaged,
+                        // so the loop does not spin in practice and this is
+                        // not the cause of anything.** Do not credit it for a
+                        // wedge-rate change; the measured improvement belongs to the bounded reap
+                        // in sysbench's `EchoPeer::shutdown` and the
+                        // peer-liveness check in the bench body. If the
+                        // counter is ever seen non-zero, that is new information.
+                        //
+                        // Falling through costs one bounded sleep -- `timeout` below is
+                        // `time.min(50ms)`, i.e. <100us here -- so the fast path keeps its speed
+                        // (one syscall per MAX_IMMEDIATE_REPOLLS polls) and a livelock becomes a
+                        // yield instead of a hang.
+                        if time.is_some_and(|time| time.total_micros() < 100) {
+                            POLL_SUB.store(22, Ordering::Relaxed);
+                            inner.poll(&*waiter);
+                            POLL_SUB.store(23, Ordering::Relaxed);
+                            immediate_repolls += 1;
+                            if immediate_repolls < MAX_IMMEDIATE_REPOLLS {
+                                core_held_note(0, __t_held.elapsed());
+                                continue;
+                            }
+                            immediate_repolls = 0;
+                            POLL_SPIN_BREAKS.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            POLL_SUB.store(24, Ordering::Relaxed);
+                            immediate_repolls = 0;
                         }
-                        None => time.map(|t| t.into()),
+                        POLL_SUB.store(25, Ordering::Relaxed);
+                        time
                     };
-                    let t0 = std::time::Instant::now();
-                    // Published before the syscall, so a sleep that never returns is still
-                    // describable. Order matters: timestamp and request first, then the entry
-                    // count, so a reader that sees enter>exit always has a valid T0 to subtract.
-                    POLL_SLEEP_REQ_MS.store(
-                        timeout.map(|t| t.as_millis() as u64).unwrap_or(u64::MAX),
-                        Ordering::Relaxed,
-                    );
-                    POLL_SLEEP_T0_MS.store(mono_ms(), Ordering::Relaxed);
-                    POLL_SLEEP_ENTER.fetch_add(1, Ordering::Relaxed);
-                    let _ = sys_thread_sync(&mut waiters, timeout);
-                    POLL_SLEEP_EXIT.fetch_add(1, Ordering::Relaxed);
-                    let slept = t0.elapsed();
-                    POLL_MAX_SLEEP_MS.fetch_max(slept.as_millis() as u64, Ordering::Relaxed);
-                    // Only when smoltcp named a deadline. An unbounded sleep ending on a word is
-                    // now the design, so it is not an overshoot and must not be counted as one.
-                    if let Some(timeout) = timeout {
-                        if slept > timeout * 4 + std::time::Duration::from_millis(10) {
-                            POLL_OVERSLEPT.fetch_add(1, Ordering::Relaxed);
+                    core_held_note(0, __t_held.elapsed());
+
+                    POLL_PHASE.store(4, Ordering::Relaxed);
+                    let __t_held2 = std::time::Instant::now();
+                    let core = inner.lock().unwrap();
+                    // Time-spaced, not event-spaced: a stalled listener produces no events, which
+                    // is exactly when its state matters.
+                    if POLL_ITERS.load(Ordering::Relaxed) % 64 == 0 {
+                        core.census_groups();
+                    }
+                    waiters.clear();
+                    // Both directions, not just rx. A wait set that misses one of its wake reasons
+                    // is what makes a fallback timeout load-bearing instead of
+                    // merely a safety net.
+                    for iface in core.ifaceset.iter() {
+                        waiters.push(ThreadSync::new_sleep(iface.device.rx_waiter()));
+                        if POLL_WAIT_COMPLETIONS {
+                            waiters
+                                .push(ThreadSync::new_sleep(iface.device.tx_completions_waiter()));
+                        }
+                        // Self-gating: `None` unless a completion is actually owed, which cannot
+                        // happen in the blocking control arm.
+                        if let Some(w) = iface.device.rx_completion_space_waiter() {
+                            waiters.push(ThreadSync::new_sleep(w));
+                        }
+                    }
+                    waiters.push(ThreadSync::new_sleep(ThreadSyncSleep::new(
+                        ThreadSyncReference::Virtual(&*notify),
+                        0,
+                        twizzler_abi::syscall::ThreadSyncOp::Equal,
+                        ThreadSyncFlags::empty(),
+                    )));
+
+                    let any_ready = core
+                        .ifaceset
+                        .iter()
+                        .any(|iface| iface.device.has_rx_pending());
+                    // Sampled here, not in `pollprobe`: this is the pass that decides to sleep, and
+                    // the question is what the ring looked like at that
+                    // decision rather than whenever a probe next fires.
+                    if let Some(iface) = core.ifaceset.iter().next() {
+                        let (bell, tail, nonempty, turn) = iface.device.rx_pending_parts();
+                        RX_BELL.store(bell, Ordering::Relaxed);
+                        RX_TAIL.store(tail, Ordering::Relaxed);
+                        RX_NONEMPTY.store(nonempty as u64, Ordering::Relaxed);
+                        RX_TURN.store(turn as u64, Ordering::Relaxed);
+                        let (tbell, ttail, _, _) = iface.device.tx_pending_parts();
+                        TX_BELL.store(tbell, Ordering::Relaxed);
+                        TX_TAIL.store(ttail, Ordering::Relaxed);
+                    }
+                    drop(core);
+                    core_held_note(1, __t_held2.elapsed());
+                    let n = notify.swap(0, Ordering::SeqCst);
+                    POLL_ITERS.fetch_add(1, Ordering::Relaxed);
+                    if !any_ready && n == 0 {
+                        POLL_SLEEPS.fetch_add(1, Ordering::Relaxed);
+                        POLL_PHASE.store(5, Ordering::Relaxed);
+                        // A bounded fallback when smoltcp has no deadline of its own. `poll_delay`
+                        // returns None for an idle compartment, which made this an *unbounded*
+                        // sleep on the rx waiter -- so a single missed wake
+                        // wedged the compartment permanently rather than
+                        // delaying it. Measured (udpdiag2): the UDP peer's
+                        // poll thread ran five iterations and its last sleep never returned while
+                        // 128 frames sat queued for it. A poll thread that
+                        // can only be woken by a waiter it does not control
+                        // should not stake liveness on that waiter being perfect.
+                        // Capped, not just defaulted. Two separate ways this sleep could run long:
+                        // `poll_delay()` returns None for an idle compartment (unbounded sleep),
+                        // and it can also return a *large* deadline when no
+                        // socket has near-term work. Either way the
+                        // thread's liveness rests entirely on a waiter it does not
+                        // control, which is why a UDP echo server parked in kevent never woke while
+                        // 128 frames sat queued for it. Capping makes a missed wake cost <=50ms
+                        // instead of costing the compartment.
+                        //
+                        // The `missed` counter that used to sit after this sleep is gone with the
+                        // rest of the SLEEPPROBE diagnostics (stripped for
+                        // timing arms, prereg-mss-0827.md) and should not
+                        // be restored as it was: `rx pending && !notified` is equally
+                        // the signature of the rx waiter firing *correctly*, so it could not tell a
+                        // dropped wake from a working one. Time the sleep and compare against
+                        // FALLBACK if that question is asked again.
+                        // smoltcp's own deadline, or nothing. There is no fallback floor any more.
+                        //
+                        // A poll thread that wakes periodically "in case it missed something"
+                        // cannot tell a complete wait set from a broken
+                        // one: every missed wake becomes latency rather
+                        // than a fault, permanently invisible, and it was the only
+                        // reason `Pair::progress` had to exist. The wait set above is now the whole
+                        // set the client can be woken by -- it reads exactly two queue sides, rx
+                        // submissions via `recv_msg` and tx completions via `check_completions`,
+                        // and both are in it, plus `notify` for
+                        // same-compartment state changes. Anything
+                        // still missing is now a hang the stall watchdog names, which is the point.
+                        let timeout: Option<std::time::Duration> = match POLL_FALLBACK_MS {
+                            Some(ms) => {
+                                let cap = std::time::Duration::from_millis(ms);
+                                Some(time.map(|t| t.into()).unwrap_or(cap).min(cap))
+                            }
+                            None => time.map(|t| t.into()),
+                        };
+                        let t0 = std::time::Instant::now();
+                        // Published before the syscall, so a sleep that never returns is still
+                        // describable. Order matters: timestamp and request first, then the entry
+                        // count, so a reader that sees enter>exit always has a valid T0 to
+                        // subtract.
+                        POLL_SLEEP_REQ_MS.store(
+                            timeout.map(|t| t.as_millis() as u64).unwrap_or(u64::MAX),
+                            Ordering::Relaxed,
+                        );
+                        POLL_SLEEP_T0_MS.store(mono_ms(), Ordering::Relaxed);
+                        POLL_SLEEP_ENTER.fetch_add(1, Ordering::Relaxed);
+                        let _ = sys_thread_sync(&mut waiters, timeout);
+                        POLL_SLEEP_EXIT.fetch_add(1, Ordering::Relaxed);
+                        let slept = t0.elapsed();
+                        POLL_MAX_SLEEP_MS.fetch_max(slept.as_millis() as u64, Ordering::Relaxed);
+                        // Only when smoltcp named a deadline. An unbounded sleep ending on a word
+                        // is now the design, so it is not an overshoot and
+                        // must not be counted as one.
+                        if let Some(timeout) = timeout {
+                            if slept > timeout * 4 + std::time::Duration::from_millis(10) {
+                                POLL_OVERSLEPT.fetch_add(1, Ordering::Relaxed);
+                            }
                         }
                     }
                 }
-            }
-        });
+            });
 
         // Stall watchdog. Reports from a *different* thread than the one it describes, which is
         // the whole point: `pollprobe` is called from inside `Core::poll`, so every `site=poll`
@@ -1282,44 +1299,50 @@ impl Engine {
         // engine legitimately sits still well past 2s, which is what made it emit 450 STALL
         // lines in an 8-round sweep where every round passed.
         if STALL_WATCHDOG {
-            std::thread::spawn(|| {
-                let mut last = u64::MAX;
-                let mut ticks: u64 = 0;
-                loop {
-                    WD_SLEEP_ENTER.fetch_add(1, Ordering::Relaxed);
-                    std::thread::sleep(std::time::Duration::from_secs(2));
-                    WD_SLEEP_EXIT.fetch_add(1, Ordering::Relaxed);
-                    ticks += 1;
-                    WATCHDOG_TICKS.fetch_add(1, Ordering::Relaxed);
-                    let iters = POLL_ITERS.load(Ordering::Relaxed);
-                    // Stalled = not advancing AND demonstrably owing work: either a timed sleep has
-                    // overrun its own request, or frames are queued that nothing is collecting.
-                    let overdue = sleep_inflight_ms().is_some_and(|age| {
-                        let req = POLL_SLEEP_REQ_MS.load(Ordering::Relaxed);
-                        req != u64::MAX && age > req.saturating_mul(4).max(2000)
-                    });
-                    let rx_waiting = matches!(EXT_CORE.load(Ordering::Relaxed), 1);
-                    if iters == last && (overdue || rx_waiting) {
-                        pollprobe("STALL");
-                    } else if ticks == 1 || ticks % 30 == 0 {
-                        // Tick 1, not just every 30th. A peer compartment lives ~20s and the 60s
-                        // heartbeat never fired inside one, so the control covered only the two
-                        // long-lived compartments and said nothing about the ones under test --
-                        // "no stall" and "watchdog never ran here" were the same silence in exactly
-                        // the population this exists to describe. One line per compartment at ~2s
-                        // arms it per path, inside the window.
-                        pollprobe("alive");
+            let _ = std::thread::Builder::new()
+                .name("net-stall-wd".into())
+                .spawn(|| {
+                    let mut last = u64::MAX;
+                    let mut ticks: u64 = 0;
+                    loop {
+                        WD_SLEEP_ENTER.fetch_add(1, Ordering::Relaxed);
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        WD_SLEEP_EXIT.fetch_add(1, Ordering::Relaxed);
+                        ticks += 1;
+                        WATCHDOG_TICKS.fetch_add(1, Ordering::Relaxed);
+                        let iters = POLL_ITERS.load(Ordering::Relaxed);
+                        // Stalled = not advancing AND demonstrably owing work: either a timed sleep
+                        // has overrun its own request, or frames are queued
+                        // that nothing is collecting.
+                        let overdue = sleep_inflight_ms().is_some_and(|age| {
+                            let req = POLL_SLEEP_REQ_MS.load(Ordering::Relaxed);
+                            req != u64::MAX && age > req.saturating_mul(4).max(2000)
+                        });
+                        let rx_waiting = matches!(EXT_CORE.load(Ordering::Relaxed), 1);
+                        if iters == last && (overdue || rx_waiting) {
+                            pollprobe("STALL");
+                        } else if ticks == 1 || ticks % 30 == 0 {
+                            // Tick 1, not just every 30th. A peer compartment lives ~20s and the
+                            // 60s heartbeat never fired inside one, so
+                            // the control covered only the two
+                            // long-lived compartments and said nothing about the ones under test --
+                            // "no stall" and "watchdog never ran here" were the same silence in
+                            // exactly the population this exists to
+                            // describe. One line per compartment at ~2s
+                            // arms it per path, inside the window.
+                            pollprobe("alive");
+                        }
+                        last = iters;
                     }
-                    last = iters;
-                }
-            });
+                })
+                .unwrap();
         }
 
         Self {
             core,
             waiter,
             notify,
-            _polling_thread: thread,
+            _polling_thread: thread.unwrap(),
             nc_handle,
         }
     }

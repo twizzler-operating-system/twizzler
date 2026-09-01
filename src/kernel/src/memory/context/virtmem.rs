@@ -2163,8 +2163,18 @@ impl VirtContext {
         // After the unmap, not before: syncing can block on the pager, and dirty state lives in the
         // object's own page tables, which unmapping a context's reference to them does not touch.
         if slot.should_sync.load(core::sync::atomic::Ordering::SeqCst) {
-            if let Err(e) = slot.ctrl(MapControlCmd::Sync(core::ptr::null_mut()), 0) {
-                log::error!("failed to sync object {}: {:?}", slot.object().id(), e);
+            if slot.stable.is_some() {
+                // A STABLE mapping writes into its own COW clone of the page tables, so its dirty
+                // bits are not the object's and the object-keyed background path cannot see them.
+                // Rare (opt-in via MapFlags::STABLE) and worth keeping inline.
+                if let Err(e) = slot.ctrl(MapControlCmd::Sync(core::ptr::null_mut()), 0) {
+                    log::error!("failed to sync object {}: {:?}", slot.object().id(), e);
+                }
+            } else {
+                // Everything else goes to the background thread. This is what the caller asked
+                // for: the sync was registered with SYNC_FLAG_ASYNC_DURABLE and nothing is waiting
+                // on it, so the dirty walk and the pager backpressure both belong off this thread.
+                crate::pager::queue_background_sync(slot.object());
             }
         }
 
