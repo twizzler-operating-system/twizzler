@@ -503,6 +503,27 @@ impl PagerProfile {
     }
 }
 
+/// The subset of these counters that is exported to userspace; see
+/// [`twizzler_abi::syscall::KernelStats`].
+pub struct PagerTotals {
+    pub requests: u64,
+    pub pages_requested: u64,
+    pub pages_delivered: u64,
+    pub pages_installed: u64,
+    pub completions: u64,
+}
+
+pub fn totals() -> PagerTotals {
+    let p = &PAGER_PROFILE;
+    PagerTotals {
+        requests: p.submitted.load(Ordering::Relaxed),
+        pages_requested: p.pages_requested.load(Ordering::Relaxed),
+        pages_delivered: p.delivered.load(Ordering::Relaxed),
+        pages_installed: p.installed.load(Ordering::Relaxed),
+        completions: p.completions.load(Ordering::Relaxed),
+    }
+}
+
 pub fn print_pager_profile() {
     let p = &PAGER_PROFILE;
     // Before the early return: a boot where nothing was submitted still did lookups, and the

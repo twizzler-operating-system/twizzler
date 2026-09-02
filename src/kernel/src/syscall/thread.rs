@@ -134,6 +134,10 @@ pub fn thread_ctrl(
                     .saturating_add(now.saturating_sub(last));
                 stats_ptr.system = thread.stats.sys.load(Ordering::SeqCst);
                 stats_ptr.user = thread.stats.user.load(Ordering::SeqCst);
+                stats_ptr.faults = thread.stats.faults.load(Ordering::Relaxed);
+                stats_ptr.pager_pages = thread.stats.pager_pages.load(Ordering::Relaxed);
+                stats_ptr.syscalls = thread.stats.syscalls.load(Ordering::Relaxed);
+                stats_ptr.wakes = thread.stats.wakes.load(Ordering::Relaxed);
             } else {
                 return [1, TwzError::INVALID_ARGUMENT.raw()];
             }

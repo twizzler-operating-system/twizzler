@@ -294,6 +294,18 @@ impl Ext4InodeRef {
         self.inode.dirty = true;
     }
 
+    /// Set i_size directly. `ext4_ftruncate` only ever shrinks -- it returns EOK without doing
+    /// anything when `fsize <= size` -- so this is the only way to grow a file without writing
+    /// through it. Same shape as `ext4_fwrite`'s own `out_fsize` tail (ext4.c): set the field,
+    /// mark the ref dirty, let `ext4_fs_put_inode_ref` write it back on drop.
+    ///
+    /// Does not set RO_COMPAT_LARGE_FILE, so it must not be used to take a file past 4 GiB;
+    /// Twizzler objects are capped at MAX_SIZE, well under that.
+    pub fn set_size(&mut self, size: u64) {
+        unsafe { lwext4::ext4_inode_set_size(self.inode.inode, size) };
+        self.inode.dirty = true;
+    }
+
     pub fn links_count(&self) -> u16 {
         unsafe { lwext4::ext4_inode_get_links_cnt(self.inode.inode) }
     }
@@ -570,7 +582,9 @@ impl Ext4Fs {
                 ext4_journal_start(self.mnt_name.as_ptr());
                 // Both steps used to `?` straight out, leaving the transaction open on any
                 // failure. Stop it on every path and report afterwards.
+                let mut allocated = false;
                 let res = errno_to_result(ext4_fs_alloc_inode(fs, new_inode.as_mut_ptr(), ft as i32))
+                    .inspect(|_| allocated = true)
                     .and_then(|_| {
                         let mp = ext4_get_mount(self.mnt_name.as_ptr());
                         errno_to_result(lwext4::ext4_link(
@@ -582,6 +596,18 @@ impl Ext4Fs {
                             false,
                         ))
                     });
+                // `ext4_fs_alloc_inode` hands back a *reference*, and in lwext4 the reference is
+                // what carries the write-back: `ext4_fs_put_inode_ref` flushes the inode's block
+                // and releases its bcache buffer. Every other inode in this file gets that from
+                // `Ext4InodeRef`'s Drop; this path holds a bare `ext4_inode_ref`, so it got
+                // neither -- a newly created file's inode never reached the disk, and one bcache
+                // buffer leaked per create. The *parent* is an `Ext4InodeRef` and so was written,
+                // which is why the directory entry existed while the inode it named read back as
+                // mode 0, "bad type", zero links and zero blocks. Inside the transaction, so the
+                // inode write is journalled with the link that refers to it.
+                if allocated {
+                    let _ = errno_to_result(ext4_fs_put_inode_ref(new_inode.as_mut_ptr()));
+                }
                 ext4_journal_stop(self.mnt_name.as_ptr());
                 if res.is_err() {
                     // Failing between the two steps leaves a half-created directory:

@@ -369,6 +369,18 @@ pub unsafe extern "C-unwind" fn twz_rt_join_thread(
 }
 check_ffi_type!(twz_rt_join_thread, _, _);
 
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_thread_signal(
+    id: twizzler_rt_abi::bindings::thread_id,
+    signal: u64,
+) -> twizzler_rt_abi::bindings::twz_error {
+    match OUR_RUNTIME.thread_signal(id, signal) {
+        Ok(_) => RawTwzError::success().raw(),
+        Err(e) => e.raw(),
+    }
+}
+check_ffi_type!(twz_rt_thread_signal, _, _);
+
 // fd.h
 
 use twizzler_rt_abi::bindings::{descriptor, open_kind, open_result};

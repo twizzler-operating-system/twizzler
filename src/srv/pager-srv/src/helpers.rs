@@ -154,12 +154,13 @@ pub fn page_out_many(
     ctx: &'static PagerContext,
     obj_id: ObjID,
     reqs: &mut [PageRequest],
+    true_len: Option<u64>,
 ) -> Result<usize> {
     let mut reqslice = &mut reqs[..];
     while reqslice.len() > 0 {
         let donecount = ctx
             .paged_ostore(None)?
-            .page_out_object(obj_id.raw(), reqslice)
+            .page_out_object(obj_id.raw(), reqslice, true_len)
             .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))?;
         reqslice = &mut reqslice[donecount..];
     }

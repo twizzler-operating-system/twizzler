@@ -79,6 +79,8 @@ pub enum ReqKind {
     Del(ObjID),
     Create(ObjID, ObjectCreate, u128),
     Pages(PhysRange),
+    /// Tell the pager to write everything back; the system is stopping.
+    Shutdown,
 }
 
 impl ReqKind {
@@ -146,7 +148,10 @@ impl ReqKind {
                 unsafe {
                     let base = phys_to_virt(*pa).as_ptr::<u8>();
                     let ext = base.add(core::mem::size_of::<MetaInfo>()).cast::<MetaExt>();
-                    (*ext).tag.eq(&MEXT_SIZED).then(|| (*ext).value.load(Ordering::SeqCst))
+                    (*ext)
+                        .tag
+                        .eq(&MEXT_SIZED)
+                        .then(|| (*ext).value.load(Ordering::SeqCst))
                 }
             })
             .unwrap_or(0);
@@ -205,6 +210,10 @@ impl ReqKind {
 
     pub fn new_pager_memory(range: PhysRange) -> Self {
         ReqKind::Pages(range)
+    }
+
+    pub fn new_shutdown() -> Self {
+        ReqKind::Shutdown
     }
 
     /// The key a speculative request for this exact range would have, if this one is not already
@@ -267,7 +276,7 @@ impl ReqKind {
             ReqKind::SyncRegion(info) => info.id,
             ReqKind::Del(obj_id) => *obj_id,
             ReqKind::Create(obj_id, _, _) => *obj_id,
-            ReqKind::Pages(_) => return None,
+            ReqKind::Pages(_) | ReqKind::Shutdown => return None,
         })
     }
 }

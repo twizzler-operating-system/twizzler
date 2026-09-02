@@ -640,6 +640,25 @@ pub fn handle_kernel_request(
             work.phase("evict");
             return handle_sync_region(ctx, qid, info, request, work);
         }
+        KernelCommand::Shutdown => {
+            work.phase("shutdown:flush");
+            // `flush` is `ext4_fs_fini` plus a cache flush: it writes back the superblock and
+            // every dirty buffer. Ordinary operation never needs it, because the store's flush
+            // points (page-out, sync) cover the data; what they do not cover is "and now stop".
+            match ctx.paged_ostore(None) {
+                Ok(po) => match po.flush() {
+                    Ok(()) => KernelCompletionData::Okay,
+                    Err(e) => {
+                        tracing::warn!("failed to flush object store for shutdown: {}", e);
+                        KernelCompletionData::Error(TwzError::from(e).into())
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!("no object store to flush for shutdown: {}", e);
+                    KernelCompletionData::Error(e.into())
+                }
+            }
+        }
     };
 
     tracing::debug!("done; sending response: {:?}", data);

@@ -122,6 +122,10 @@ const FAST_PAGE_LIMIT: usize = 16;
 fn is_fast(req: &RequestFromKernel) -> bool {
     match req.cmd() {
         KernelCommand::ObjectInfoReq(_) | KernelCommand::DramPages(_) => true,
+        // Bulk: it takes the global `fs` lock and writes back the whole cache. It is also the last
+        // request the kernel will ever send, so lane choice is about not jumping a queue of work
+        // that still has to land before the flush, not about latency.
+        KernelCommand::Shutdown => false,
         KernelCommand::PageDataReq(id, range, flags, required) => {
             let flags_ok = !flags.intersects(PagerFlags::PREFETCH | PagerFlags::BACKGROUND);
             let urgent_range = crate::request_handle::urgent_segment(range, required);

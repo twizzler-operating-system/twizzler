@@ -162,6 +162,26 @@ impl MinimalRuntime {
         INTERRUPT_GEN.fetch_add(1, Ordering::Release);
     }
 
+    /// Post a signal to another thread of this compartment.
+    ///
+    /// Posting works here -- it is a kernel operation on the target's repr -- even though this
+    /// runtime never dispatches the resulting Mailbox upcall to a handler table. The signal is
+    /// still useful for its other effect: `SendMessage` resets the target's sync sleep, so a
+    /// thread parked in `sys_thread_sync` wakes.
+    ///
+    /// The signal number is the mailbox bit index; the kernel rejects 0 and anything from 64 up.
+    pub fn thread_signal(&self, id: u32, signal: u64) -> Result<()> {
+        if signal == 0 || signal >= 64 {
+            return Err(ArgumentError::InvalidArgument.into());
+        }
+        let thread = get_thread_slots()
+            .lock()
+            .get(&id)
+            .cloned()
+            .ok_or(ArgumentError::BadHandle)?;
+        twizzler_abi::syscall::sys_thread_send_message(thread.repr.id(), signal, 0)
+    }
+
     pub fn join(&self, id: u32, timeout: Option<core::time::Duration>) -> Result<()> {
         let mut state = ExecutionState::Running;
         loop {

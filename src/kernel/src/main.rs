@@ -110,6 +110,18 @@ pub fn is_bench_mode() -> bool {
     BENCH_MODE.load(Ordering::SeqCst) > 0
 }
 
+static BG_SYNC_DROP: AtomicBool = AtomicBool::new(false);
+/// `--nobgsync`: the background sync thread drains its queue without writing anything back.
+///
+/// A measurement switch, not a mode to boot in: dirty pages are dropped instead of written, so the
+/// backing store is left stale. It exists to price the ext4 write-back path -- a build whose output
+/// lands in `/ext` is ~5s slower than the same build into `/tmp` (native objects), and this says
+/// how much of that is deferred write-back versus the inline path. Only the thread is gated; the
+/// inline fallback in `queue_background_sync` runs before userspace exists and is left alone.
+pub fn bg_sync_drop() -> bool {
+    BG_SYNC_DROP.load(Ordering::SeqCst)
+}
+
 static NO_PCID: AtomicBool = AtomicBool::new(false);
 /// Whether the boot cmdline asked us to run without PCIDs (x86_64). A kill switch for bisecting
 /// TLB coherence problems: with this set, address space switches flush as they always did.
@@ -253,6 +265,9 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
         }
         if opt == "--no-pcid" {
             NO_PCID.store(true, Ordering::SeqCst);
+        }
+        if opt == "--nobgsync" {
+            BG_SYNC_DROP.store(true, Ordering::SeqCst);
         }
         if opt == "--diag" {
             DIAG_MODE.store(true, Ordering::SeqCst);

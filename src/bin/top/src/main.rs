@@ -19,9 +19,9 @@ use twizzler::object::{Object, TypedObject};
 use twizzler_abi::{
     object::ObjID,
     syscall::{
-        EnumerateKind, ThreadSchedStats, ThreadSctxIds, sys_info, sys_object_enumerate_notes,
-        sys_object_get_note, sys_thread_read_sctx_ids, sys_thread_read_stats, sys_thread_self_id,
-        sys_thread_stats,
+        EnumerateKind, KernelStats, MemoryStats, ThreadSchedStats, ThreadSctxIds, sys_info,
+        sys_kernel_stats, sys_memory_stats, sys_object_enumerate_notes, sys_object_get_note,
+        sys_thread_read_sctx_ids, sys_thread_read_stats, sys_thread_self_id, sys_thread_stats,
     },
     thread::{ExecutionState, ThreadRepr},
 };
@@ -61,11 +61,99 @@ impl ThreadView {
     }
 }
 
+/// Column the display is ordered by. Groups are ordered by the same key, using the group's
+/// aggregate of it, so the ordering the user picked holds at both levels.
+#[derive(Copy, Clone, PartialEq, Eq, Default)]
+enum SortKey {
+    #[default]
+    Cpu,
+    User,
+    Sys,
+    Faults,
+    Pager,
+    Syscalls,
+    Wakes,
+    Time,
+    Name,
+    State,
+    Id,
+}
+
+impl SortKey {
+    fn next(&self) -> Self {
+        match self {
+            SortKey::Cpu => SortKey::User,
+            SortKey::User => SortKey::Sys,
+            SortKey::Sys => SortKey::Faults,
+            SortKey::Faults => SortKey::Pager,
+            SortKey::Pager => SortKey::Syscalls,
+            SortKey::Syscalls => SortKey::Wakes,
+            SortKey::Wakes => SortKey::Time,
+            SortKey::Time => SortKey::Name,
+            SortKey::Name => SortKey::State,
+            SortKey::State => SortKey::Id,
+            SortKey::Id => SortKey::Cpu,
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            SortKey::Cpu => "cpu",
+            SortKey::User => "user",
+            SortKey::Sys => "sys",
+            SortKey::Faults => "faults",
+            SortKey::Pager => "pager",
+            SortKey::Syscalls => "syscalls",
+            SortKey::Wakes => "wakes",
+            SortKey::Time => "time",
+            SortKey::Name => "name",
+            SortKey::State => "state",
+            SortKey::Id => "id",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "cpu" => SortKey::Cpu,
+            "user" => SortKey::User,
+            "sys" | "system" => SortKey::Sys,
+            "faults" | "flt" => SortKey::Faults,
+            "pager" | "pio" => SortKey::Pager,
+            "syscalls" | "sc" => SortKey::Syscalls,
+            "wakes" | "wake" => SortKey::Wakes,
+            "time" => SortKey::Time,
+            "name" => SortKey::Name,
+            "state" => SortKey::State,
+            "id" => SortKey::Id,
+            _ => return None,
+        })
+    }
+
+    /// Whether the natural reading of this column is largest-first. Costs descend; labels
+    /// ascend.
+    fn descends(&self) -> bool {
+        !matches!(self, SortKey::Name | SortKey::Id)
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let batch = args.iter().any(|a| a == "-b" || a == "--batch");
 
     let mut tracker = ThreadTracker::default();
+    tracker.show_ids = args.iter().any(|a| a == "--ids");
+    tracker.rev = args.iter().any(|a| a == "-r" || a == "--reverse");
+    for arg in &args {
+        if let Some(key) = arg.strip_prefix("--sort=") {
+            match SortKey::parse(key) {
+                Some(k) => tracker.sort = k,
+                None => {
+                    eprintln!("top: unknown sort key `{}`", key);
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
     // Sets the starting mode; the interactive display can still cycle from here with `t`.
     if args.iter().any(|a| a == "--compartments" || a == "-c") {
         tracker.view = ThreadView::HideAll;
@@ -118,6 +206,18 @@ fn wait_for_input(timeout: Duration, tracker: &mut ThreadTracker, out: &mut impl
                     KeyCode::Char('q') | KeyCode::Esc => return true,
                     KeyCode::Char('t') => {
                         tracker.view = tracker.view.next();
+                        tracker.render(out).unwrap();
+                    }
+                    KeyCode::Char('i') => {
+                        tracker.show_ids = !tracker.show_ids;
+                        tracker.render(out).unwrap();
+                    }
+                    KeyCode::Char('s') => {
+                        tracker.sort = tracker.sort.next();
+                        tracker.render(out).unwrap();
+                    }
+                    KeyCode::Char('r') => {
+                        tracker.rev = !tracker.rev;
                         tracker.render(out).unwrap();
                     }
                     _ => {}
@@ -173,6 +273,30 @@ impl ThreadInfo {
     fn system(&self, elapsed: u64) -> f64 {
         frac(self.delta.system, elapsed)
     }
+
+    /// Per-second rates over the last interval. `secs` is wall time, not statticks: these count
+    /// events, so nothing bounds them by a fraction of a cpu the way the time columns are.
+    fn faults(&self, secs: f64) -> f64 {
+        rate(self.delta.faults, secs)
+    }
+
+    /// Pages this thread asked the pager for. A low figure does not mean "light pager user":
+    /// read-ahead is charged to whoever triggered it, so a thread whose pages someone else's
+    /// prefetch already brought in reads as zero here.
+    fn pager(&self, secs: f64) -> f64 {
+        rate(self.delta.pager_pages, secs)
+    }
+
+    fn syscalls(&self, secs: f64) -> f64 {
+        rate(self.delta.syscalls, secs)
+    }
+
+    /// Wakes per second. Read against CPU%: a thread waking hundreds of times a second for
+    /// nearly no cpu is being woken to find nothing to do, which is what polling looks like
+    /// from the outside.
+    fn wakes(&self, secs: f64) -> f64 {
+        rate(self.delta.wakes, secs)
+    }
 }
 
 impl ThreadInfo {
@@ -184,6 +308,31 @@ impl ThreadInfo {
 
     fn is_cross(&self) -> bool {
         self.sctx.is_some_and(|s| s.is_cross())
+    }
+}
+
+fn rate(count: u64, secs: f64) -> f64 {
+    if secs <= 0.0 {
+        0.0
+    } else {
+        count as f64 / secs
+    }
+}
+
+/// Compact fixed-width rendering for a per-second rate, so a busy thread's syscall count cannot
+/// widen the column and shove everything after it off the line.
+fn fmt_rate(v: f64) -> String {
+    if v <= 0.0 {
+        // A true zero, not "unknown" -- see [ThreadTracker::rate_str], which owns the
+        // distinction. An idle system legitimately faults zero times in a second, and printing
+        // that as "-" makes a working counter look broken.
+        "0".to_string()
+    } else if v < 1000.0 {
+        format!("{:.0}", v)
+    } else if v < 1_000_000.0 {
+        format!("{:.0}k", v / 1000.0)
+    } else {
+        format!("{:.1}M", v / 1_000_000.0)
     }
 }
 
@@ -208,6 +357,12 @@ struct CompGroup<'a> {
     threads: Vec<&'a ThreadInfo>,
     /// Statticks charged to the group over the last interval, for ordering groups.
     ticks: u64,
+    user_ticks: u64,
+    sys_ticks: u64,
+    fault_count: u64,
+    pager_count: u64,
+    syscall_count: u64,
+    wake_count: u64,
     /// Threads currently executing in some other compartment.
     cross: usize,
     /// The group belongs to no compartment -- see [ThreadView::HideSystem].
@@ -235,6 +390,22 @@ impl CompGroup<'_> {
             .fold(0u64, |acc, t| acc.saturating_add(t.cpu_ticks()))
     }
 
+    fn faults(&self, secs: f64) -> f64 {
+        self.threads.iter().map(|t| t.faults(secs)).sum()
+    }
+
+    fn pager(&self, secs: f64) -> f64 {
+        self.threads.iter().map(|t| t.pager(secs)).sum()
+    }
+
+    fn syscalls(&self, secs: f64) -> f64 {
+        self.threads.iter().map(|t| t.syscalls(secs)).sum()
+    }
+
+    fn wakes(&self, secs: f64) -> f64 {
+        self.threads.iter().map(|t| t.wakes(secs)).sum()
+    }
+
     /// Threads the kernel calls Running, which covers both on-cpu and waiting on a run queue --
     /// the state alone does not say which, so this is "not blocked" rather than "on a cpu now".
     fn running(&self) -> usize {
@@ -258,6 +429,72 @@ impl CompGroup<'_> {
     }
 }
 
+/// The system-wide counters, taken once per sample. All cumulative except the two levels noted,
+/// so everything the header shows is a difference between two of these over the wall time
+/// between them.
+#[derive(Copy, Clone)]
+struct SysSample {
+    kernel: KernelStats,
+    mem: MemoryStats,
+    syscalls: u64,
+    /// Cumulative nanoseconds the hypervisor ran something else while our cpus were runnable.
+    /// Zero on bare metal; nonzero and growing means these numbers were taken on a busy host.
+    steal_ns: u64,
+    at: Instant,
+}
+
+impl SysSample {
+    /// Two syscalls, not four: the syscall total and the steal figure ride in `KernelStats`
+    /// precisely so a sampler need not also fetch `SyscallStats` (several KiB of per-syscall
+    /// arrays) and `SysInfo` (otherwise static) once a second.
+    fn take() -> Self {
+        let kernel = sys_kernel_stats();
+        SysSample {
+            syscalls: kernel.syscalls,
+            steal_ns: kernel.steal_ns,
+            kernel,
+            mem: sys_memory_stats(),
+            at: Instant::now(),
+        }
+    }
+}
+
+impl SysRates {
+    /// Interrupts that were not the timer. Saturating: the two counters are read in one
+    /// syscall but incremented independently, so a tick landing between them could otherwise
+    /// produce a negative "other".
+    fn other_irq(&self) -> f64 {
+        (self.interrupts - self.hardticks).max(0.0)
+    }
+}
+
+/// Per-second rates between two [SysSample]s, plus the levels that are read as-is.
+#[derive(Default, Copy, Clone)]
+struct SysRates {
+    interrupts: f64,
+    /// Scheduler timer ticks, a subset of `interrupts`.
+    hardticks: f64,
+    ctx_switches: f64,
+    preempts: f64,
+    faults: f64,
+    syscalls: f64,
+    /// Every invalidation. `shootdowns` counts only the ones that had to be sent to another cpu,
+    /// so a single-threaded workload reads ~0 shootdowns against a busy flush count -- they are
+    /// different questions and the header labels them separately for that reason.
+    tlb_flushes: f64,
+    tlb_shootdowns: f64,
+    pager_requests: f64,
+    pager_pages_in: f64,
+    /// Fraction of one cpu's worth of time the hypervisor spent elsewhere while we were
+    /// runnable, over the interval.
+    steal: f64,
+    /// Levels, not rates.
+    pager_inflight: u64,
+    pager_outstanding_frames: usize,
+    free_bytes: usize,
+    total_bytes: usize,
+}
+
 #[derive(Default)]
 struct ThreadTracker {
     threads: BTreeMap<ObjID, ThreadInfo>,
@@ -273,11 +510,42 @@ struct ThreadTracker {
     /// misses are stable for the life of a compartment.
     comps: BTreeMap<ObjID, Option<String>>,
     view: ThreadView,
+    /// Thread object ids are off by default: they are wide, and the name is what identifies a
+    /// thread to a person. `i` brings them back for when an id is what you actually need.
+    show_ids: bool,
+    sort: SortKey,
+    /// Inverts whatever the sort key's natural direction is.
+    rev: bool,
+    /// The previous and current system-wide samples, and the wall seconds between them. Wall
+    /// time, not statticks: these count events, and a per-second rate is what a reader can
+    /// compare against another machine.
+    sys_prev: Option<SysSample>,
+    sys_now: Option<SysSample>,
+    secs: f64,
+    /// Counts samples taken, for the periodic name refresh below.
+    generation: u64,
+    /// Read once. Hotplug aside, this does not change, and it was costing a `sys_info` every
+    /// second to re-learn.
+    cpus: usize,
+    /// Our own thread id, for the bold self row. Constant for the life of the process.
+    self_id: ObjID,
 }
 
 impl ThreadTracker {
     fn sample(&mut self) {
         let now = Instant::now();
+        self.generation += 1;
+        if self.cpus == 0 {
+            self.cpus = sys_info().cpu_count;
+            self.self_id = sys_thread_self_id();
+        }
+        self.sys_prev = self.sys_now;
+        let sample = SysSample::take();
+        self.secs = self
+            .sys_prev
+            .map(|p| sample.at.duration_since(p.at).as_secs_f64())
+            .unwrap_or(0.0);
+        self.sys_now = Some(sample);
         self.scan_for_threads();
         self.read_thread_stats();
         self.read_thread_names();
@@ -356,6 +624,10 @@ impl ThreadTracker {
                             user: stats.user.saturating_sub(thread.stats.user),
                             system: stats.system.saturating_sub(thread.stats.system),
                             idle: stats.idle.saturating_sub(thread.stats.idle),
+                            faults: stats.faults.saturating_sub(thread.stats.faults),
+                            pager_pages: stats.pager_pages.saturating_sub(thread.stats.pager_pages),
+                            syscalls: stats.syscalls.saturating_sub(thread.stats.syscalls),
+                            wakes: stats.wakes.saturating_sub(thread.stats.wakes),
                         }
                     };
                     thread.stats = stats;
@@ -379,8 +651,18 @@ impl ThreadTracker {
         }
     }
 
+    /// Names cost two syscalls each (enumerate the notes, read the last one) and almost never
+    /// change, so they are read once per thread and then only occasionally. A thread with no name
+    /// yet is retried every sample: the runtime sets it shortly after spawn, and a permanently
+    /// blank row would be the worse failure.
+    const NAME_REFRESH: u64 = 32;
+
     fn read_thread_names(&mut self) {
+        let refresh = self.generation % Self::NAME_REFRESH == 0;
         for thread in self.threads.values_mut() {
+            if thread.name.is_some() && !refresh {
+                continue;
+            }
             if let Some(name) = try_read_thread_name(thread.id) {
                 thread.name = Some(name);
             }
@@ -389,6 +671,13 @@ impl ThreadTracker {
 
     fn read_thread_sctx(&mut self) {
         for thread in self.threads.values_mut() {
+            // A kernel thread belongs to no security context and cannot be in a gate call, so
+            // both ids are zero by construction -- which is what the syscall would tell us, at
+            // the cost of a syscall each per second.
+            if thread.kernel {
+                thread.sctx = Some(ThreadSctxIds::default());
+                continue;
+            }
             let mut ids = ThreadSctxIds::default();
             thread.sctx = sys_thread_read_sctx_ids(thread.id, &mut ids)
                 .ok()
@@ -424,7 +713,17 @@ impl ThreadTracker {
             return "[monitor]".to_string();
         }
         match self.comps.get(&id) {
-            Some(Some(name)) => name.clone(),
+            // Basename only. Compartments are named by path, and at a normal terminal width the
+            // shared "/pkg/" prefix is all that survives truncation -- two different compartments
+            // both rendering as "/pkg/twi", which is worse than useless.
+            Some(Some(name)) => {
+                let base = name.rsplit('/').next().unwrap_or("");
+                if base.is_empty() {
+                    name.clone()
+                } else {
+                    base.to_string()
+                }
+            }
             // Known-unnamed and never-seen look the same here on purpose: either way the id is
             // all we have to show.
             _ => format!("[{:x}]", id),
@@ -454,6 +753,12 @@ impl ThreadTracker {
             .into_iter()
             .map(|(label, threads)| CompGroup {
                 ticks: threads.iter().map(|t| t.delta_cpu_ticks()).sum(),
+                user_ticks: threads.iter().map(|t| t.delta.user).sum(),
+                sys_ticks: threads.iter().map(|t| t.delta.system).sum(),
+                fault_count: threads.iter().map(|t| t.delta.faults).sum(),
+                pager_count: threads.iter().map(|t| t.delta.pager_pages).sum(),
+                syscall_count: threads.iter().map(|t| t.delta.syscalls).sum(),
+                wake_count: threads.iter().map(|t| t.delta.wakes).sum(),
                 cross: threads.iter().filter(|t| t.is_cross()).count(),
                 // Every thread in a group shares a home by construction, so the first answers
                 // for all of them.
@@ -463,9 +768,21 @@ impl ThreadTracker {
             })
             .collect();
         groups.sort_by(|a, b| {
-            b.ticks
-                .cmp(&a.ticks)
-                .then(b.threads.len().cmp(&a.threads.len()))
+            // Id has no group-level analogue, so it falls back to the label like Name does.
+            let ord = match self.sort {
+                SortKey::Cpu => b.ticks.cmp(&a.ticks),
+                SortKey::User => b.user_ticks.cmp(&a.user_ticks),
+                SortKey::Sys => b.sys_ticks.cmp(&a.sys_ticks),
+                SortKey::Faults => b.fault_count.cmp(&a.fault_count),
+                SortKey::Pager => b.pager_count.cmp(&a.pager_count),
+                SortKey::Syscalls => b.syscall_count.cmp(&a.syscall_count),
+                SortKey::Wakes => b.wake_count.cmp(&a.wake_count),
+                SortKey::Time => b.cpu_ticks().cmp(&a.cpu_ticks()),
+                SortKey::State => b.running().cmp(&a.running()),
+                SortKey::Name | SortKey::Id => a.label.cmp(&b.label),
+            };
+            let ord = if self.rev { ord.reverse() } else { ord };
+            ord.then(b.threads.len().cmp(&a.threads.len()))
                 .then(a.label.cmp(&b.label))
         });
         groups
@@ -495,21 +812,137 @@ impl ThreadTracker {
         format!("-> {}", self.comp_label(active))
     }
 
-    /// Threads, most cpu-hungry first.
+    /// Threads in the current sort order.
     fn sorted(&self) -> Vec<&ThreadInfo> {
         let mut visible: Vec<&ThreadInfo> = self.threads.values().collect();
         visible.sort_by(|a, b| {
-            b.delta_cpu_ticks()
-                .cmp(&a.delta_cpu_ticks())
-                .then(b.cpu_ticks().cmp(&a.cpu_ticks()))
-                .then(a.id.cmp(&b.id))
+            let ord = match self.sort {
+                SortKey::Cpu => b
+                    .delta_cpu_ticks()
+                    .cmp(&a.delta_cpu_ticks())
+                    .then(b.cpu_ticks().cmp(&a.cpu_ticks())),
+                SortKey::User => b.delta.user.cmp(&a.delta.user),
+                SortKey::Sys => b.delta.system.cmp(&a.delta.system),
+                SortKey::Faults => b.delta.faults.cmp(&a.delta.faults),
+                SortKey::Pager => b.delta.pager_pages.cmp(&a.delta.pager_pages),
+                SortKey::Syscalls => b.delta.syscalls.cmp(&a.delta.syscalls),
+                SortKey::Wakes => b.delta.wakes.cmp(&a.delta.wakes),
+                SortKey::Time => b.cpu_ticks().cmp(&a.cpu_ticks()),
+                // Sorts on what is drawn, so an unnamed thread orders by the id shown in its
+                // place rather than sinking to one end as an empty string.
+                SortKey::Name => display_name(a).cmp(&display_name(b)),
+                SortKey::State => state_str(a).cmp(state_str(b)),
+                SortKey::Id => a.id.cmp(&b.id),
+            };
+            let ord = if self.rev { ord.reverse() } else { ord };
+            ord.then(a.id.cmp(&b.id))
         });
         visible
     }
 
+    /// The direction actually in effect, for the footer.
+    fn sort_dir(&self) -> &'static str {
+        if self.sort.descends() != self.rev {
+            "desc"
+        } else {
+            "asc"
+        }
+    }
+
+    /// System-wide rates for the header. Zero everywhere until the second sample: one sample has
+    /// nothing to difference against, and showing a since-boot total in a per-second column would
+    /// read as a rate.
+    fn rates(&self) -> SysRates {
+        let Some(now) = self.sys_now else {
+            return SysRates::default();
+        };
+        let mut r = SysRates {
+            pager_inflight: now.kernel.pager_inflight,
+            pager_outstanding_frames: now.mem.tracker.pager_outstanding,
+            free_bytes: now.mem.free_bytes(),
+            total_bytes: now.mem.total_bytes(),
+            ..Default::default()
+        };
+        let (Some(prev), true) = (self.sys_prev, self.secs > 0.0) else {
+            return r;
+        };
+        let per = |a: u64, b: u64| rate(a.saturating_sub(b), self.secs);
+        r.interrupts = per(now.kernel.interrupts, prev.kernel.interrupts);
+        r.hardticks = per(now.kernel.hardticks, prev.kernel.hardticks);
+        r.ctx_switches = per(now.kernel.ctx_switches, prev.kernel.ctx_switches);
+        r.preempts = per(now.kernel.preempts, prev.kernel.preempts);
+        r.syscalls = per(now.syscalls, prev.syscalls);
+        r.pager_requests = per(now.kernel.pager_requests, prev.kernel.pager_requests);
+        r.pager_pages_in = per(
+            now.kernel.pager_pages_installed,
+            prev.kernel.pager_pages_installed,
+        );
+        r.faults = per(
+            now.mem.page_fault_count as u64,
+            prev.mem.page_fault_count as u64,
+        );
+        r.steal = now.steal_ns.saturating_sub(prev.steal_ns) as f64 / (self.secs * 1e9);
+        r.tlb_flushes = per(
+            now.mem.tlb_flush_count as u64,
+            prev.mem.tlb_flush_count as u64,
+        );
+        r.tlb_shootdowns = per(
+            now.mem.tlb_shootdown_count as u64,
+            prev.mem.tlb_shootdown_count as u64,
+        );
+        r
+    }
+
+    /// A rate for display. Before the second sample there is no interval to divide by, and
+    /// "no data yet" must not look like "zero" -- so that case, and only that case, prints "-".
+    fn rate_str(&self, v: f64) -> String {
+        if self.secs <= 0.0 {
+            "-".to_string()
+        } else {
+            fmt_rate(v)
+        }
+    }
+
+    /// The two system-wide header lines, as text.
+    fn sys_lines(&self) -> (String, String) {
+        let r = self.rates();
+        // Timer and everything else, side by side rather than one total. `tick` counts every
+        // timer interrupt, which is more than the nominal statclock cadence: the one-shot is
+        // rearmed sub-tick whenever a timeout needs it (see clock.rs), so tick well above the
+        // tick rate means timeouts, and `otherirq` is then device interrupts and IPIs alone.
+        let kernel = format!(
+            "kernel  tick {}/s  otherirq {}/s  ctxsw {}/s  preempt {}/s  fault {}/s  syscall {}/s  tlbflush {}/s  shootdown {}/s",
+            self.rate_str(r.hardticks),
+            self.rate_str(r.other_irq()),
+            self.rate_str(r.ctx_switches),
+            self.rate_str(r.preempts),
+            self.rate_str(r.faults),
+            self.rate_str(r.syscalls),
+            self.rate_str(r.tlb_flushes),
+            self.rate_str(r.tlb_shootdowns),
+        );
+        // Only when the hypervisor is actually taking time: on bare metal it is always zero, and
+        // a permanent "steal 0.0" column trains the eye to skip the spot where it matters.
+        let kernel = if r.steal > 0.0 {
+            format!("{}  steal {:.2} cpu", kernel, r.steal)
+        } else {
+            kernel
+        };
+        let pager = format!(
+            "pager   {}/s req  {}/s pages in  {} in flight  {} frames on loan  |  mem {} free of {}",
+            self.rate_str(r.pager_requests),
+            self.rate_str(r.pager_pages_in),
+            r.pager_inflight,
+            r.pager_outstanding_frames,
+            fmt_bytes(r.free_bytes),
+            fmt_bytes(r.total_bytes),
+        );
+        (kernel, pager)
+    }
+
     fn summary(&self) -> String {
         let stats = sys_thread_stats();
-        let cpus = sys_info().cpu_count;
+        let cpus = self.cpus;
         let busy: f64 = self.threads.values().map(|t| t.cpu(self.elapsed)).sum();
         let groups = self.grouped();
         let cross: usize = groups.iter().map(|g| g.cross).sum();
@@ -543,10 +976,30 @@ impl ThreadTracker {
 
     fn render_plain(&self, out: &mut impl Write) -> std::io::Result<()> {
         writeln!(out, "twiztop{}", self.summary())?;
+        let (kernel_line, pager_line) = self.sys_lines();
+        writeln!(out, "{}", kernel_line)?;
+        writeln!(out, "{}", pager_line)?;
+        let id_hdr = if self.show_ids {
+            format!("{:<20}  ", "ID")
+        } else {
+            String::new()
+        };
         writeln!(
             out,
-            "{:<20}  {:<22}  {:<18}  {:<9}  {:>6}  {:>6}  {:>6}  {:>8}  {}",
-            "ID", "NAME", "COMP", "STATE", "CPU%", "USER%", "SYS%", "TIME", "WHERE"
+            "{}{:<22}  {:<18}  {:<9}  {:>6}  {:>6}  {:>6}  {:>6}  {:>6}  {:>6}  {:>6}  {:>8}  {}",
+            id_hdr,
+            "NAME",
+            "COMP",
+            "STATE",
+            "CPU%",
+            "USER%",
+            "SYS%",
+            "FLT/s",
+            "PGR/s",
+            "SC/s",
+            "WAKE/s",
+            "TIME",
+            "WHERE"
         )?;
         // Flat and one-compartment-per-row rather than grouped: this output is meant to be
         // parsed, and a grouped form would put the compartment on a different line than the
@@ -557,14 +1010,22 @@ impl ThreadTracker {
             if !self.show_rows(&group) {
                 writeln!(
                     out,
-                    "{:<20.20}  {:<22.22}  {:<18.18}  {:<9.9}  {:>5.1}%  {:>5.1}%  {:>5.1}%  {:>8}  {}",
-                    "",
+                    "{}{:<22.22}  {:<18.18}  {:<9.9}  {:>5.1}%  {:>5.1}%  {:>5.1}%  {:>6}  {:>6}  {:>6}  {:>6}  {:>8}  {}",
+                    if self.show_ids {
+                        format!("{:<20}  ", "")
+                    } else {
+                        String::new()
+                    },
                     "",
                     group.label,
                     format!("{} run", group.running()),
                     group.cpu(self.elapsed) * 100.0,
                     group.user(self.elapsed) * 100.0,
                     group.system(self.elapsed) * 100.0,
+                    self.rate_str(group.faults(self.secs)),
+                    self.rate_str(group.pager(self.secs)),
+                    self.rate_str(group.syscalls(self.secs)),
+                    self.rate_str(group.wakes(self.secs)),
                     self.time_str_ticks(group.cpu_ticks()),
                     group.tail(),
                 )?;
@@ -573,14 +1034,22 @@ impl ThreadTracker {
             for thread in &group.threads {
                 writeln!(
                     out,
-                    "{:<20.20}  {:<22.22}  {:<18.18}  {:<9.9}  {:>5.1}%  {:>5.1}%  {:>5.1}%  {:>8}  {}",
-                    format!("{:x}", thread.id),
-                    thread.name.as_deref().unwrap_or(""),
+                    "{}{:<22.22}  {:<18.18}  {:<9.9}  {:>5.1}%  {:>5.1}%  {:>5.1}%  {:>6}  {:>6}  {:>6}  {:>6}  {:>8}  {}",
+                    if self.show_ids {
+                        format!("{:<20.20}  ", format!("{:x}", thread.id))
+                    } else {
+                        String::new()
+                    },
+                    display_name(thread),
                     group.label,
                     state_str(thread),
                     thread.cpu(self.elapsed) * 100.0,
                     thread.user(self.elapsed) * 100.0,
                     thread.system(self.elapsed) * 100.0,
+                    self.rate_str(thread.faults(self.secs)),
+                    self.rate_str(thread.pager(self.secs)),
+                    self.rate_str(thread.syscalls(self.secs)),
+                    self.rate_str(thread.wakes(self.secs)),
                     self.time_str(thread),
                     self.away_label(thread),
                 )?;
@@ -591,11 +1060,27 @@ impl ThreadTracker {
 
     fn render(&self, out: &mut impl Write) -> std::io::Result<()> {
         let (cols, rows) = size().unwrap_or((80, 24));
-        let self_id = sys_thread_self_id();
+        let self_id = self.self_id;
         // Everything but NAME is fixed width; NAME takes what is left. Thread rows are indented
         // two under their compartment header, and WHERE takes a column at the end, so both come
-        // out of NAME's share.
-        let name_w = (cols as usize).saturating_sub(81).clamp(8, 32);
+        // out of NAME's share. Hiding the ID column hands its 18 columns to NAME.
+        //
+        // 2 indent + 18 id (when shown) + 2 + 9 state + six 8-wide numeric columns + 10 time +
+        // 2 before WHERE, and ~10 reserved for WHERE itself.
+        let id_w = if self.show_ids { 18 } else { 0 };
+        // USER%/SYS% are a breakdown of CPU%, so they are what a narrow terminal can afford to
+        // lose: the alternative is starving NAME until every compartment reads as its shared path
+        // prefix. Their 16 columns go back to NAME below this width.
+        let split_cpu = cols as usize >= 118 + id_w;
+        let fixed = if split_cpu { 81 } else { 65 };
+        let name_w = (cols as usize)
+            .saturating_sub(fixed + id_w + 10)
+            .clamp(6, 40);
+        let id_hdr = if self.show_ids {
+            format!("{:<16}  ", "ID")
+        } else {
+            String::new()
+        };
 
         let visible = self.sorted();
         let mut rows_by_state: BTreeMap<&'static str, usize> = BTreeMap::new();
@@ -624,17 +1109,32 @@ impl ThreadTracker {
             out.queue(ResetColor)?;
         }
 
+        let (kernel_line, pager_line) = self.sys_lines();
+        out.queue(MoveTo(0, 2))?;
+        out.queue(SetForegroundColor(Color::DarkGrey))?;
+        out.queue(Print(&kernel_line))?;
         out.queue(MoveTo(0, 3))?;
+        out.queue(Print(&pager_line))?;
+        out.queue(ResetColor)?;
+
+        out.queue(MoveTo(0, 4))?;
         out.queue(SetAttribute(Attribute::Reverse))?;
         out.queue(Print(pad(
             &format!(
-                "  {:<16}  {:<w$}  {:<9}  {:>6}  {:>6}  {:>6}  {:>8}  {}",
-                "ID",
+                "  {}{:<w$}  {:<9}  {:>6}{}  {:>6}  {:>6}  {:>6}  {:>6}  {:>8}  {}",
+                id_hdr,
                 "NAME",
                 "STATE",
                 "CPU%",
-                "USER%",
-                "SYS%",
+                if split_cpu {
+                    format!("  {:>6}  {:>6}", "USER%", "SYS%")
+                } else {
+                    String::new()
+                },
+                "FLT/s",
+                "PGR/s",
+                "SC/s",
+                "WAKE/s",
                 "TIME",
                 "WHERE",
                 w = name_w
@@ -643,7 +1143,7 @@ impl ThreadTracker {
         )))?;
         out.queue(SetAttribute(Attribute::Reset))?;
 
-        let body_start: u16 = 4;
+        let body_start: u16 = 5;
         let max_rows = rows.saturating_sub(body_start + 1) as usize;
         // A group costs a header row, so budget rows across groups rather than threads: an
         // overlong first group must not push every other compartment off the screen entirely.
@@ -658,7 +1158,11 @@ impl ThreadTracker {
             out.queue(MoveTo(0, body_start + row as u16))?;
             // The label spans the ID and NAME columns, so the numeric columns below line up
             // with the thread rows rather than sitting wherever the label happened to end.
-            let label_w = 20 + name_w;
+            let label_w = if self.show_ids {
+                20 + name_w
+            } else {
+                2 + name_w
+            };
             out.queue(SetAttribute(Attribute::Bold))?;
             out.queue(SetForegroundColor(Color::Magenta))?;
             out.queue(Print(format!("{:<w$.w$}", group.label, w = label_w)))?;
@@ -676,14 +1180,30 @@ impl ThreadTracker {
             out.queue(Print(format!("{:<9.9}", format!("{} run", running))))?;
             out.queue(ResetColor)?;
 
-            for frac in [
-                group.cpu(self.elapsed),
-                group.user(self.elapsed),
-                group.system(self.elapsed),
-            ] {
+            let group_fracs: Vec<f64> = if split_cpu {
+                vec![
+                    group.cpu(self.elapsed),
+                    group.user(self.elapsed),
+                    group.system(self.elapsed),
+                ]
+            } else {
+                vec![group.cpu(self.elapsed)]
+            };
+            for frac in group_fracs {
                 out.queue(Print("  "))?;
                 out.queue(SetForegroundColor(pct_color(frac)))?;
                 out.queue(Print(format!("{:>5.1}%", frac * 100.0)))?;
+                out.queue(ResetColor)?;
+            }
+            for rate in [
+                group.faults(self.secs),
+                group.pager(self.secs),
+                group.syscalls(self.secs),
+                group.wakes(self.secs),
+            ] {
+                out.queue(Print("  "))?;
+                out.queue(SetForegroundColor(rate_color(rate)))?;
+                out.queue(Print(format!("{:>6}", self.rate_str(rate))))?;
                 out.queue(ResetColor)?;
             }
             out.queue(Print(format!(
@@ -714,23 +1234,43 @@ impl ThreadTracker {
                     out.queue(SetAttribute(Attribute::Bold))?;
                 }
                 out.queue(Print(format!(
-                    "  {:<16.16}  {:<w$.w$}  ",
-                    format!("{:x}", thread.id),
-                    thread.name.as_deref().unwrap_or(""),
+                    "  {}{:<w$.w$}  ",
+                    if self.show_ids {
+                        format!("{:<16.16}  ", format!("{:x}", thread.id))
+                    } else {
+                        String::new()
+                    },
+                    display_name(thread),
                     w = name_w
                 )))?;
                 out.queue(SetForegroundColor(state_color(state_str(thread))))?;
                 out.queue(Print(format!("{:<9.9}", state_str(thread))))?;
                 out.queue(ResetColor)?;
 
-                for frac in [
-                    thread.cpu(self.elapsed),
-                    thread.user(self.elapsed),
-                    thread.system(self.elapsed),
-                ] {
+                let fracs: Vec<f64> = if split_cpu {
+                    vec![
+                        thread.cpu(self.elapsed),
+                        thread.user(self.elapsed),
+                        thread.system(self.elapsed),
+                    ]
+                } else {
+                    vec![thread.cpu(self.elapsed)]
+                };
+                for frac in fracs {
                     out.queue(Print("  "))?;
                     out.queue(SetForegroundColor(pct_color(frac)))?;
                     out.queue(Print(format!("{:>5.1}%", frac * 100.0)))?;
+                    out.queue(ResetColor)?;
+                }
+                for rate in [
+                    thread.faults(self.secs),
+                    thread.pager(self.secs),
+                    thread.syscalls(self.secs),
+                    thread.wakes(self.secs),
+                ] {
+                    out.queue(Print("  "))?;
+                    out.queue(SetForegroundColor(rate_color(rate)))?;
+                    out.queue(Print(format!("{:>6}", self.rate_str(rate))))?;
                     out.queue(ResetColor)?;
                 }
                 out.queue(Print(format!("  {:>8}  ", self.time_str(thread))))?;
@@ -746,8 +1286,11 @@ impl ThreadTracker {
         out.queue(MoveTo(0, rows.saturating_sub(1)))?;
         out.queue(SetForegroundColor(Color::DarkGrey))?;
         out.queue(Print(format!(
-            "q/Esc: quit  |  t: {}  |  grouped by home compartment, cpu (desc)  |  WHERE = running in another compartment",
+            "q/Esc: quit  |  t: {}  |  s: sort by {} ({})  |  r: reverse  |  i: {} ids  |  grouped by home compartment",
             self.view.label(),
+            self.sort.label(),
+            self.sort_dir(),
+            if self.show_ids { "hide" } else { "show" },
         )))?;
         out.queue(ResetColor)?;
 
@@ -784,6 +1327,18 @@ fn try_read_thread_name(id: ObjID) -> Option<String> {
     }
 }
 
+/// What goes in the NAME column. An unnamed thread (kernel threads, and anything that never
+/// called set_name) still needs an identity there, since the id column is off by default.
+fn display_name(thread: &ThreadInfo) -> String {
+    match thread.name.as_deref() {
+        Some(name) if !name.is_empty() => name.to_string(),
+        _ => {
+            // Low bits only: ids are wide, and the low half is what distinguishes them.
+            format!("<{:08x}>", thread.id.raw() as u32)
+        }
+    }
+}
+
 fn state_str(thread: &ThreadInfo) -> &'static str {
     if thread.err.is_some() {
         return "?";
@@ -807,6 +1362,17 @@ fn state_color(state: &str) -> Color {
     }
 }
 
+/// Rates have no ceiling to scale against the way a cpu percentage does, so this only separates
+/// "doing nothing" from "doing something" and flags the genuinely loud.
+fn rate_color(v: f64) -> Color {
+    match v {
+        v if v >= 10_000.0 => Color::Red,
+        v if v >= 1_000.0 => Color::Yellow,
+        v if v > 0.0 => Color::Green,
+        _ => Color::DarkGrey,
+    }
+}
+
 fn pct_color(frac: f64) -> Color {
     match frac {
         f if f >= 0.75 => Color::Red,
@@ -814,6 +1380,17 @@ fn pct_color(frac: f64) -> Color {
         f if f > 0.0 => Color::Green,
         _ => Color::DarkGrey,
     }
+}
+
+fn fmt_bytes(bytes: usize) -> String {
+    const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
+    let mut v = bytes as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i + 1 < UNITS.len() {
+        v /= 1024.0;
+        i += 1;
+    }
+    format!("{:.1}{}", v, UNITS[i])
 }
 
 fn fmt_time(secs: f64) -> String {

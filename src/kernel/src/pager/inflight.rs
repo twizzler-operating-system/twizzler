@@ -111,6 +111,7 @@ impl Inflight {
                 ),
             ),
             ReqKind::Pages(phys_range) => KernelCommand::DramPages(*phys_range),
+            ReqKind::Shutdown => KernelCommand::Shutdown,
             ReqKind::SyncRegion(info) => {
                 for e in &**info.reqs {
                     f(*e);

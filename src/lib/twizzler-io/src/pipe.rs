@@ -12,7 +12,10 @@ use twizzler_abi::syscall::{
     ThreadSyncWake, sys_thread_sync,
 };
 
-use crate::buffer::VolatileBuffer;
+use crate::{
+    buffer::VolatileBuffer,
+    intr::{interrupt_gen, interrupted_since},
+};
 
 pub const BUF_SZ: usize = 4096;
 
@@ -219,7 +222,7 @@ impl Pipe {
         self.bump_events(false);
     }
 
-    fn do_sleep(&self, sync: ThreadSyncSleep) -> std::io::Result<()> {
+    fn do_sleep(&self, sync: ThreadSyncSleep, intr_gen: u64) -> std::io::Result<()> {
         let readers = self.readers();
         let reader_sync = ThreadSync::new_sleep(ThreadSyncSleep::new(
             ThreadSyncReference::Virtual(&self.pipe.base().readers),
@@ -235,7 +238,12 @@ impl Pipe {
             ThreadSyncFlags::empty(),
         ));
         sys_thread_sync(
-            &mut [ThreadSync::new_sleep(sync), reader_sync, writer_sync],
+            &mut [
+                ThreadSync::new_sleep(sync),
+                reader_sync,
+                writer_sync,
+                crate::intr::sleep_op(intr_gen),
+            ],
             None,
         )?;
         Ok(())
@@ -252,42 +260,59 @@ impl Pipe {
 
 impl Pipe {
     pub fn read(&self, buf: &mut [u8], nb: bool) -> std::io::Result<usize> {
-        let writers = self.writers();
-        let sync = self.pipe.base().buffer.sync_for_pending_data();
-        let count = self.pipe.base().buffer.read_bytes(buf)?;
-        if count == 0 && buf.len() > 0 && writers > 0 {
+        // Sampled once for the whole call, not per attempt: a handler that runs between two
+        // attempts has to be visible to the next check.
+        let intr_gen = interrupt_gen();
+        loop {
+            // Before the read, so a writer closing during the attempt is not mistaken for EOF
+            // on data that was already drained.
+            let writers = self.writers();
+            let sync = self.pipe.base().buffer.sync_for_pending_data();
+            let count = self.pipe.base().buffer.read_bytes(buf)?;
+            if count > 0 {
+                self.bump_events(true);
+                return Ok(count);
+            }
+            // Nothing to wait for: a zero-length read, or every writer is gone (EOF).
+            if buf.len() == 0 || writers == 0 {
+                return Ok(count);
+            }
             if nb {
                 return Err(ErrorKind::WouldBlock.into());
             }
-            self.do_sleep(sync)?;
-            return self.read(buf, nb);
+            if interrupted_since(intr_gen) {
+                return Err(ErrorKind::Interrupted.into());
+            }
+            self.do_sleep(sync, intr_gen)?;
         }
-        if count > 0 {
-            self.bump_events(true);
-        }
-        Ok(count)
     }
 }
 
 impl Pipe {
     pub fn write(&self, buf: &[u8], nb: bool) -> std::io::Result<usize> {
-        let readers = self.readers();
-        let sync = self.pipe.base().buffer.sync_for_avail_space();
-        if readers == 0 {
-            return Err(ErrorKind::BrokenPipe.into());
-        }
-        let count = self.pipe.base().buffer.write_bytes(buf)?;
-        if count == 0 && buf.len() > 0 && readers > 0 {
+        let intr_gen = interrupt_gen();
+        loop {
+            let readers = self.readers();
+            let sync = self.pipe.base().buffer.sync_for_avail_space();
+            if readers == 0 {
+                return Err(ErrorKind::BrokenPipe.into());
+            }
+            let count = self.pipe.base().buffer.write_bytes(buf)?;
+            if count > 0 {
+                self.bump_events(false);
+                return Ok(count);
+            }
+            if buf.len() == 0 {
+                return Ok(count);
+            }
             if nb {
                 return Err(ErrorKind::WouldBlock.into());
             }
-            self.do_sleep(sync)?;
-            return self.write(buf, nb);
+            if interrupted_since(intr_gen) {
+                return Err(ErrorKind::Interrupted.into());
+            }
+            self.do_sleep(sync, intr_gen)?;
         }
-        if count > 0 {
-            self.bump_events(false);
-        }
-        Ok(count)
     }
 
     pub fn flush(&self) -> std::io::Result<()> {

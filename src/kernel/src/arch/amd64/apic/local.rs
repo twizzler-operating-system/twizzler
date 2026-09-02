@@ -86,11 +86,17 @@ impl Lapic {
 
     /// Read a register from the local APIC.
     ///
+    /// No fence: xAPIC MMIO is UC (strongly ordered), and x2APIC reads are `rdmsr`. The one
+    /// architectural ordering requirement in this file -- xAPIC LVT write before the
+    /// TSC-deadline MSR write -- is fenced at its site in [Self::setup_oneshot_timer]; the
+    /// cross-vendor ICR ordering rule lives in [Self::write_icr]. These used to `mfence` on
+    /// every access (plus a read-back after every xAPIC write), which charged every EOI, ICR
+    /// write, and timer arm in the system.
+    ///
     /// # Safety
     /// Caller must ensure that reg is a valid register in the APIC register space.
     pub unsafe fn read(&self, reg: u32) -> u32 {
         unsafe {
-            asm!("mfence;");
             match self.version {
                 ApicVersion::XApic => {
                     core::ptr::read_volatile(self.base.offset(reg as usize).unwrap().as_ptr())
@@ -100,21 +106,19 @@ impl Lapic {
         }
     }
 
-    /// Write a value to a register in the local APIC.
+    /// Write a value to a register in the local APIC. See [Self::read] on ordering.
     ///
     /// # Safety
     /// Caller must ensure that reg is a valid register in the APIC register space.
     // Note: this does not need to take &mut self because the APIC is per-CPU.
     pub unsafe fn write(&self, reg: u32, val: u32) {
         unsafe {
-            asm!("mfence;");
             match self.version {
                 ApicVersion::XApic => {
                     core::ptr::write_volatile(
                         self.base.offset(reg as usize).unwrap().as_mut_ptr(),
                         val,
                     );
-                    self.read(LAPIC_ID);
                 }
                 ApicVersion::X2Apic => wrmsr(get_x2_msr_addr(reg), val.into()),
             }
@@ -151,7 +155,16 @@ impl Lapic {
             },
             ApicVersion::X2Apic => {
                 let val = ((hi as u64) << 32) | lo as u64;
-                unsafe { wrmsr(get_x2_msr_addr(LAPIC_ICRLO), val) }
+                // On AMD, `wrmsr` to the x2APIC ICR is not ordered with earlier WB stores, so
+                // without this a target could take the IPI before it can see the stores (e.g.
+                // queued shootdown slots) the IPI is about. mfence+lfence is Linux's
+                // weak_wrmsr_fence; Intel orders these writes, but the fence is cheap next to
+                // the vm exit the wrmsr already costs, so it is not vendor-gated. The xAPIC arm
+                // needs nothing: UC MMIO writes are already ordered behind WB stores.
+                unsafe {
+                    asm!("mfence", "lfence", options(nostack, preserves_flags));
+                    wrmsr(get_x2_msr_addr(LAPIC_ICRLO), val)
+                }
             }
         }
     }
@@ -214,11 +227,10 @@ impl Lapic {
                     LAPIC_TIMER,
                     LAPIC_TIMER_VECTOR as u32 | LAPIC_TIMER_DEADLINE,
                 );
-                // Intel 3A:11.5.4.1 requires an mfence here, between the MMIO write (if we're in
-                // xAPIC mode) and the MSR write.
-                if get_lapic().version == ApicVersion::XApic {
-                    asm!("mfence;");
-                }
+                // Intel 3A:11.5.4.1 requires an mfence between the xAPIC MMIO write and the MSR
+                // write; on AMD the deadline `wrmsr` itself is weakly ordered (same rule as the
+                // ICR, see write_icr), so fence unconditionally.
+                asm!("mfence", "lfence", options(nostack, preserves_flags));
                 x86::msr::wrmsr(x86::msr::IA32_TSC_DEADLINE, deadline);
             } else {
                 let apic = get_lapic();
@@ -302,7 +314,12 @@ pub fn init(bsp: bool) {
 pub fn lapic_interrupt(irq: u16) {
     match irq {
         LAPIC_ERR_VECTOR => panic!("LAPIC error"),
-        LAPIC_TIMER_VECTOR => crate::clock::oneshot_clock_hardtick(),
+        LAPIC_TIMER_VECTOR => {
+            // Statclock first: it samples the interrupted context, before the hardtick's
+            // scheduling work muddies whose time this was.
+            super::super::stat::tick();
+            crate::clock::oneshot_clock_hardtick()
+        }
         LAPIC_RESCHED_VECTOR => crate::processor::sched::schedule_resched(),
         _ => emerglogln!("[x86::apic] ignoring unexpected LAPIC interrupt {}", irq),
     }

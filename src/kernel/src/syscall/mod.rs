@@ -322,6 +322,14 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
                 sync::requeuebug::print();
                 crate::obj::pagetables::invl_overflow::print();
                 crate::obj::pagetables::membership::print();
+                // Before anything else: the machine is about to stop, and a queued background
+                // sync that has not run is a guest's write discarded. The thread that would do it
+                // runs at BACKGROUND priority with no claim on the time before poweroff.
+                crate::pager::drain_background_sync();
+                // Then tell the pager to write it all back. The drain only gets dirty pages as far
+                // as the store's in-memory cache, which is write-back: without this the bytes are
+                // complete in every in-memory sense and still absent from the disk.
+                crate::pager::shutdown_pager();
                 crate::obj::pagetables::tlbfix::print_stats();
                 crate::memory::pagetables::nonleaf_cow_print();
                 print_syscall_profile();
@@ -810,6 +818,10 @@ fn add_syscall_stat_sample(
     let counts = &current_processor().syscall_counts;
     counts.total.fetch_add(1, Ordering::Relaxed);
     counts.per[syscall as usize].fetch_add(1, Ordering::Relaxed);
+    // Per-thread, alongside the per-cpu totals above and on the same relaxed terms.
+    if let Some(thread) = current_thread_ref() {
+        thread.stats.syscalls.fetch_add(1, Ordering::Relaxed);
+    }
     if duration.is_none() && !SYSCALL_PROFILE {
         return;
     }

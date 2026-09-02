@@ -7595,6 +7595,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "signal-test"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "twizzler-abi",
+ "twizzler-rt-abi",
+ "twizzler-runtime",
+]
+
+[[package]]
 name = "signature"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

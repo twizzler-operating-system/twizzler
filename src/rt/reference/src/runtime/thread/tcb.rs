@@ -52,6 +52,12 @@ pub(super) extern "C" fn trampoline(arg: usize) -> ! {
             // Needs an acq barrier here for the ID, but also a release for the flags.
             cur.flags.fetch_or(THREAD_STARTED, Ordering::SeqCst);
         });
+        // The monitor spawns every thread with Mailbox upcalls set to `CallSelf` but leaves
+        // `self_address` zero, because the only entry address it could name is the one in its own
+        // copy of the runtime, not this compartment's. A compartment's main thread fills it in
+        // from `init_for_compartment`; a spawned thread has to do the same, or a signal aimed at
+        // this thread has nowhere to be delivered and stays pending forever.
+        let _ = twizzler_abi::upcall::set_self_upcall_ptr(crate::arch::twz_rt_upcall_entry_c);
         // Find the arguments. arg is a pointer to a Box::into_raw of a Box of ThreadSpawnArgs.
         let arg = unsafe {
             (arg as *const twizzler_rt_abi::thread::ThreadSpawnArgs)

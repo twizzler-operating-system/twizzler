@@ -2,16 +2,12 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use x86::io::{inb, outb};
 
-use crate::{clock::Nanoseconds, once::Once};
-
 const CHANNEL_READBACK: u8 = 3 << 6;
 const ACCESS_LATCH: u8 = 0;
 const ACCESS_LO: u8 = 1 << 4;
 const ACCESS_HI: u8 = 2 << 4;
 const ACCESS_BOTH: u8 = 3 << 4;
 const MODE_ONESHOT: u8 = 1 << 1;
-const MODE_RATEGEN: u8 = 2 << 1;
-const MODE_SQUAREGEN: u8 = 3 << 1;
 const FORMAT_BINARY: u8 = 0;
 
 const PIT_BASE: u16 = 0x40;
@@ -27,13 +23,6 @@ fn pit_data(channel: u16) -> u16 {
     assert!(channel < 3);
     PIT_BASE + channel
 }
-
-struct PitInfo {
-    cb: fn(Nanoseconds),
-    freq: u64,
-}
-
-static INFO: Once<PitInfo> = Once::new();
 
 /// The PIT is a single device with global state -- one counter per channel, plus channel 2's gate
 /// on port 0x61 -- but two unrelated boot paths wait on it: AP startup (`apic::trampolines`) and
@@ -64,36 +53,18 @@ pub fn lock() -> PitGuard {
     PitGuard(())
 }
 
-pub fn timer_interrupt() {
-    if let Some(info) = INFO.poll() {
-        (info.cb)(1000000000 / info.freq);
+/// Halt channel 0 in case firmware left it in a periodic mode. The kernel never runs the PIT at
+/// runtime -- the statclock lives on the per-cpu LAPIC timers -- so any channel-0 output would
+/// arrive as a stray vector-32 interrupt. Writing a mode-1 control word stops the counter, and
+/// nothing can restart it: mode 1 waits for a gate trigger, and channel 0's gate is tied high.
+pub fn quiesce() {
+    let _pit = lock();
+    unsafe {
+        outb(
+            PIT_CMD,
+            channel(0) | ACCESS_BOTH | MODE_ONESHOT | FORMAT_BINARY,
+        );
     }
-}
-
-pub fn setup_freq(hz: u64, cb: fn(Nanoseconds)) {
-    let count = CRYSTAL_HZ / hz;
-    assert!(count < 65536);
-    {
-        // Scoped so the log below, which takes the console lock, is not nested inside this spin.
-        let _pit = lock();
-        unsafe {
-            outb(
-                PIT_CMD,
-                channel(0) | ACCESS_BOTH | MODE_SQUAREGEN | FORMAT_BINARY,
-            );
-            outb(pit_data(0), (count & 0xff) as u8);
-            outb(pit_data(0), ((count >> 8) & 0xff) as u8);
-        }
-    }
-    let info = INFO.call_once(|| PitInfo {
-        freq: CRYSTAL_HZ / count,
-        cb,
-    });
-    logln!(
-        "[kernel::arch::x86-pit] setting up for statclock with freq {} ({} ms)",
-        info.freq,
-        (1000 / info.freq)
-    );
 }
 
 /// Abandon a countdown after this many TSC cycles.

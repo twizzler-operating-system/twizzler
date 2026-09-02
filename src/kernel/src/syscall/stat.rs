@@ -1,5 +1,8 @@
+use core::sync::atomic::Ordering;
+
 use twizzler_abi::syscall::{
-    InfoKind, KallocCensus, LockStats, MemoryStats, SctxStats, SysInfo, SyscallStats, ThreadStats,
+    InfoKind, KallocCensus, KernelStats, LockStats, MemoryStats, SctxStats, SysInfo, SyscallStats,
+    ThreadStats,
 };
 
 use crate::processor::mp::all_processors;
@@ -75,6 +78,40 @@ pub fn write_sys_info_values(ptr: *mut u8, kind: InfoKind) -> Result<()> {
         InfoKind::KallocCensus => {
             let census: &mut KallocCensus = unsafe { &mut *(ptr as *mut KallocCensus) };
             crate::memory::kalloc_census::fill(census);
+            Ok(())
+        }
+        InfoKind::KernelStats => {
+            let stats: &mut KernelStats = unsafe { &mut *(ptr as *mut KernelStats) };
+            *stats = KernelStats::default();
+            stats.version = 1;
+            // Scheduling counters are per-cpu; the question they answer here is system-wide, so
+            // they are summed exactly as the syscall and fault counts are.
+            crate::processor::mp::with_each_active_processor(|p| {
+                stats.hardticks += p.stats.hardticks.load(Ordering::Relaxed);
+                stats.ctx_switches += p.stats.switches.load(Ordering::Relaxed);
+                stats.preempts += p.stats.preempts.load(Ordering::Relaxed);
+                stats.wakeups += p.stats.wakeups.load(Ordering::Relaxed);
+                stats.steals += p.stats.steals.load(Ordering::Relaxed);
+            });
+            stats.interrupts = crate::interrupt::taken();
+            let pager = crate::pager::pager_totals();
+            stats.pager_requests = pager.requests;
+            stats.pager_pages_requested = pager.pages_requested;
+            stats.pager_pages_delivered = pager.pages_delivered;
+            stats.pager_pages_installed = pager.pages_installed;
+            stats.pager_completions = pager.completions;
+            stats.pager_inflight = crate::pager::live_requests() as u64;
+            stats.syscalls = crate::syscall::nr_syscalls() as u64;
+            // Same source as the SysInfo arm's `steal_ns`; see the note there on why a per-cpu
+            // quantity is reported whole-system.
+            #[cfg(target_arch = "x86_64")]
+            {
+                let mut steal = 0u64;
+                crate::processor::mp::with_each_active_processor(|p| {
+                    steal += crate::arch::kvm::steal_time_ns(p);
+                });
+                stats.steal_ns = steal;
+            }
             Ok(())
         }
         InfoKind::KallocTrack => {

@@ -413,13 +413,13 @@ pub fn get_current_ticks() -> u64 {
 /// idle loop and can notice that `BSP_TICK` has stopped moving. Costs one relaxed load per caller
 /// in the normal case, and reports once per boot.
 ///
-/// **Where it does not reach.** An *idle* cpu is halted, and what wakes it is largely the statclock
-/// -- which the PIT delivers to the BSP alone, the BSP re-broadcasting it by IPI (see the
-/// TIMER_VECTOR arm in `arch/amd64/interrupt.rs`). So a BSP that stops taking interrupts also stops
-/// waking the cpus that are supposed to report on it, and they never run this. That is not
-/// hypothetical: across 46 captured wedges this fired zero times. Treat a silent watchdog as no
-/// evidence either way, and note that the wedges it did not catch had a BSP spinning with
-/// interrupts *on* -- ticking normally, which this cannot see by construction.
+/// **Reach.** The statclock now runs per-cpu off each cpu's own LAPIC timer (`arch/amd64/mod.rs`,
+/// `stat`), and every cpu always rearms its own oneshot, so an idle cpu keeps waking and can run
+/// this regardless of the BSP's state. (Historically the statclock was a PIT interrupt the BSP
+/// re-broadcast by IPI, so a BSP that stopped taking interrupts also silenced its observers:
+/// across 46 captured wedges under that design this fired zero times.) What it still cannot see,
+/// by construction, is a BSP spinning with interrupts *on* -- ticking normally -- which is what
+/// the captured wedges actually were. Treat a silent watchdog as no evidence either way.
 pub mod bsp_watchdog {
     use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 

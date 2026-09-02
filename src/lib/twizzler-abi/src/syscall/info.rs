@@ -17,6 +17,7 @@ pub enum InfoKind {
     ObjectStats = 6,
     KallocCensus = 7,
     KallocTrack = 8,
+    KernelStats = 9,
 }
 
 impl TryFrom<u64> for InfoKind {
@@ -33,6 +34,7 @@ impl TryFrom<u64> for InfoKind {
             6 => Ok(InfoKind::ObjectStats),
             7 => Ok(InfoKind::KallocCensus),
             8 => Ok(InfoKind::KallocTrack),
+            9 => Ok(InfoKind::KernelStats),
             _ => Err(TwzError::INVALID_ARGUMENT),
         }
     }
@@ -245,6 +247,68 @@ pub struct LockStats {
     pub mutex_waiting_count: usize,
     pub mutex_avg_waiting_time: TimeStat,
     pub mutex_hold_time: TimeStat,
+}
+
+/// Kernel activity counters that have no home in the memory/thread/object stats: interrupts,
+/// scheduling, and the kernel's side of the pager conversation.
+///
+/// Every field is a since-boot total (`Cumulative`, in the vocabulary
+/// `src/test/leakcheck/src/sample.rs` uses) except [KernelStats::pager_inflight], which is a
+/// level. Rates are the reader's job: sample twice and divide by the wall time between.
+#[derive(Debug, Copy, Clone, Default)]
+#[repr(C)]
+pub struct KernelStats {
+    pub version: u32,
+    pub flags: u32,
+    /// Hardware interrupts dispatched, summed over cpus. Device interrupts, IPIs and the timer;
+    /// cpu exceptions are not interrupts and are not counted here -- page faults have their own
+    /// counter in [MemoryStats::page_fault_count].
+    pub interrupts: u64,
+    /// Scheduler timer ticks, a subset of `interrupts`.
+    pub hardticks: u64,
+    /// Thread context switches.
+    pub ctx_switches: u64,
+    /// Involuntary preemptions, a subset of `ctx_switches`.
+    pub preempts: u64,
+    /// Threads made runnable.
+    pub wakeups: u64,
+    /// Threads pulled off another cpu's run queue by a rebalance.
+    pub steals: u64,
+    /// Requests the kernel sent to the pager, and the object pages those requests named. The
+    /// pages figure includes read-ahead widening, so it exceeds what faults strictly needed.
+    pub pager_requests: u64,
+    pub pager_pages_requested: u64,
+    /// Pages that arrived in pager completions, and of those the ones installed into an object.
+    /// The gap is pages transferred and then dropped because the object already had them.
+    pub pager_pages_delivered: u64,
+    pub pager_pages_installed: u64,
+    /// Page-data completions handled.
+    pub pager_completions: u64,
+    /// Requests outstanding to the pager right now. A level, not a total.
+    pub pager_inflight: u64,
+    /// Syscalls made since boot. The same figure [SyscallStats::nr_syscalls] reports; carried
+    /// here so a reader wanting only the total need not fetch the per-syscall arrays, which are
+    /// several KiB and get copied on every sample.
+    pub syscalls: u64,
+    /// Cumulative nanoseconds the hypervisor ran something else while our cpus were runnable
+    /// (KVM steal time), summed over cpus. Zero on bare metal. Duplicated from
+    /// [SysInfo::steal_ns] so a sampler polling rates does not have to read `SysInfo` too --
+    /// everything else there is static.
+    pub steal_ns: u64,
+}
+
+pub fn sys_kernel_stats() -> KernelStats {
+    let mut stats = core::mem::MaybeUninit::<KernelStats>::zeroed();
+    unsafe {
+        raw_syscall(
+            Syscall::SysInfo,
+            &[
+                &mut stats as *mut core::mem::MaybeUninit<KernelStats> as u64,
+                InfoKind::KernelStats as u64,
+            ],
+        );
+        stats.assume_init()
+    }
 }
 
 #[derive(Debug, Copy, Clone, Default)]

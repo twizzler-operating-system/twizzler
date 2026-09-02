@@ -9,7 +9,11 @@ experimental-targets = ""
 ninja = true
 clang = true
 optimize = true
-assertions = true
+# Off since 2026-09-01. An assertions build of LLVM costs roughly 2x on `LLVM_passes`, and
+# together with `rust.debug` below it made every on-target build ~2.4x slower than it needed to
+# be -- measured, see CARGO.md. Turn it back on in a *separate* toolchain and pin that with
+# `--toolchain`/`TWIZZLER_TOOLCHAIN` when chasing a miscompile; do not flip it here.
+assertions = false
 
 [build]
 target = []
@@ -22,7 +26,15 @@ build-dir = "../../build/rust"
 [rust]
 lld = false
 llvm-tools = true
-debug = true
+# Off since 2026-09-01. `debug = true` is a shorthand: bootstrap turns it into
+# `rustc_debug_assertions`, `std_debug_assertions`, `overflow_checks` (host *and* target std) and
+# `debug_logging`. It has been on since 2022 and was the right default while the port was young,
+# but it is not free -- a controlled A/B on one host, same target and source, put the same rustc
+# at 14.30s without it and 30.04s with it, and the target std every Twizzler program links carries
+# the same assertions and overflow checks. See CARGO.md.
+#
+# `debuginfo-level` stays: that is backtraces, and it is not what costs the time.
+debug = false
 debuginfo-level = 1
 dist-src = false
 deny-warnings = false

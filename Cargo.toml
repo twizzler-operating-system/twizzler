@@ -30,6 +30,7 @@ members = [
     "src/srv/logboi-srv",
     "src/srv/pager-srv",
     "src/test/logboi-test",
+    "src/test/signal-test",
     "src/lib/naming/naming-core",
     "src/lib/naming",
     "src/srv/naming-srv",
@@ -131,6 +132,7 @@ resolver = "2"
 test-programs = [
     { crate = "lltest" },
     { crate = "spawn-test" },
+    { crate = "signal-test" },
 ]
 initrd = [
     "crate:bootstrap",
@@ -155,6 +157,7 @@ initrd = [
     #"crate:gfxtest",
     "crate:shell",
     "crate:spawn-test",
+    "crate:signal-test",
     "crate:leakcheck",
     "crate:nullexit",
     "crate:pagepar",

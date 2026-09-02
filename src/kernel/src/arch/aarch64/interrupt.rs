@@ -127,6 +127,7 @@ pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
     // signal the GIC that we have serviced the IRQ
     interrupt_controller().finish_active_interrupt(irq_number, sender_core);
 
+    crate::interrupt::count_interrupt();
     crate::interrupt::post_interrupt()
 }
 

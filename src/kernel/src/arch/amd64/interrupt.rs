@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use twizzler_abi::{
     arch::XSAVE_LEN,
@@ -12,11 +12,10 @@ use super::{
     thread::{Registers, UpcallAble},
 };
 use crate::{
-    arch::amd64::apic::try_get_lapic,
+    arch::amd64::apic::{LAPIC_SPURIOUS_VECTOR, try_get_lapic},
     interrupt::{Destination, DynamicInterrupt},
     memory::{VirtAddr, context::virtmem::PageFaultFlags},
     once::Once,
-    processor::mp::current_processor,
     thread::current_thread_ref,
 };
 
@@ -515,13 +514,20 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
         );
     }
 
-    let Some(lapic) = try_get_lapic() else {
-        panic!(
-            "got interrupt before initializing APIC: {}, {:#?}",
-            number, ctx
-        );
-    };
-    lapic.eoi();
+    // EOI only what the APIC delivered. Exceptions and software ints don't set an ISR bit, and
+    // an EOI there retires whatever *is* in service instead -- a fault taken inside an outer
+    // interrupt handler that hasn't EOI'd yet would eat that interrupt. The spurious vector must
+    // never be EOI'd at all. This also takes the EOI (an MSR write; under KVM without APICv, a
+    // vm exit) off the page-fault path, which paid it on every fault for no reason.
+    if number >= 32 && number != 0x80 && number as u16 != LAPIC_SPURIOUS_VECTOR {
+        let Some(lapic) = try_get_lapic() else {
+            panic!(
+                "got interrupt before initializing APIC: {}, {:#?}",
+                number, ctx
+            );
+        };
+        lapic.eoi();
+    }
     match number as u32 {
         14 => {
             if ctx.get_ip() == 0 {
@@ -589,10 +595,13 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
             }
         }
         TIMER_VECTOR => {
-            if current_processor().is_bsp() {
-                super::apic::send_ipi(Destination::AllButSelf, TIMER_VECTOR);
+            // The statclock moved to the per-cpu LAPIC timers and the PIT is quiesced at boot,
+            // so nothing should arrive here anymore. emerglogln, once: this runs in interrupt
+            // context, and a firmware quirk could make it recur.
+            static PIT_STRAY: AtomicBool = AtomicBool::new(false);
+            if !PIT_STRAY.swap(true, Ordering::Relaxed) {
+                emerglogln!("warning -- stray PIT interrupt (vector 32); PIT should be quiesced");
             }
-            super::pit::timer_interrupt();
         }
         0x80 => {}
         GENERIC_IPI_VECTOR => {
@@ -611,6 +620,11 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
             crate::machine::serial::interrupt_handler();
         }
         _ => crate::interrupt::external_interrupt_entry(number as u32),
+    }
+    // Vectors below 32 are cpu exceptions, not interrupts; page faults among them are counted by
+    // the fault path itself.
+    if number >= 32 {
+        crate::interrupt::count_interrupt();
     }
     crate::interrupt::record_interrupt(number, t_int);
     crate::interrupt::post_interrupt();

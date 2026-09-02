@@ -128,10 +128,21 @@ pub fn profile_now() -> crate::instant::Instant {
 ///
 /// [`snapshot`] sums per-cpu, per-vector collectors and takes a lock to do it, which is fine twice
 /// a mark and far too expensive on a per-page probe. This is the cheap version.
+///
+/// Counted by [`count_interrupt`] rather than by [`record_interrupt`], so it survives
+/// [`INTERRUPT_PROFILE`] being off -- it is exported to userspace (`KernelStats::interrupts`) and
+/// read as a rate, which a counter that only moves under a debug switch cannot answer.
 static TAKEN: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 pub fn taken() -> u64 {
     TAKEN.load(Ordering::Relaxed)
+}
+
+/// Count one hardware interrupt. Call sites pass only real interrupts: a cpu exception is not one,
+/// and page faults are counted on their own path.
+#[inline]
+pub fn count_interrupt() {
+    TAKEN.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Record one interrupt of `vector` that started at `start`. Compiles away when the profile is off.
@@ -139,7 +150,6 @@ pub fn record_interrupt(vector: u64, start: crate::instant::Instant) {
     if !INTERRUPT_PROFILE || !crate::processor::tls_ready() {
         return;
     }
-    TAKEN.fetch_add(1, Ordering::Relaxed);
     let vector = vector as usize;
     if vector >= NUM_VECTORS {
         return;

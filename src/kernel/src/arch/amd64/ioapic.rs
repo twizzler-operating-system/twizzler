@@ -168,10 +168,14 @@ pub fn init() {
             acpi::platform::interrupt::Polarity::ActiveLow => PinPolarity::ActiveLow,
         };
 
+        // ISA IRQ 0 is the PIT, which the kernel quiesces and never listens to (the statclock
+        // runs on the per-cpu LAPIC timers). Keep its pin masked: a pre-quiesce edge from the
+        // firmware-era PIT stays latched in the IOAPIC's IRR and would be delivered the moment
+        // the pin is unmasked, even though the counter is long halted.
         set_interrupt(
             iso.global_system_interrupt,
             iso.isa_source as u32 + 32,
-            false,
+            iso.isa_source == 0,
             trigger,
             polarity,
             Destination::Bsp,

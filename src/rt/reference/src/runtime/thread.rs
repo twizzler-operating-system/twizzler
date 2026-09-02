@@ -7,11 +7,12 @@ use std::{
 
 use dynlink::tls::Tcb;
 use twizzler_abi::syscall::{
-    sys_thread_sync, sys_thread_yield, ThreadSync, ThreadSyncFlags, ThreadSyncOp,
-    ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
+    sys_thread_send_message, sys_thread_sync, sys_thread_yield, ThreadSync, ThreadSyncFlags,
+    ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
 };
 use twizzler_rt_abi::{
     bindings::{thread_info, twz_error},
+    error::{ArgumentError, TwzError},
     thread::{ThreadSpawnArgs, TlsIndex},
     Result,
 };
@@ -133,6 +134,30 @@ impl ReferenceRuntime {
 
     pub fn interrupt_bump(&self) {
         INTERRUPT_GEN.fetch_add(1, Ordering::Release);
+    }
+
+    /// Post a signal to another thread of this compartment.
+    ///
+    /// The kernel side does the work that makes this different from `kill()`: the message lands on
+    /// that thread's own pending mask, and `SendMessage` resets its sync sleep, so a target parked
+    /// in `sys_thread_sync` wakes rather than waiting out an unrelated wakeup. Delivery itself
+    /// happens on the target's next return to user, as a Mailbox upcall.
+    ///
+    /// The signal number is the mailbox bit index, and the kernel rejects 0 and anything from 64
+    /// up, so reject those here rather than handing over an argument that will be refused.
+    pub fn thread_signal(&self, id: u32, signal: u64) -> Result<()> {
+        if signal == 0 || signal >= 64 {
+            return Err(ArgumentError::InvalidArgument.into());
+        }
+        let repr = THREAD_MGR
+            .with_internal(id, |t| t.objid())
+            .ok_or(TwzError::NOT_FOUND)?;
+        // A thread published before its spawn gate returned has no repr id yet. It cannot be
+        // holding a blocking call we need to interrupt, and 0 would name no thread at all.
+        if repr.raw() == 0 {
+            return Err(TwzError::NOT_FOUND);
+        }
+        sys_thread_send_message(repr, signal, 0)
     }
 
     pub fn tls_get_addr(&self, index: &TlsIndex) -> Option<*mut u8> {

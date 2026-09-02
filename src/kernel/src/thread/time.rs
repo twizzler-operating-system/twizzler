@@ -8,6 +8,16 @@ pub struct ThreadStats {
     pub sys: AtomicU64,
     pub idle: AtomicU64,
     pub last: AtomicU64,
+    /// Page faults, pager page asks, and syscalls charged to this thread. Relaxed adds on paths
+    /// that already do far more work than an increment, and read only as rates over a sample
+    /// interval -- so a count landing either side of a preemption changes nothing.
+    pub faults: AtomicU64,
+    pub pager_pages: AtomicU64,
+    pub syscalls: AtomicU64,
+    /// Times this thread was made runnable from blocked. Charged in `schedule_thread`, which is
+    /// the wake path proper -- not `schedule_thread_on_cpu`, which also carries preemption
+    /// reinsertion and rebalance moves and would report those as wakes.
+    pub wakes: AtomicU64,
 }
 
 impl ThreadStats {

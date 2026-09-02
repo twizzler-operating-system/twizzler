@@ -189,7 +189,9 @@ impl PerObject {
         }
         let reqs_done = Instant::now();
         work.phase("sync:page-out");
-        let count = match page_out_many(ctx, self.id, reqs.as_mut_slice()) {
+        // `set_len` is `MEXT_SIZED` when this sync carried the meta page. Handing it down stops
+        // the page-granular estimate inside `page_out_object` from growing i_size back past it.
+        let count = match page_out_many(ctx, self.id, reqs.as_mut_slice(), set_len) {
             Err(e) => {
                 let mut inner = self.inner.1.lock().unwrap();
                 inner.syncing = false;

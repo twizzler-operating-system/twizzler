@@ -687,7 +687,10 @@ pub fn schedmon_dump(pass: u64) {
         #[cfg(not(target_arch = "x86_64"))]
         let steal_ms = 0u64;
         emerglogln!(
-            "[schedmon] {} cpu {}: ht {} sw {} pre {} wake {} load {} ts_load {} rq_pri {:?} requeue {} steal_ms {}",
+            // st i/ni: statclock samples (idle/non-idle). Their combined rate against the 30s
+            // dump interval is the check that each cpu's statclock is actually ticking at its
+            // configured frequency, now that it is per-cpu rather than a bsp broadcast.
+            "[schedmon] {} cpu {}: ht {} sw {} pre {} wake {} load {} ts_load {} rq_pri {:?} requeue {} steal_ms {} st {}/{}",
             pass,
             p.id,
             p.stats.hardticks.load(Ordering::Relaxed),
@@ -699,6 +702,8 @@ pub fn schedmon_dump(pass: u64) {
             p.rq.current_priority(),
             crate::syscall::sync::requeue_len(),
             steal_ms,
+            p.stats.idle.load(Ordering::Relaxed),
+            p.stats.non_idle.load(Ordering::Relaxed),
         );
     }
     let reprio = reprioritized_counts();
@@ -852,6 +857,13 @@ pub fn schedule_thread(thread: ThreadRef) {
     if thread.is_idle_thread() {
         return;
     }
+    // After the idle check: an idle thread is not woken in any sense a reader cares about, and
+    // counting it would put a wake on every cpu every time one went idle and came back.
+    thread.stats.wakes.fetch_add(1, Ordering::Relaxed);
+    // `ProcessorStats::wakeups` was declared and read (`InfoKind::KernelStats`, the mutex-stall
+    // dump) but never incremented, so it reported zero for every boot. Charged to the waker's
+    // cpu, which is the cpu doing the work.
+    current_processor().stats.wakeups.fetch_add(1, Ordering::Relaxed);
     let cpuid = select_cpu(&thread, None);
     let processor = get_processor(cpuid);
     log::trace!(

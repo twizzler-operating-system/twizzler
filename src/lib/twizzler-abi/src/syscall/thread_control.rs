@@ -387,6 +387,17 @@ pub struct ThreadSchedStats {
     pub user: u64,
     pub system: u64,
     pub idle: u64,
+    /// Page faults charged to this thread since it started. Cumulative, like the three above;
+    /// a rate is the reader's job.
+    pub faults: u64,
+    /// Object pages this thread asked the pager for. Counts the ask, not the arrival: a page
+    /// another thread's request already covered is charged to whoever asked for it.
+    pub pager_pages: u64,
+    /// Syscalls this thread made.
+    pub syscalls: u64,
+    /// Times this thread went from blocked to runnable. A thread with a high wake rate and
+    /// little cpu time is polling: it is being woken to do nothing.
+    pub wakes: u64,
 }
 
 pub fn sys_thread_read_stats(target: ObjID, stats: &mut ThreadSchedStats) -> Result<(), TwzError> {

@@ -43,7 +43,13 @@ pub(crate) mod profile;
 mod queues;
 mod request;
 
-pub use profile::print_pager_profile;
+pub use profile::{print_pager_profile, totals as pager_totals};
+
+/// Requests outstanding to the pager right now, for the exported stats.
+pub fn live_requests() -> usize {
+    inflight::live_requests()
+}
+
 pub use queues::init_pager_queue;
 pub use request::Request;
 
@@ -745,6 +751,16 @@ pub(super) fn start_deleter() {
     start_new_kernel(Priority::USER, deleter_entry, 0, "pager-deleter");
 }
 
+/// Ask the pager to write everything back, and wait for it.
+///
+/// The store's block cache runs in write-back mode, so metadata a create or a page-out left dirty
+/// only reaches the device at an explicit flush -- and nothing else in the protocol tells the pager
+/// that no further requests are coming. Blocking is the point: returning before the flush completes
+/// would leave exactly the writes this exists to save.
+pub fn shutdown_pager() {
+    cmd_object(ReqKind::new_shutdown(), None);
+}
+
 pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) -> Result<(), TwzError> {
     cmd_object(ReqKind::new_create(id, create, nonce), None);
     // Taken, not read: one failure fails one create. A pager that is not ready records nothing and
@@ -883,7 +899,11 @@ fn sync_object_dirty(obj: &ObjectRef) {
         match pt.get_dirty_and_reset() {
             Ok(dirty) => dirty,
             Err(e) => {
-                log::warn!("background sync: failed to collect dirty pages for {}: {:?}", obj.id(), e);
+                log::warn!(
+                    "background sync: failed to collect dirty pages for {}: {:?}",
+                    obj.id(),
+                    e
+                );
                 return;
             }
         }
@@ -918,6 +938,51 @@ pub fn queue_background_sync(obj: &ObjectRef) {
     }
 }
 
+/// Push every queued background sync through before the caller does something that ends the
+/// system's ability to do them.
+///
+/// Called from the shutdown path, where a queued-but-unrun sync is a guest's write thrown away:
+/// the thread that would do it runs at BACKGROUND priority and has no claim on the time between
+/// the last unmap and poweroff.
+///
+/// This is a safety net, not a fix for a known symptom. It was written for the case of
+/// `-Zself-profile` leaving zero-byte files on `/ext`, and it does *not* cure that: with this in
+/// place the files are still empty, because by the time shutdown runs the queue is already empty
+/// -- those writes were never queued for sync at all. That is a separate and still-open bug.
+///
+/// Drains on the calling thread rather than waiting for the background one, so the work runs at
+/// the caller's priority instead of behind everything else on the run queue. Both pop under the
+/// same lock, so racing with the background thread only splits the queue between them.
+pub fn drain_background_sync() {
+    let Some(bg) = BG_SYNC.poll() else {
+        return;
+    };
+    // Bounded: losing a sync is bad, but a kernel that never powers off is worse -- a wedged
+    // pager would otherwise hang shutdown here and turn a reported failure into a CI timeout.
+    const MAX_IDLE_SPINS: usize = 10_000;
+    let mut idle_spins = 0;
+    loop {
+        let next = bg.inner.lock().pending.pop_first();
+        let Some((_, obj)) = next else {
+            // The queue is empty, but the background thread may still be inside a sync for an
+            // object it popped before we got here. It sets `parked` only after finding the queue
+            // empty, so waiting for that covers the in-flight one too.
+            if bg.inner.lock().parked {
+                return;
+            }
+            idle_spins += 1;
+            if idle_spins > MAX_IDLE_SPINS {
+                log::warn!("drain_background_sync: gave up waiting for an in-flight sync");
+                return;
+            }
+            schedule(SchedFlags::REINSERT | SchedFlags::YIELD | SchedFlags::PREEMPT);
+            continue;
+        };
+        idle_spins = 0;
+        sync_object_dirty(&obj);
+    }
+}
+
 pub fn start_background_sync_thread() {
     extern "C" fn bg_sync_entry() {
         let bg = BG_SYNC.wait();
@@ -927,7 +992,11 @@ pub fn start_background_sync_thread() {
             // blocks, and holding a spinlock across it would stall every unmap trying to enqueue.
             if let Some((_, obj)) = inner.pending.pop_first() {
                 drop(inner);
-                sync_object_dirty(&obj);
+                // `--nobgsync` drains the queue without writing: the measurement arm that prices
+                // deferred write-back. See `crate::bg_sync_drop`.
+                if !crate::bg_sync_drop() {
+                    sync_object_dirty(&obj);
+                }
                 drop(obj);
                 inner = bg.inner.lock();
                 continue;
@@ -973,6 +1042,17 @@ pub fn ensure_in_core<'a>(
     }
 
     let total_pages = reqs.iter().fold(0, |acc, x| acc + x.1);
+
+    // Charged to whoever asked, speculation excluded: read-ahead is not work this thread wanted,
+    // and folding it in would make an unlucky first-toucher look like the heavy pager user.
+    if !speculative {
+        if let Some(thread) = crate::thread::current_thread_ref() {
+            thread
+                .stats
+                .pager_pages
+                .fetch_add(total_pages as u64, Ordering::Relaxed);
+        }
+    }
 
     let avail_pager_mem = crate::memory::tracker::get_outstanding_pager_pages();
     let needed_additional = DEFAULT_PAGER_OUTSTANDING_FRAMES

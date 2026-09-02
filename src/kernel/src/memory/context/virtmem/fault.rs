@@ -775,6 +775,15 @@ pub fn page_fault(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags
         cp.stats
             .page_faults
             .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        // Same count, charged to the thread as well as the cpu: the per-cpu one answers "where
+        // is the system faulting", this one answers "who is faulting", and neither can be
+        // derived from the other.
+        if let Some(thread) = crate::thread::current_thread_ref() {
+            thread
+                .stats
+                .faults
+                .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
         if timing {
             let sample = (Instant::now() - start_time).into();
             crate::interrupt::with_disabled(|| {

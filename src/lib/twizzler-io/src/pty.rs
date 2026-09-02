@@ -22,39 +22,21 @@ use twizzler_abi::syscall::{
     ObjectCreate, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
     ThreadSyncWake, sys_thread_sync,
 };
-use twizzler_rt_abi::thread::{twz_rt_interrupt_gen, twz_rt_interrupt_word};
 
-use crate::buffer::VolatileBuffer;
+use crate::{
+    buffer::VolatileBuffer,
+    intr::{interrupt_gen, interrupted_since},
+};
 
 pub const BUF_SZ: usize = 8192;
 
 /// Sleep until `sync` is satisfied or an interrupting signal handler runs on this thread.
-///
-/// The interrupt generation is a second sleep operand rather than just a check before the call:
-/// `sys_thread_sync` returns as soon as any operand is unsatisfied, so a handler that ran between
-/// the caller's check and this point cannot be slept through.
 fn do_sleep(sync: ThreadSyncSleep, intr_gen: u64) -> std::io::Result<()> {
     sys_thread_sync(
-        &mut [
-            ThreadSync::new_sleep(sync),
-            ThreadSync::new_sleep(ThreadSyncSleep::new(
-                ThreadSyncReference::Virtual(twz_rt_interrupt_word()),
-                intr_gen,
-                ThreadSyncOp::Equal,
-                ThreadSyncFlags::empty(),
-            )),
-        ],
+        &mut [ThreadSync::new_sleep(sync), crate::intr::sleep_op(intr_gen)],
         None,
     )?;
     Ok(())
-}
-
-/// Whether an interrupting signal handler has run on this thread since `intr_gen` was sampled.
-///
-/// Checked after a read or write attempt, so available data always wins over interruption, and
-/// before sleeping, so a handler caught during the attempt is not slept through.
-fn interrupted_since(intr_gen: u64) -> bool {
-    twz_rt_interrupt_gen() != intr_gen
 }
 
 #[derive(Clone)]
@@ -363,7 +345,7 @@ impl PtyServerHandle {
     }
 
     pub fn write_b(&self, buf: &[u8]) -> std::io::Result<usize> {
-        let intr_gen = twz_rt_interrupt_gen();
+        let intr_gen = interrupt_gen();
         loop {
             self.update_termios();
             let sync = self
@@ -393,7 +375,7 @@ impl PtyServerHandle {
 
 impl PtyServerHandle {
     pub fn read_b(&self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let intr_gen = twz_rt_interrupt_gen();
+        let intr_gen = interrupt_gen();
         loop {
             self.update_termios();
             let sync = self
@@ -464,7 +446,7 @@ impl PtyClientHandle {
     }
 
     pub fn write_b(&self, buf: &[u8]) -> std::io::Result<usize> {
-        let intr_gen = twz_rt_interrupt_gen();
+        let intr_gen = interrupt_gen();
         loop {
             self.update_termios();
             let sync = self.pty.base().client_output.sync_for_avail_space();
@@ -497,7 +479,7 @@ impl PtyClientHandle {
     }
 
     pub fn read_b(&self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let intr_gen = twz_rt_interrupt_gen();
+        let intr_gen = interrupt_gen();
         loop {
             self.update_termios();
             let sync = self.pty.base().client_input.sync_for_pending_data();

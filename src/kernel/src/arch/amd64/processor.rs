@@ -137,12 +137,9 @@ pub fn init(tls: VirtAddr) {
                 xcr0 |= x86::controlregs::Xcr0::XCR0_SSE_STATE
                     | x86::controlregs::Xcr0::XCR0_AVX_STATE
                     | x86::controlregs::Xcr0::XCR0_FPU_MMX_STATE;
-                if ex.xcr0_supports_mpx_bndregs() {
-                    xcr0 |= x86::controlregs::Xcr0::XCR0_BNDREG_STATE;
-                }
-                if ex.xcr0_supports_mpx_bndcsr() {
-                    xcr0 |= x86::controlregs::Xcr0::XCR0_BNDCSR_STATE;
-                }
+                // MPX (BNDREG/BNDCSR) deliberately not enabled: deprecated, nothing uses it,
+                // and enabling it only grows the xsave layout (qemu's TCG `-cpu max` still
+                // advertises it).
                 if ex.xcr0_supports_avx512_opmask() {
                     xcr0 |= x86::controlregs::Xcr0::XCR0_OPMASK_STATE;
                 }
