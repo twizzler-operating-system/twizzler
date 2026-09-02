@@ -92,6 +92,14 @@ pub struct PagerProfile {
     /// Speculative pages only -- a page the caller is blocked on is never given up.
     narrowed: AtomicU64,
     narrowed_pages: AtomicU64,
+    /// Demand faults past EOF served with zeroed frames instead of a pager round trip, and the
+    /// pages that saved. `declined_meta` / `declined_absent` are the two reasons the floor check
+    /// bailed: the caller's range reached into the metadata region, or the meta page was not
+    /// resident so the floor was unknown.
+    zero_fill_reqs: AtomicU64,
+    zero_fill_pages: AtomicU64,
+    zero_fill_declined_meta: AtomicU64,
+    zero_fill_declined_absent: AtomicU64,
     /// Object pages named by submitted requests. Against the pager-fault count, this is the read
     /// amplification the widening in `ensure_in_core_pager` produces.
     pages_requested: AtomicU64,
@@ -176,6 +184,10 @@ pub static PAGER_PROFILE: PagerProfile = PagerProfile {
     eof_past_end: AtomicU64::new(0),
     narrowed: AtomicU64::new(0),
     narrowed_pages: AtomicU64::new(0),
+    zero_fill_reqs: AtomicU64::new(0),
+    zero_fill_pages: AtomicU64::new(0),
+    zero_fill_declined_meta: AtomicU64::new(0),
+    zero_fill_declined_absent: AtomicU64::new(0),
     pages_requested: AtomicU64::new(0),
     depth: [const { AtomicU64::new(0) }; NR_DEPTH],
     max_depth: AtomicU64::new(0),
@@ -450,6 +462,26 @@ impl PagerProfile {
             .fetch_add(pages as u64, Ordering::Relaxed);
     }
 
+    /// A demand fault past EOF was backed with `pages` zeroed frames rather than a pager trip.
+    pub fn zero_filled(&self, pages: usize) {
+        self.zero_fill_reqs.fetch_add(1, Ordering::Relaxed);
+        self.zero_fill_pages
+            .fetch_add(pages as u64, Ordering::Relaxed);
+    }
+
+    /// A past-EOF fault could not be zero-filled. `meta_resident` distinguishes "range reached the
+    /// metadata region" (true) from "meta page not resident, floor unknown" (false) -- the latter
+    /// is the one that means the saving is being left on the table for want of a resident meta
+    /// page.
+    pub fn zero_fill_declined(&self, meta_resident: bool) {
+        if meta_resident {
+            self.zero_fill_declined_meta.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.zero_fill_declined_absent
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     /// A request's slot was released, `ns` after it was created.
     pub fn completed(&self, ns: u64) {
         self.lat_ns_sum.fetch_add(ns, Ordering::Relaxed);
@@ -594,6 +626,15 @@ pub fn print_pager_profile() {
         p.spec_reqs.load(Ordering::Relaxed),
         p.spec_pages.load(Ordering::Relaxed),
         p.spec_skipped.load(Ordering::Relaxed),
+    );
+
+    logln!(
+        "  zero-fill past EOF: {} faults served ({} pages), declined {} into metadata, {} for no \
+         resident meta page",
+        p.zero_fill_reqs.load(Ordering::Relaxed),
+        p.zero_fill_pages.load(Ordering::Relaxed),
+        p.zero_fill_declined_meta.load(Ordering::Relaxed),
+        p.zero_fill_declined_absent.load(Ordering::Relaxed),
     );
 
     let ap = p.asked_present_reqs.load(Ordering::Relaxed);

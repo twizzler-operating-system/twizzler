@@ -258,6 +258,7 @@ pub fn prefetch_on_map(obj: &ObjectRef) {
         &mut false,
         PagerFlags::empty(),
         true,
+        false,
     );
 }
 

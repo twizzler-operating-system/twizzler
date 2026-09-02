@@ -537,6 +537,18 @@ fn pager_compl_handle_object_info(id: ObjID, info: ObjectInfo, rk: &ReqKind) {
     // simply keeps asking the pager, which is what it did before.
     if info.flags.contains(ObjectInfoFlags::SIZE_VALID) {
         obj.set_known_len(info.size);
+        // An external-file-backed object (SYNTH_META) carries a real byte length taken from the
+        // backing file, i.e. an exact logical EOF -- and this is where the build win lives, since
+        // rustc's /ext target files are external objects, not ObjectCreate ones. A native stored
+        // object's `size` is a synced-page extent, not an EOF, so it stays unmarked. Zero-fill of
+        // exact-length objects is further gated to *write* faults (see `ensure_in_core_pager`): a
+        // read past EOF on an external object must page in, not zero-fill.
+        if info.flags.contains(ObjectInfoFlags::SYNTH_META) {
+            obj.mark_known_len_exact();
+            // SYNTH_META is the pager's signal that this is an external file with no real metadata
+            // page -- so its floor is the meta page directly, with no FOT to read.
+            obj.mark_external();
+        }
     }
     // Both before `register_object`, so nothing can look the object up and race a `check_id`
     // against either.

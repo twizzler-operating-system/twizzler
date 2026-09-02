@@ -5,7 +5,10 @@ use core::{
 };
 
 use twizzler_abi::{meta::MetaInfo, pager::PagerFlags, syscall::PinnedPage};
-use twizzler_rt_abi::error::{ResourceError, TwzError};
+use twizzler_rt_abi::{
+    error::{ResourceError, TwzError},
+    object::FotEntry,
+};
 
 use crate::{
     memory::{
@@ -431,6 +434,51 @@ impl Object {
         pager_was_used: &mut bool,
         all_were_present: &mut bool,
     ) -> Result<PtGuard<'a>, TwzError> {
+        // Non-fault callers (copy, queue, meta, pin) never zero-fill: only a demand fault (read or
+        // write) is entitled to it, and it comes through `ensure_in_core_fault`.
+        self.ensure_in_core_inner(
+            guard,
+            page,
+            page_count,
+            pager_was_used,
+            all_were_present,
+            false,
+        )
+    }
+
+    /// As [Object::ensure_in_core], but the caller is a demand fault, which makes a past-EOF page
+    /// eligible for zero-fill. Both read and write faults qualify: past an *exact* `known_len`
+    /// (created-this-boot or external-file) there is provably nothing for the store to serve, so a
+    /// read there is as safely a zero as a write.
+    #[track_caller]
+    pub fn ensure_in_core_fault<'a>(
+        self: &'a ObjectRef,
+        guard: PtGuard<'a>,
+        page: PageNumber,
+        page_count: usize,
+        pager_was_used: &mut bool,
+        all_were_present: &mut bool,
+    ) -> Result<PtGuard<'a>, TwzError> {
+        self.ensure_in_core_inner(
+            guard,
+            page,
+            page_count,
+            pager_was_used,
+            all_were_present,
+            true,
+        )
+    }
+
+    #[track_caller]
+    fn ensure_in_core_inner<'a>(
+        self: &'a ObjectRef,
+        mut guard: PtGuard<'a>,
+        mut page: PageNumber,
+        mut page_count: usize,
+        pager_was_used: &mut bool,
+        all_were_present: &mut bool,
+        is_fault: bool,
+    ) -> Result<PtGuard<'a>, TwzError> {
         let first_is_present = guard.get_frame(page.as_byte_offset() as u64).is_some();
         *all_were_present = true;
         if page_count <= 1 && first_is_present {
@@ -451,6 +499,7 @@ impl Object {
                 all_were_present,
                 PagerFlags::empty(),
                 false,
+                is_fault,
             );
         }
         let mut alloc = FrameAllocator::new(
@@ -632,9 +681,13 @@ impl Object {
 
     /// Back `[page, page + count)` with freshly zeroed frames, without involving the pager.
     ///
-    /// Only correct for a range the store provably does not hold; see [Object::known_len] for why
-    /// the kernel is entitled to decide that, and note the error direction -- being wrong here
-    /// means serving zeros over real data.
+    /// Only correct for a range the store provably does not hold; see [Object::known_len] and
+    /// [Object::zero_fill_floor] for why the kernel is entitled to decide that, and note the error
+    /// direction -- being wrong here means serving zeros over real data.
+    ///
+    /// Mirrors the anon path's memory discipline: precharge without waiting under the caller's
+    /// page-table lock, and only if short drop the guard, wait, and retake -- waiting while holding
+    /// it would block every other fault on this object.
     fn fill_zero_pages<'a>(
         self: &'a ObjectRef,
         mut guard: PtGuard<'a>,
@@ -642,10 +695,12 @@ impl Object {
         count: usize,
         all_were_present: &mut bool,
     ) -> Result<PtGuard<'a>, TwzError> {
-        let mut alloc = FrameAllocator::new(
-            FrameAllocFlags::WAIT_OK | FrameAllocFlags::ZEROED,
-            PHYS_LEVEL_LAYOUTS[0],
-        );
+        let mut alloc = FrameAllocator::new(FrameAllocFlags::ZEROED, PHYS_LEVEL_LAYOUTS[0]);
+        if alloc.precharge_nowait(count) < count {
+            drop(guard);
+            alloc.precharge(count, FrameAllocFlags::WAIT_OK);
+            guard = self.lock_page_tables();
+        }
         for i in 0..count {
             let offset = page.offset(i).as_byte_offset() as u64;
             if !guard.is_empty_at_level(offset, 0) {
@@ -659,6 +714,47 @@ impl Object {
             }
         }
         Ok(guard)
+    }
+
+    /// How far a first touch of an empty past-EOF region is widened, in pages. Mirrors
+    /// [ANON_FAULT_AROUND]: a pager object faults one page at a time (`handle_fault` passes
+    /// page_count 1), and paying one descent per page for a zero-fill is the same waste the anon
+    /// fill batches away.
+    const ZERO_FILL_AROUND: usize = 16;
+
+    /// The first page at or above which zero-fill is unsafe, i.e. the low edge of the object's
+    /// metadata region, or `None` when the meta page is not resident.
+    ///
+    /// The metadata lives at the top of the address range: the meta page at `MAX_SIZE - PAGE`, and
+    /// the FOT growing downward from it (`resolve_fot` reads `meta.cast::<FotEntry>().sub(idx+1)`),
+    /// so `fotcount` entries occupy `[meta - fotcount*size_of::<FotEntry>(), meta)`. All of it is
+    /// past `known_len` and all of it is real, so `known_len` alone cannot gate zero-fill; this is
+    /// the bound the disabled-`ZERO_FILL_PAST_EOF`-era comment named.
+    ///
+    /// Read from the *resident* meta page, never populated: populating from here would ask the
+    /// pager mid-fault, and `None` (meta absent) simply declines to the pager path -- correct, just
+    /// no saving. `fotcount` from the resident copy never understates the disk FOT: disk state
+    /// derives from a past resident state, and an entry added since is an append whose page is
+    /// zero-fillable anyway.
+    fn zero_fill_floor(self: &ObjectRef, guard: &mut PtGuard) -> Option<PageNumber> {
+        // An external file has no metadata page or FOT (the pager synthesizes a meta page on
+        // demand), so everything below the meta page is data-or-empty and the floor is simply the
+        // meta page -- no read, and crucially no dependence on the synthesized page being resident,
+        // which it usually is not during a build (rustc never touches it). This is what makes the
+        // external arm -- where the whole build win lives -- actually fire.
+        if self.is_external() {
+            return Some(PageNumber::meta_page());
+        }
+        let meta_off = PageNumber::meta_page().as_byte_offset() as u64;
+        let frame = guard.get_frame(meta_off)?;
+        // The meta page is always a 4 KiB frame (never in a large-page region), so the MetaInfo is
+        // at the frame's base.
+        let meta = unsafe { core::ptr::read_volatile(frame.virtaddr().as_ptr::<MetaInfo>()) };
+        let fot_bytes = (meta.fotcount as usize) * core::mem::size_of::<FotEntry>();
+        let region_start = PageNumber::meta_page()
+            .as_byte_offset()
+            .checked_sub(fot_bytes)?;
+        Some(PageNumber::from_offset(region_start))
     }
 
     /// Whether a fault waits only for the pages it asked for, or for the whole region the widening
@@ -695,6 +791,25 @@ impl Object {
     /// otherwise.
     const SPLIT_REQ_PER_REGION: bool = false;
 
+    /// Whether a demand fault past `known_len` and below the metadata floor is backed with a zero
+    /// frame instead of a pager round trip. See the block in [Object::ensure_in_core_pager] and
+    /// [Object::zero_fill_floor]. An A/B switch: the fault path is subtle enough that being able to
+    /// disable it without a source change is worth one `if`.
+    /// Safe only for objects whose `known_len` is an exact logical EOF
+    /// ([Object::known_len_is_exact] -- created-this-boot or external-file-backed). A first cut
+    /// keyed on `known_len` alone corrupted native stored objects, whose reported length is a
+    /// synced-page extent rather than an EOF, and manifested as a symbol-lookup failure loading
+    /// a later library (`Naming(NotFound)` at init's network setup). See
+    /// scratchpad/zerofill-findings.md. Gated on an *exact* `known_len`
+    /// ([Object::known_len_is_exact], i.e. created-this-boot or external-file) and on being a
+    /// non-speculative demand fault. Past an exact EOF the store provably holds nothing, so a
+    /// read there is as correctly a zero as a write; both fault kinds qualify. rustc's /ext
+    /// target files are external objects, which is where the build win lives.
+    const ZERO_FILL_PAST_EOF: bool = true;
+
+    /// DIAG: log zero-fill fires. Off for measurement.
+    const ZERO_FILL_DIAG: bool = false;
+
     /// `flags` distinguishes a demand fault from speculation. It changes nothing about which pages
     /// are requested -- the point of driving this path with [PagerFlags::PREFETCH] rather than
     /// hand-rolling a range is that a prefetch then asks for *exactly* what the fault it is trying
@@ -710,36 +825,75 @@ impl Object {
         all_were_present: &mut bool,
         flags: PagerFlags,
         speculative: bool,
+        is_fault: bool,
     ) -> Result<PtGuard<'a>, TwzError> {
         *all_were_present = true;
         assert!(self.use_pager());
 
-        // Past the end of the store's data there is nothing to read -- the kernel is the only thing
-        // that extends it -- so the pager has nothing to say and the round trip is pure latency.
-        // This is what would make appending to a file cost no pager traffic until it is synced.
+        // A demand fault (read or write) on a page that lies past `known_len` and below the
+        // object's metadata region can be backed with a zero frame instead of a pager round
+        // trip. This is what makes rustc appending to a fresh /ext target file cost no
+        // pager traffic: the build otherwise asks the pager ~40k times, ~99.5% for pages
+        // past EOF (CARGO.md).
         //
-        // Deliberately only the caller's own range, never the widening below: a small file's
-        // widened request runs a thousand pages past EOF, and committing a zeroed frame for each
-        // would turn a 64 KB file into 4 MB of resident memory.
-        //
-        // **Off, because "past the data length" is not "absent from the store".** An object's
-        // metadata lives at the *top* of its address range: the meta page at `MAX_SIZE - PAGE`,
-        // and the FOT growing *downward* from it (`resolve_fot` reads
-        // `meta.cast::<FotEntry>().sub(idx + 1)`). All of that is on disk and all of it is past
-        // `known_len`, which describes only the data at the bottom. Excluding the meta page alone
-        // still zero-filled the FOT, so every library's foreign-object table read back as zeros
-        // and the guest died with `failed to enumerate dependencies for libtwz_rt.so`
-        // (`pagerperf.md` 20). Turning this on needs a real bound on where the metadata region
-        // starts -- `MetaInfo::fotcount` gives it, at the cost of a meta-page read on the fault
-        // path -- not a wider exclusion.
-        const ZERO_FILL_PAST_EOF: bool = false;
-        if ZERO_FILL_PAST_EOF
+        // Safe only where `known_len` is an *exact* logical EOF (created-this-boot or external
+        // file) -- a native stored object reports a synced-page extent, not an EOF, so it is not
+        // eligible. Past an exact EOF the store provably holds nothing, so a read there is as
+        // correctly a zero as a write. The floor keeps the fill out of the object's metadata region
+        // (`zero_fill_floor`: the meta page for an external file, or below the FOT for one with a
+        // resident meta page). Restricted to the fault path (`is_fault`) and to the caller's own
+        // range lying wholly below the floor; a range straddling metadata falls through to the
+        // pager, which reads the FOT.
+        if Self::ZERO_FILL_PAST_EOF
+            && is_fault
+            && !speculative
             && page != PageNumber::meta_page()
-            && self
-                .known_len()
-                .is_some_and(|len| page.as_byte_offset() as u64 >= len)
+            && self.known_len_is_exact()
         {
-            return self.fill_zero_pages(guard, page, page_count, all_were_present);
+            if let Some(len) = self.known_len() {
+                // An external file's object pages sit one null page above the file's bytes (the
+                // file has no null page; `object-store::page_to_block` maps object page P to file
+                // block P-1), while its `known_len` is the raw *file* length. So the object-space
+                // end of its data is a null page higher -- without this, `data_end` lands a page
+                // early and zero-fill clobbers the file's last real page. A created object's
+                // `known_len` is already object-relative (extended from object offsets on sync), so
+                // it needs no shift.
+                let shift = if self.is_external() {
+                    PageNumber::PAGE_SIZE
+                } else {
+                    0
+                };
+                let data_end = (len as usize + shift).next_multiple_of(PageNumber::PAGE_SIZE);
+                let end = page.offset(page_count);
+                if page.as_byte_offset() >= data_end {
+                    match self.zero_fill_floor(&mut guard) {
+                        Some(floor) if end.num() <= floor.num() => {
+                            let widened_end = (page.num() + Self::ZERO_FILL_AROUND)
+                                .max(end.num())
+                                .min(floor.num());
+                            let count = widened_end - page.num();
+                            crate::pager::profile::PAGER_PROFILE.zero_filled(count);
+                            if Self::ZERO_FILL_DIAG {
+                                static N: AtomicU64 = AtomicU64::new(0);
+                                if N.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 64 {
+                                    emerglogln!(
+                                        "ZEROFILL obj={} known_len={} page={:x} count={} floor={:x} present={}",
+                                        self.id(),
+                                        len,
+                                        page.as_byte_offset(),
+                                        count,
+                                        floor.as_byte_offset(),
+                                        !guard.is_empty_at_level(page.as_byte_offset() as u64, 0),
+                                    );
+                                }
+                            }
+                            return self.fill_zero_pages(guard, page, count, all_were_present);
+                        }
+                        Some(_) => crate::pager::profile::PAGER_PROFILE.zero_fill_declined(true),
+                        None => crate::pager::profile::PAGER_PROFILE.zero_fill_declined(false),
+                    }
+                }
+            }
         }
         // What the caller asked for, captured before the widening below rewrites `page` and
         // `page_count`. Everything the widening adds is speculative: it exists to install a large

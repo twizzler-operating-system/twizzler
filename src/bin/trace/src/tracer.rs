@@ -50,6 +50,18 @@ pub struct TracingState {
     pub name: String,
     pub nr_wakes: usize,
     pub collector_id: ObjID,
+    /// Where each library was loaded, captured while the target is alive. A PC histogram is
+    /// meaningless without this: symbolizing against a copy of a library that was rebuilt after
+    /// the run silently yields whatever now sits at that offset. `objid` pins the exact object the
+    /// library was loaded from, which a path does not.
+    pub load_map: Vec<LoadedLib>,
+}
+
+pub struct LoadedLib {
+    pub name: String,
+    pub start: usize,
+    pub len: usize,
+    pub objid: ObjID,
 }
 
 impl Debug for TraceSource {
@@ -121,6 +133,7 @@ impl TracingState {
             name,
             nr_wakes: 0,
             collector_id: 0.into(),
+            load_map: Vec::new(),
         })
     }
 
@@ -401,6 +414,23 @@ pub fn start(
         tracer.wait_for(State::Ready);
 
         let start = Instant::now();
+        // Capture the load map before the target can exit: `comp.libs()` needs a live compartment,
+        // and without it the PC histogram cannot be symbolized against a known binary.
+        {
+            let map: Vec<_> = comp
+                .libs()
+                .map(|l| {
+                    let i = l.info();
+                    LoadedLib {
+                        name: i.name.clone(),
+                        start: i.start as usize,
+                        len: i.len,
+                        objid: i.objid,
+                    }
+                })
+                .collect();
+            tracer.state.lock().unwrap().load_map = map;
+        }
         for thread in comp.threads() {
             let id: ObjID = thread.repr_id;
             tracing::debug!("resuming compartment thread {}", id);

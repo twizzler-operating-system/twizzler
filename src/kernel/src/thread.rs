@@ -1118,6 +1118,7 @@ impl Thread {
                 let data = ThreadSamplingEvent {
                     ip: self.read_ip(),
                     state: self.get_state(),
+                    bp: self.read_bp(),
                 };
                 let entry = new_trace_entry(
                     TraceKind::Thread,

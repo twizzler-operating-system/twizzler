@@ -690,7 +690,10 @@ impl Thread {
                 Registers::None => 0,
                 Registers::Interrupt(int) => {
                     let int = unsafe { &mut *int };
-                    (*int).get_stack_top()
+                    // NOT `get_stack_top()`, which returns RSP. This is the arm a statclock sample
+                    // of userspace code takes, and a stack address passes every cheap frame-pointer
+                    // sanity check (nonzero, aligned, ascending) while linking to nothing.
+                    (*int).get_base_pointer()
                 }
                 Registers::Syscall(sys) => {
                     let sys = unsafe { &mut *sys };
@@ -698,7 +701,6 @@ impl Thread {
                 }
             };
         };
-        // Was `.rip`: every other arm of this function returns a base pointer.
         frame.rbp
     }
 

@@ -906,12 +906,13 @@ impl ThreadTracker {
     /// The two system-wide header lines, as text.
     fn sys_lines(&self) -> (String, String) {
         let r = self.rates();
-        // Timer and everything else, side by side rather than one total. `tick` counts every
-        // timer interrupt, which is more than the nominal statclock cadence: the one-shot is
-        // rearmed sub-tick whenever a timeout needs it (see clock.rs), so tick well above the
-        // tick rate means timeouts, and `otherirq` is then device interrupts and IPIs alone.
+        // Timer and everything else, side by side rather than one total. `timer` is the hardtick
+        // cadence -- the one-shot is rearmed at most `NANOS_PER_TICK` (1ms) out, so ~1000/s is the
+        // designed rate and not evidence of anything. It is a different clock from the statclock
+        // rate in the summary line, which samples thread time at ~125/s; both used to be called
+        // "ticks", which invited exactly the wrong conclusion.
         let kernel = format!(
-            "kernel  tick {}/s  otherirq {}/s  ctxsw {}/s  preempt {}/s  fault {}/s  syscall {}/s  tlbflush {}/s  shootdown {}/s",
+            "kernel  timer {}/s  otherirq {}/s  ctxsw {}/s  preempt {}/s  fault {}/s  syscall {}/s  tlbflush {}/s  shootdown {}/s",
             self.rate_str(r.hardticks),
             self.rate_str(r.other_irq()),
             self.rate_str(r.ctx_switches),
@@ -947,7 +948,7 @@ impl ThreadTracker {
         let groups = self.grouped();
         let cross: usize = groups.iter().map(|g| g.cross).sum();
         format!(
-            "  —  {} threads ({} running, {} blocked) in {} compartments, {} cross, {:.2}/{} cpus busy, {} ticks/s",
+            "  —  {} threads ({} running, {} blocked) in {} compartments, {} cross, {:.2}/{} cpus busy, statclock {}/s",
             stats.nr_threads,
             stats.nr_running,
             stats.nr_blocked,

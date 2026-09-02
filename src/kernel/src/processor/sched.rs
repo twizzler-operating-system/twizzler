@@ -863,7 +863,10 @@ pub fn schedule_thread(thread: ThreadRef) {
     // `ProcessorStats::wakeups` was declared and read (`InfoKind::KernelStats`, the mutex-stall
     // dump) but never incremented, so it reported zero for every boot. Charged to the waker's
     // cpu, which is the cpu doing the work.
-    current_processor().stats.wakeups.fetch_add(1, Ordering::Relaxed);
+    current_processor()
+        .stats
+        .wakeups
+        .fetch_add(1, Ordering::Relaxed);
     let cpuid = select_cpu(&thread, None);
     let processor = get_processor(cpuid);
     log::trace!(

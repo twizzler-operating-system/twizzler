@@ -357,6 +357,13 @@ pub struct ThreadSamplingEvent {
     pub ip: u64,
     /// Thread execution state at sampling time.
     pub state: ExecutionState,
+    /// Frame pointer at sampling time, or 0 if it could not be read.
+    ///
+    /// The kernel records it but does **not** dereference it: walking a frame chain from an
+    /// interrupt would mean the kernel following an arbitrary user pointer with no fault-fixup
+    /// path. Twizzler is a single address space, so the tracer walks the chain in userspace
+    /// instead, where a bad pointer is an ordinary userspace fault rather than a kernel one.
+    pub bp: u64,
 }
 
 /// Event data for memory mapping operations.

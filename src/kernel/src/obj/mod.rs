@@ -57,6 +57,18 @@ pub const OBJ_HAS_INTERRUPTS: u32 = 2;
 const OBJ_DELETE_ON_LAST_UNMAP: u32 = 4;
 /// A map of this object has already tried a speculative page-in. See [Object::claim_map_prefetch].
 const OBJ_MAP_PREFETCHED: u32 = 8;
+/// `known_len` is an *exact* logical byte length, not a page-granular "last synced page" extent.
+/// True for objects created this boot (nothing on the store until the first sync, so `known_len`
+/// starts at exactly 0) and for external-file-backed objects, whose length the pager reports from
+/// the backing file (`ObjectInfoFlags::SYNTH_META`). It is NOT set for a native persistent object
+/// opened from the store, whose reported length is the extent of its synced pages rather than a
+/// logical EOF -- past-EOF zero-fill keys on this so it never serves zeros over such an object.
+const OBJ_KNOWN_LEN_EXACT: u32 = 16;
+/// Backed by an external (POSIX/ext4) file, which has no Twizzler metadata page or FOT -- the pager
+/// synthesizes a meta page on demand. The whole address range past `known_len` (up to, but not
+/// including, the synthesized meta page) is empty, so past-EOF zero-fill needs no FOT floor and can
+/// answer a fault there directly. See [Object::zero_fill_floor].
+const OBJ_EXTERNAL: u32 = 32;
 pub struct Object {
     pub id: ObjID,
     flags: AtomicU32,
@@ -337,6 +349,26 @@ impl Object {
     /// for one the kernel just created (nothing is on disk until the first sync).
     pub fn set_known_len(&self, len: u64) {
         self.known_len.store(len, Ordering::Release);
+    }
+
+    /// Mark this object's `known_len` as an exact logical byte length (see [OBJ_KNOWN_LEN_EXACT]).
+    pub fn mark_known_len_exact(&self) {
+        self.flags.fetch_or(OBJ_KNOWN_LEN_EXACT, Ordering::SeqCst);
+    }
+
+    /// Whether `known_len` is an exact logical length rather than a synced-page extent.
+    pub fn known_len_is_exact(&self) -> bool {
+        self.flags.load(Ordering::SeqCst) & OBJ_KNOWN_LEN_EXACT != 0
+    }
+
+    /// Mark this object as backed by an external file (no metadata page / FOT).
+    pub fn mark_external(&self) {
+        self.flags.fetch_or(OBJ_EXTERNAL, Ordering::SeqCst);
+    }
+
+    /// Whether this object is backed by an external file (see [OBJ_EXTERNAL]).
+    pub fn is_external(&self) -> bool {
+        self.flags.load(Ordering::SeqCst) & OBJ_EXTERNAL != 0
     }
 
     /// Grow the recorded length to cover `len`, leaving it alone if it already does.

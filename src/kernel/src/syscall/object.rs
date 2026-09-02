@@ -315,6 +315,10 @@ pub fn sys_object_create(
     // land in pages, not on disk. Recording zero rather than leaving it unknown is what lets the
     // fault path fill a brand-new object without a single pager round trip.
     obj.set_known_len(0);
+    // Exact: nothing is on the store until the first sync, so the length is precisely 0 -- not the
+    // page-granular extent a stored object reports. This is what lets a fault past EOF be
+    // zero-filled rather than paged in for a brand-new object (see `ensure_in_core_pager`).
+    obj.mark_known_len_exact();
     // We just derived the ID from these fields, so the check `check_id` would do is already done.
     // Recording it now saves the first mapper of this object a `read_meta`, which for a
     // pager-backed object is a page-in (mapperf.md).

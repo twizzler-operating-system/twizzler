@@ -40,6 +40,128 @@ use twizzler_rt_abi::{
 };
 
 use super::{ReferenceRuntime, OUR_RUNTIME};
+
+/// DIAG: call counts and time for the runtime entry points a compile might be paying for.
+///
+/// Written to attribute a PC-sampled profile that named first `memcmp` and then `twz_rt_futex_wake`
+/// as ~27% of a compile's CPU. Both names were wrong -- the profile had been symbolized against a
+/// `libtwz_rt.so` that had been rebuilt out from under it, so the PCs and the symbol table came from
+/// different binaries. These counters are what established that: naming paths measured 0.06% of
+/// wall, and `futex_wake` 0.133 s across a whole build against a claimed 2.4 s in one compile.
+///
+/// Kept because the measurements are cheap and the question recurs. Gating matches
+/// [`super::object::mapstats`]. Reported from `post_main_hook` *and* from `exit()`, because
+/// `process::exit` skips the former and rustc exits that way -- a post-main-only report measures
+/// cargo and never the process of interest.
+pub(crate) mod namestats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Off: these print on *every* compartment exit, and a build exits ~25 of them.
+    pub const REPORT_ON: bool = false;
+    /// Off: the counters are free relaxed adds, the `Instant::now()` pairs feeding them are not.
+    /// `futex_wake` is called ~22k times in a build, so leaving this on times a syscall with two
+    /// clock reads.
+    pub const TIMING: bool = false;
+
+    #[inline(always)]
+    pub fn t0() -> Option<std::time::Instant> {
+        TIMING.then(std::time::Instant::now)
+    }
+
+    pub struct Stat {
+        calls: AtomicU64,
+        ns: AtomicU64,
+    }
+
+    impl Stat {
+        pub const fn new() -> Self {
+            Self {
+                calls: AtomicU64::new(0),
+                ns: AtomicU64::new(0),
+            }
+        }
+
+        #[inline(always)]
+        pub fn record(&self, t: Option<std::time::Instant>) {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            if let Some(t) = t {
+                self.ns
+                    .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            }
+        }
+
+        /// Records on drop, so the several early returns in these functions all count.
+        #[inline(always)]
+        pub fn guard(&'static self) -> Guard {
+            Guard(self, t0())
+        }
+
+        fn get(&self) -> (u64, u64) {
+            (
+                self.calls.load(Ordering::Relaxed),
+                self.ns.load(Ordering::Relaxed),
+            )
+        }
+    }
+
+    pub struct Guard(&'static Stat, Option<std::time::Instant>);
+
+    impl Drop for Guard {
+        #[inline(always)]
+        fn drop(&mut self) {
+            self.0.record(self.1);
+        }
+    }
+
+    pub static CGETENV: Stat = Stat::new();
+    pub static CANON: Stat = Stat::new();
+    pub static RESOLVE: Stat = Stat::new();
+
+    /// `twz_rt_futex_wake` is 27.4% of a compile's CPU (statclock-driven PC sampling, symbolized
+    /// against the booted image). It enters the kernel unconditionally, so the question worth
+    /// measuring first is how many of those syscalls wake nobody -- a wake with no waiter is pure
+    /// overhead and is skippable in userspace, where a wake that *did* have a waiter is not.
+    pub static FUTEX_WAKE: Stat = Stat::new();
+    pub static FUTEX_WAIT: Stat = Stat::new();
+    /// Of `FUTEX_WAKE`, those whose `sys_thread_sync` reported zero threads woken.
+    pub static WAKE_NOBODY: AtomicU64 = AtomicU64::new(0);
+
+    pub fn report() {
+        if !REPORT_ON {
+            return;
+        }
+        let (gc, gn) = CGETENV.get();
+        let (cc, cn) = CANON.get();
+        let (rc, rn) = RESOLVE.get();
+        let (wc, wn) = FUTEX_WAKE.get();
+        let (tc, tn) = FUTEX_WAIT.get();
+        let z = WAKE_NOBODY.load(Ordering::Relaxed);
+        if gc + cc + rc + wc + tc == 0 {
+            return;
+        }
+        secgate::statcadence::report_forced(format_args!(
+            "NAMESTAT cgetenv {} calls {} us; canon_name {} calls {} us; resolve_name {} calls {} us",
+            gc,
+            gn / 1000,
+            cc,
+            cn / 1000,
+            rc,
+            rn / 1000,
+        ));
+        secgate::statcadence::report_forced(format_args!(
+            "FUTEXSTAT wake {} calls {} us ({} ns ea), {} woke nobody ({} permille); \
+             wait {} calls {} us ({} ns ea)",
+            wc,
+            wn / 1000,
+            wn / wc.max(1),
+            z,
+            z * 1000 / wc.max(1),
+            tc,
+            tn / 1000,
+            tn / tc.max(1),
+        ));
+    }
+}
 use crate::runtime::file::kinds::kconsole::KernelConsoleFile;
 
 mod file_desc;
@@ -878,6 +1000,7 @@ impl ReferenceRuntime {
         name: &[u8],
         out_name: &mut [u8],
     ) -> Result<usize> {
+        let _g = namestats::CANON.guard();
         if matches!(resolver, twizzler_rt_abi::fd::NameResolver::Socket) {
             let Ok(name) = str::from_utf8(name) else {
                 return Err(TwzError::INVALID_ARGUMENT);
@@ -925,6 +1048,7 @@ impl ReferenceRuntime {
         _resolver: twizzler_rt_abi::fd::NameResolver,
         name: &[u8],
     ) -> Result<ObjID> {
+        let _g = namestats::RESOLVE.guard();
         let name = str::from_utf8(name).map_err(|_| TwzError::INVALID_ARGUMENT)?;
         // One acquire, not two. The handle used to be borrowed once to test whether naming was up,
         // dropped, and borrowed again to do the work -- two round trips through the pool's lock on

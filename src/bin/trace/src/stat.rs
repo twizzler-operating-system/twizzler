@@ -24,6 +24,33 @@ struct PfEvent {
     data: ContextFaultEvent,
 }
 
+/// One frame up from `bp`, read directly.
+///
+/// Twizzler is a single address space, so the tracer can follow the target's frame chain itself --
+/// which is why the kernel records `bp` without dereferencing it. Only the return address is taken
+/// (one frame): that is enough to name a caller, and each extra hop multiplies the chance of
+/// reading a frame that has already been reused.
+///
+/// Validated before dereference: nonzero, 8-byte aligned, and the saved-`bp` slot must point
+/// *upward* (stacks grow down), which rejects the common garbage cases. A surviving bad pointer
+/// faults this process rather than the kernel.
+fn caller_of(bp: u64) -> Option<u64> {
+    if bp == 0 || bp & 0x7 != 0 {
+        return None;
+    }
+    // SAFETY: same address space as the target; validated above, and a fault here is an ordinary
+    // userspace fault in the tracer, not a kernel one.
+    let (saved_bp, ret) = unsafe {
+        let f = bp as *const u64;
+        (f.read_volatile(), f.add(1).read_volatile())
+    };
+    // A frame whose saved bp does not grow upward is not a frame we followed correctly.
+    if saved_bp != 0 && saved_bp <= bp {
+        return None;
+    }
+    (ret != 0).then_some(ret)
+}
+
 pub fn stat(state: TracingState) {
     println!(
         "statistics for {}, executed over {} seconds",
@@ -345,10 +372,14 @@ pub fn stat(state: TracingState) {
 
         let mut map = HashMap::<_, usize>::new();
         let mut thread_map = HashMap::<_, usize>::new();
+        let mut caller_map = HashMap::<(u64, u64), usize>::new();
         for (head, sample) in samples {
             if sample.state == ExecutionState::Running {
                 *map.entry(sample.ip).or_default() += 1usize;
                 *thread_map.entry(head.thread).or_default() += 1usize;
+                if let Some(ret) = caller_of(sample.bp) {
+                    *caller_map.entry((sample.ip, ret)).or_default() += 1usize;
+                }
             }
         }
         let mut coll = thread_map.into_iter().collect::<Vec<_>>();
@@ -368,14 +399,78 @@ pub fn stat(state: TracingState) {
         let mut coll = map.into_iter().collect::<Vec<_>>();
         coll.sort_by_key(|x| x.1);
 
+        // Percentages are of *running* samples, and the count<=1 tail is reported rather than
+        // silently dropped. Suppressing singletons without saying so makes whatever survives look
+        // dominant -- which is exactly how a 2.1% pc got read as a 27.4% hot spot.
+        let running: usize = coll.iter().map(|x| x.1).sum();
+        let (mut shown, mut shown_pcs) = (0usize, 0usize);
         let mut banner = false;
         for (ip, count) in coll.iter().rev() {
             if *count > 1 {
                 if !banner {
                     banner = true;
-                    println!("PROGRAM COUNTER ADDRESS      COUNT")
+                    println!("PROGRAM COUNTER ADDRESS      COUNT    % OF RUNNING");
                 }
-                println!("     {:0>18x}    {:7}", ip, count);
+                shown += *count;
+                shown_pcs += 1;
+                println!(
+                    "     {:0>18x}    {:7}    {:6.2}%",
+                    ip,
+                    count,
+                    100.0 * *count as f64 / running as f64
+                );
+            }
+        }
+        let tail = running - shown;
+        println!(
+            "     {:<18}    {:7}    {:6.2}%   (in {} single-sample pcs, not listed)",
+            "SUPPRESSED TAIL",
+            tail,
+            100.0 * tail as f64 / running as f64,
+            coll.len() - shown_pcs
+        );
+        println!(
+            "     {:<18}    {:7}             ({} pcs total, {} listed)",
+            "TOTAL RUNNING",
+            running,
+            coll.len(),
+            shown_pcs
+        );
+
+        if !caller_map.is_empty() {
+            let mut cc = caller_map.into_iter().collect::<Vec<_>>();
+            cc.sort_by_key(|x| x.1);
+            println!(
+                "\nLEAF <- CALLER (one frame up, {} pairs resolved)",
+                cc.len()
+            );
+            for ((ip, ret), count) in cc.iter().rev().take(20) {
+                if *count > 1 {
+                    println!(
+                        "     {:0>18x} <- {:0>18x}    {:7}    {:6.2}%",
+                        ip,
+                        ret,
+                        count,
+                        100.0 * *count as f64 / running as f64
+                    );
+                }
+            }
+        }
+
+        // Without this a histogram cannot be symbolized safely: it names the exact object each
+        // library was loaded from, so a rebuilt copy on the host is detectable rather than silently
+        // producing whatever now sits at that offset.
+        if !state.load_map.is_empty() {
+            println!("\nLOAD MAP (symbolize against these objects only)");
+            println!("{:>18}  {:>18}  {:>34}  NAME", "START", "LEN", "OBJID");
+            for l in &state.load_map {
+                println!(
+                    "{:>18x}  {:>18x}  {:>34x}  {}",
+                    l.start,
+                    l.len,
+                    l.objid.raw(),
+                    l.name
+                );
             }
         }
     }

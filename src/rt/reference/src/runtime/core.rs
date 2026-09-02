@@ -151,6 +151,9 @@ impl ReferenceRuntime {
                 // ring's first record -- so flush here or an exit-now program's records are lost.
                 // Free when the ring is empty.
                 secgate::statlog::drain();
+                // Same reason: rustc exits this way, so a post_main_hook-only report measures
+                // cargo and never the process the profile is actually about.
+                crate::runtime::file::namestats::report();
             } else if code != 0 && !self.state().contains(RuntimeState::IS_MONITOR) {
                 // `twz_rt_exit` is overloaded: both thread trampolines (std's `thread_start`,
                 // mlibc's `sys_thread_exit`) end a finished thread through here with code 0, and
@@ -207,6 +210,7 @@ impl ReferenceRuntime {
     }
 
     pub fn cgetenv(&self, name: &CStr) -> *const c_char {
+        let _g = crate::runtime::file::namestats::CGETENV.guard();
         // TODO: this approach is very simple, but it leaks if the environment changes a lot.
         static ENVMAP: Mutex<BTreeMap<String, CString>> = Mutex::new(BTreeMap::new());
         let Ok(name) = name.to_str() else {
@@ -410,6 +414,7 @@ impl ReferenceRuntime {
         // ring unprinted, since it exits long before the ring fills.
         secgate::statlog::drain();
         crate::runtime::object::mapstats::report();
+        crate::runtime::file::namestats::report();
         monitor_api::monitor_rt_comp_ctrl(monitor_api::MonitorCompControlCmd::RuntimePostMain)
             .unwrap();
     }

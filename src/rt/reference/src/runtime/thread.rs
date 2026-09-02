@@ -20,7 +20,10 @@ use twizzler_rt_abi::{
 use super::ReferenceRuntime;
 use crate::{
     preinit_println,
-    runtime::thread::{internal::InternalThread, mgr::ThreadManager},
+    runtime::{
+        thread::{internal::InternalThread, mgr::ThreadManager},
+        RuntimeState,
+    },
 };
 
 mod internal;
@@ -56,6 +59,7 @@ impl ReferenceRuntime {
         expected: u32,
         timeout: Option<core::time::Duration>,
     ) -> twz_error {
+        let _g = crate::runtime::file::namestats::FUTEX_WAIT.guard();
         // No need to wait if the value already changed.
         if futex.load(core::sync::atomic::Ordering::Relaxed) != expected {
             return 0;
@@ -83,12 +87,18 @@ impl ReferenceRuntime {
     /// how many operations were immediately ready, and the single-wake fast path returns 1 for a
     /// wake that found nobody. `ThreadSync::Wake`'s own result is the thread count.
     pub fn futex_wake(&self, futex: &core::sync::atomic::AtomicU32, count: usize) -> Result<usize> {
+        use crate::runtime::file::namestats;
+        let _g = namestats::FUTEX_WAKE.guard();
         let mut ops = [ThreadSync::new_wake(ThreadSyncWake::new(
             ThreadSyncReference::Virtual32(futex),
             count,
         ))];
         sys_thread_sync(&mut ops, None)?;
-        ops[0].get_result()
+        let woken = ops[0].get_result();
+        if matches!(woken, Ok(0)) {
+            namestats::WAKE_NOBODY.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
+        woken
     }
 
     pub fn yield_now(&self) {
@@ -203,7 +213,37 @@ impl ReferenceRuntime {
                 objid: th.objid().raw(),
             }
         };
-        let id = id.unwrap_or_else(|| with_current_thread(|cur| cur.id()));
+        let id = match id {
+            Some(id) => id,
+            None => {
+                // Before READY the caller may still be on the bootstrap TLS, whose
+                // RuntimeThreadControl was never constructed -- its lock word is garbage and
+                // reading it aborts. libc's gettid reaches here from any early mutex.
+                //
+                // Report 1, not 0. mlibc's `this_tid` (tid.hpp) treats 0 as the "unpopulated"
+                // sentinel *and caches it*, so returning 0 makes `this_tid() == 0`, which runs the
+                // mutex protocol with tid 0: the ownerMask CAS degenerates to 0->0 and lock.hpp's
+                // `__ensure((state & ownerMask) == this_tid())` aborts (ud2) -- a monitor-bootstrap
+                // crash. 1 is not a placeholder: pre-READY the only thread alive is the core thread
+                // (mgr.rs `next_id: 2 // 0 reserved, 1 is the core thread`), so 1 is the id this
+                // caller will genuinely report after READY. A lock acquired pre-READY and released
+                // post-READY therefore compares equal (both 1) -- the READY-straddle is closed by
+                // construction, not hoped away.
+                //
+                // LOAD-BEARING ASSUMPTION: this is correct only while pre-READY is single-threaded.
+                // If anything ever spawns a second thread before READY, both would report 1 and the
+                // ownerMask compare would wrongly succeed -- silent corruption rather than a loud
+                // abort. Nothing spawns pre-READY today; keep it that way.
+                if !self.state().contains(RuntimeState::READY) {
+                    return thread_info {
+                        id: 1,
+                        tcb: core::ptr::null_mut(),
+                        objid: 0,
+                    };
+                }
+                with_current_thread(|cur| cur.id())
+            }
+        };
         THREAD_MGR
             .with_internal(id, make_info)
             .unwrap_or(thread_info {

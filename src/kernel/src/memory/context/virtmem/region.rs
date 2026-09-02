@@ -372,7 +372,7 @@ impl MapRegion {
                 let mut pt = self.object.lock_page_tables();
                 record_stage(FaultStage::PtLock, t_pt);
                 let t = stage_start();
-                pt = self.object.ensure_in_core(
+                pt = self.object.ensure_in_core_fault(
                     pt,
                     page_number,
                     1,
@@ -402,7 +402,7 @@ impl MapRegion {
                     let t = stage_start();
                     let (first, count, fills) = self.fault_around(&mut pt, page_number);
                     filled_fault_page = fills;
-                    pt = self.object.ensure_in_core(
+                    pt = self.object.ensure_in_core_fault(
                         pt,
                         first,
                         count,
