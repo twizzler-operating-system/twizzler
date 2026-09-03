@@ -247,6 +247,13 @@ impl Thread {
         self.arch.context.daif = (DAIFMaskBits::IRQ.complement().bits() as u64) << 6;
     }
 
+    /// Not captured on aarch64: the amd64 path records the in-kernel `IsrContext` in
+    /// `common_handler_entry`, and this arch's exception path has no equivalent hook yet. Samples
+    /// therefore report 0, which the reporting side already treats as "no kernel pc".
+    pub fn read_kernel_ip(&self) -> u64 {
+        0
+    }
+
     pub fn read_ip(&self) -> u64 {
         let mut frame: Option<UpcallFrame> = *self.arch.upcall_restore_frame.borrow();
         unsafe {

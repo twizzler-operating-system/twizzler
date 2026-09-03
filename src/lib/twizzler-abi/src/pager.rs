@@ -107,12 +107,16 @@ pub enum KernelCommand {
     ObjectDel(ObjID),
     ObjectCreate(ObjID, ObjectInfo),
     DramPages(PhysRange),
-    /// Flush everything to the backing store; the system is going away.
+    /// Flush everything to the backing store.
     ///
     /// The store runs its block cache in write-back mode, so metadata a create or a page-out left
-    /// dirty only reaches the device at an explicit flush point. Nothing else in the protocol says
-    /// "there will be no more requests", and without that a guest's writes can be complete in
-    /// every in-memory sense and still absent from the disk.
+    /// dirty only reaches the device at an explicit flush point. Without one, a guest's writes can
+    /// be complete in every in-memory sense and still absent from the disk.
+    ///
+    /// Named for its original and still most important caller, shutdown, but no longer only sent
+    /// there: [`crate::syscall::SysCtrlCmd::SyncAll`] ends with one. So this is not necessarily
+    /// the last request the kernel will send, and the pager must stay serving after answering
+    /// it.
     Shutdown,
 }
 

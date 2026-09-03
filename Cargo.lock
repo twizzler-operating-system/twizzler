@@ -1635,6 +1635,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b10589d1a5e400d61f9f38f12f884cfd080ff345de8f17efda36fe0e4a02aa8"
 
 [[package]]
+name = "ctl"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "twizzler-abi",
+ "twizzler-rt-abi",
+]
+
+[[package]]
 name = "ctor"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1418,7 +1418,10 @@ pub fn scan_deleted_one(obj: &ObjectRef) {
     deleteprofile::record(deleteprofile::Stage::Reap, t);
 }
 
-pub fn scan_deleted() {
+/// Returns the number of objects reaped, so an explicit sweep
+/// ([`twizzler_abi::syscall::SysCtrlCmd::ReapAll`]) can tell "nothing was pending" from "I did
+/// work". The idle-loop and unmap callers ignore it.
+pub fn scan_deleted() -> usize {
     // Never take a per-object lock while holding the global map lock. An object's page-table lock
     // can be held by a thread that is asleep waiting on the userspace pager, and blocking on it
     // here would stall every lookup_object() in the kernel -- including the ones the pager request
@@ -1436,11 +1439,14 @@ pub fn scan_deleted() {
             .collect::<Vec<_>>()
     };
 
+    let mut reaped = 0;
     for (_, obj) in candidates {
         if is_reapable(&obj) {
             reap_one(&obj);
+            reaped += 1;
         }
     }
+    reaped
 }
 
 /// Ring of the most recent `mark_for_delete` calls, so that a failed lookup can say whether the id

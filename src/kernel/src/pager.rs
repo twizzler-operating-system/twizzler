@@ -754,12 +754,23 @@ pub(super) fn start_deleter() {
 
 /// Ask the pager to write everything back, and wait for it.
 ///
-/// The store's block cache runs in write-back mode, so metadata a create or a page-out left dirty
-/// only reaches the device at an explicit flush -- and nothing else in the protocol tells the pager
-/// that no further requests are coming. Blocking is the point: returning before the flush completes
-/// would leave exactly the writes this exists to save.
-pub fn shutdown_pager() {
+/// The store's block cache runs in write-back mode. Its ordinary flush points (page-out, sync)
+/// cover the *data*; what only this reaches is the metadata they leave dirty -- the superblock and
+/// the rest of the cache. Blocking is the point: returning before the flush completes would leave
+/// exactly the writes this exists to save.
+///
+/// The request is still spelled `ReqKind::Shutdown` on the wire, which is where it started and the
+/// only flush the protocol has. It is no longer only sent at shutdown: an explicit
+/// [`twizzler_abi::syscall::SysCtrlCmd::SyncAll`] ends with one, because a sync that stops at the
+/// pager's cache is not the durability a caller asking to sync everything means.
+pub fn flush_pager() {
     cmd_object(ReqKind::new_shutdown(), None);
+}
+
+/// [`flush_pager`], at the point the system is going away. Identical work; the distinct name is
+/// what the shutdown path reads as.
+pub fn shutdown_pager() {
+    flush_pager();
 }
 
 pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) -> Result<(), TwzError> {

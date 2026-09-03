@@ -102,6 +102,18 @@ pub struct ArchThread {
     pub user_fs: AtomicU64,
     xsave_inited: AtomicBool,
     entry_registers: RegistersPtr,
+    /// The `IsrContext` of an interrupt taken while already **in the kernel**, so a sample can
+    /// name where the kernel was.
+    ///
+    /// Deliberately separate from `entry_registers`, which is only set for entries from *user*
+    /// (see `common_handler_entry`) and is load-bearing for `read_ip`, upcall delivery and the
+    /// syscall return path. A kernel thread never enters from user, so it has no entry registers
+    /// at all -- which is exactly why 31% of kernel time in a profile had no attributable pc.
+    ///
+    /// Saved and restored around the handler rather than merely set, so a nested interrupt cannot
+    /// leave a stale inner frame behind. Valid only for the duration of the handler, which is
+    /// where the sampler runs (`schedule_hardtick` -> `needs_reschedule` -> `check_sampling`).
+    kernel_frame: AtomicU64,
     /// The frame of an upcall to restore. The restoration path only occurs on the first
     /// return-from-syscall after entering from the syscall that provides the frame to restore.
     /// We store that frame here until we hit the syscall return path, which then restores the
@@ -113,6 +125,28 @@ unsafe impl Sync for ArchThread {}
 unsafe impl Send for ArchThread {}
 
 impl ArchThread {
+    /// Install the current in-kernel interrupt frame, returning the previous one for the caller to
+    /// restore. See [`ArchThread::kernel_frame`].
+    pub fn swap_kernel_frame(&self, ctx: *mut IsrContext) -> u64 {
+        self.kernel_frame.swap(ctx as u64, Ordering::SeqCst)
+    }
+
+    pub fn restore_kernel_frame(&self, prev: u64) {
+        self.kernel_frame.store(prev, Ordering::SeqCst);
+    }
+
+    /// The kernel pc this thread was interrupted at, or 0 if it is not currently inside an
+    /// in-kernel interrupt handler.
+    pub fn read_kernel_ip(&self) -> u64 {
+        let ptr = self.kernel_frame.load(Ordering::SeqCst) as *const IsrContext;
+        if ptr.is_null() {
+            return 0;
+        }
+        // SAFETY: the pointer is the interrupt frame of a handler still on this thread's stack --
+        // it is installed on entry and restored on exit, and the sampler runs inside that window.
+        unsafe { (*ptr).get_ip() }
+    }
+
     pub fn take_upcall_restore_frame(&self) -> Option<UpcallFrame> {
         self.upcall_restore_frame.try_borrow_mut().ok()?.take()
     }
@@ -194,6 +228,7 @@ impl ArchThread {
             user_fs: AtomicU64::new(0),
             xsave_inited: AtomicBool::new(false),
             entry_registers: RegistersPtr::new(),
+            kernel_frame: AtomicU64::new(0),
             upcall_restore_frame: RefCell::new(None),
         }
     }
@@ -662,6 +697,12 @@ impl Thread {
     ///
     /// `as_ptr` touches no bookkeeping, so a racing read costs a torn value, not the machine. Zero
     /// is what this already returns for a thread with no registers, so callers tolerate it.
+    /// The kernel pc this thread was interrupted at, or 0 when it is not inside an in-kernel
+    /// interrupt handler. See [`ArchThread::kernel_frame`].
+    pub fn read_kernel_ip(&self) -> u64 {
+        self.arch.read_kernel_ip()
+    }
+
     pub fn read_ip(&self) -> u64 {
         use crate::syscall::SyscallContext;
         // SAFETY: best-effort read of a possibly-running thread; see the note above on why this

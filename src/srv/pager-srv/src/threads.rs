@@ -122,9 +122,11 @@ const FAST_PAGE_LIMIT: usize = 16;
 fn is_fast(req: &RequestFromKernel) -> bool {
     match req.cmd() {
         KernelCommand::ObjectInfoReq(_) | KernelCommand::DramPages(_) => true,
-        // Bulk: it takes the global `fs` lock and writes back the whole cache. It is also the last
-        // request the kernel will ever send, so lane choice is about not jumping a queue of work
-        // that still has to land before the flush, not about latency.
+        // Bulk: it takes the global `fs` lock and writes back the whole cache. Lane choice is
+        // about not jumping a queue of work that still has to land before the flush, not about
+        // latency -- which holds whether or not more requests follow. They now can: an explicit
+        // `SysCtrlCmd::SyncAll` ends with one of these, so this is no longer only the last request
+        // the kernel ever sends.
         KernelCommand::Shutdown => false,
         KernelCommand::PageDataReq(id, range, flags, required) => {
             let flags_ok = !flags.intersects(PagerFlags::PREFETCH | PagerFlags::BACKGROUND);

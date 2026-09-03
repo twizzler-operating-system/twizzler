@@ -23,6 +23,54 @@ const LOG_LEVEL: log::Level = log::Level::Debug;
 /// one tree state.
 const ZERO_RANGE_SKIP_ABSENT: bool = true;
 
+/// Zero a resident page by swapping in an already-zeroed frame, instead of dropping it.
+///
+/// The default path clears the entry and frees the frame, so the range becomes *absent* and every
+/// page faults back in on next touch -- one zero-fill fault per page, which is a cost neither the
+/// rewind nor the retire arena policy avoids (both were measured; retire zeroes 29x fewer bytes
+/// and runs 14% slower). Swapping keeps the mapping present: the next touch does not trap, and the
+/// dirty frame goes back to the allocator for its background zeroer.
+///
+/// **Only for a private, writable, non-COW leaf.** Replacing a read-only or COW entry in place
+/// leaves a private, non-COW frame behind a read-only entry: the write path declines to copy it
+/// (`maybe_cow_at` acts only on COW frames) and nothing else resolves the fault, so it repeats
+/// forever. Sharing implies COW here -- `setup_cow_range` is what raises a frame's refcount, and it
+/// sets `IS_COW` at the same time -- so the COW check covers the shared case too.
+///
+/// Allocation is `try_alloc_frame` without `WAIT_OK`, under the object's page-table lock: a dry
+/// pool must fall back rather than block, which is why the result is an `Option` the caller
+/// handles rather than a precharge the caller must get right.
+const ZERO_RANGE_SWAP_ZEROED: bool = false;
+
+/// Pages zeroed by swapping a fresh frame in, against those that fell back to drop-and-refault.
+pub mod zeroswap {
+    use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    static SWAPPED: AtomicU64 = AtomicU64::new(0);
+    static FELLBACK: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record(swapped: bool) {
+        if swapped {
+            SWAPPED.fetch_add(1, Relaxed);
+        } else {
+            FELLBACK.fetch_add(1, Relaxed);
+        }
+    }
+
+    pub fn print() {
+        let (s, f) = (SWAPPED.load(Relaxed), FELLBACK.load(Relaxed));
+        if s + f == 0 {
+            return;
+        }
+        logln!(
+            "== zero-range frame swap: {} pages swapped, {} fell back ({}% swapped) ==",
+            s,
+            f,
+            s * 100 / (s + f)
+        );
+    }
+}
+
 /// Cross-check the stored page-table population count against an actual scan on every read.
 ///
 /// The count used to live *inside* the table page, so anything that duplicated or rewrote that
@@ -1125,6 +1173,28 @@ impl Table {
                 present = present.saturating_sub(1);
                 let frame = get_frame(entry.addr(level));
                 let flags = entry.flags();
+                if ZERO_RANGE_SWAP_ZEROED
+                    && !flags.contains(EntryFlags::WIRED)
+                    && flags.contains(EntryFlags::WRITE)
+                    && frame.is_some_and(|f| !f.is_cow())
+                {
+                    match try_alloc_frame(FrameAllocFlags::ZEROED, PHYS_LEVEL_LAYOUTS[level]) {
+                        Some(new_frame) => {
+                            assert!(!new_frame.is_pt());
+                            // Same convention as `Table::map`'s leaf install.
+                            new_frame.inc_refcount();
+                            let swap = Entry::new(new_frame.start_address(), flags);
+                            self.update_entry(consist, idx, swap, cursor.start(), true, level);
+                            if let Some(old) = frame {
+                                consist.free_frame(old);
+                            }
+                            zeroswap::record(true);
+                            *cursor = cursor.advance_until_empty(to_entry_end(cursor));
+                            continue;
+                        }
+                        None => zeroswap::record(false),
+                    }
+                }
                 let mut new_entry = Entry::new_unused();
                 new_entry.set_flags(new_entry.flags() | EntryFlags::DIRTY);
                 self.update_entry(consist, idx, new_entry, cursor.start(), true, level);

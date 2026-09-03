@@ -213,6 +213,52 @@ fn uuhelper_utils(repo_root: &Path) -> anyhow::Result<Vec<String>> {
     Ok(feats.clone())
 }
 
+/// Files staged verbatim onto the data disk, from `[workspace.metadata] disk-files` in the root
+/// manifest: `{ from = <repo-relative path>, to = <path in the image> }`.
+///
+/// The initrd cannot carry these -- its entries name built artifacts (`crate:`/`lib:`/
+/// `third-party:`), and it is read whole at boot whether or not anything opens them. The disk is
+/// demand-paged, so a file here costs nothing until something reads it.
+///
+/// `to` is the path *in the image*, matching the rest of this module rather than what the guest
+/// sees; init symlinks `/pkg` to `/ext/sysroot/pkg`, so `/sysroot/pkg/twizzler/scripts/x` is
+/// `/pkg/twizzler/scripts/x` on Twizzler.
+///
+/// Entries name one file each rather than globbing a directory. A glob that silently matches
+/// nothing is how a file stops shipping without anyone noticing, so a missing source is an error
+/// here instead.
+fn disk_files(
+    build: &TwizzlerCompilation,
+    repo_root: &Path,
+) -> anyhow::Result<Vec<(PathBuf, String)>> {
+    let Some(meta) = build.borrow_user_workspace().custom_metadata() else {
+        return Ok(vec![]);
+    };
+    let Some(list) = meta.get("disk-files") else {
+        return Ok(vec![]);
+    };
+    let list = list
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("disk-files must be an array"))?;
+    let mut out = Vec::new();
+    for item in list {
+        let from = item
+            .get("from")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("disk-files entry needs a string `from`"))?;
+        let to = item
+            .get("to")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("disk-files entry needs a string `to`"))?;
+        let src = repo_root.join(from);
+        if !src.is_file() {
+            anyhow::bail!("disk-files entry `{}` is not a file", src.display());
+        }
+        out.push((src, to.to_string()));
+    }
+    Ok(out)
+}
+
 pub fn copy_twizzler_build(
     build: &TwizzlerCompilation,
     triple: &Triple,
@@ -365,6 +411,33 @@ pub fn copy_twizzler_build(
 
             std::io::copy(&mut src_file, &mut dest_file).unwrap();
         }
+    }
+
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for (src, dest) in disk_files(build, &repo_root)? {
+        // lwext4 has no recursive mkdir, and `to` may name a directory nothing else creates.
+        // Existing directories are not an error here (the staging above relies on the same).
+        if let Some(parent) = Path::new(&dest).parent().and_then(|p| p.to_str()) {
+            let mut acc = String::new();
+            for part in parent.split('/').filter(|p| !p.is_empty()) {
+                acc.push('/');
+                acc.push_str(part);
+                let _ = ext4.mkdir(&acc, 0o755);
+            }
+        }
+        if ext4.exists(&dest) {
+            ext4.remove(&dest).unwrap();
+        }
+        let mut dest_file = ext4
+            .open(
+                &dest,
+                OpenFlags::READ | OpenFlags::WRITE | OpenFlags::CREATE,
+            )
+            .with_context(|| format!("creating {} on the data disk", dest))?;
+        let mut src_file =
+            File::open(&src).with_context(|| format!("reading {}", src.display()))?;
+        std::io::copy(&mut src_file, &mut dest_file)?;
+        dest_file.flush()?;
     }
 
     Ok(())

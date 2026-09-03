@@ -187,6 +187,46 @@ pub fn kdiag_invls() -> bool {
     KDIAG_INVLS.load(Ordering::SeqCst)
 }
 
+/// The diagnostic knobs above as one [`KernelDiagFlags`] mask, for
+/// [`twizzler_abi::syscall::SysCtrlCmd::SetDiag`].
+///
+/// Kept as separate atomics rather than one mask word because the instrumented paths load them
+/// individually and a shared word would put unrelated classes on one cacheline; this assembles the
+/// view only when something asks.
+fn diag_flag_cells() -> [(twizzler_abi::syscall::KernelDiagFlags, &'static AtomicBool); 5] {
+    use twizzler_abi::syscall::KernelDiagFlags as F;
+    [
+        (F::DIAG, &DIAG_MODE),
+        (F::PAGER, &KDIAG_PAGER),
+        (F::INVLS, &KDIAG_INVLS),
+        (F::WAKE, &KDIAG_WAKE),
+        (F::FAULT, &KDIAG_FAULT),
+    ]
+}
+
+pub fn kdiag_mask() -> u64 {
+    diag_flag_cells()
+        .iter()
+        .filter(|(_, cell)| cell.load(Ordering::SeqCst))
+        .fold(0, |acc, (flag, _)| acc | flag.bits())
+}
+
+/// Apply `set` then `clear`, returning the resulting mask. Both zero is a pure read.
+///
+/// `set` first, so a caller that passes the same bit in both ends up with it off -- an explicit
+/// clear beats an explicit set rather than depending on argument order.
+pub fn set_kdiag_mask(set: u64, clear: u64) -> u64 {
+    for (flag, cell) in diag_flag_cells() {
+        if set & flag.bits() != 0 {
+            cell.store(true, Ordering::SeqCst);
+        }
+        if clear & flag.bits() != 0 {
+            cell.store(false, Ordering::SeqCst);
+        }
+    }
+    kdiag_mask()
+}
+
 static BOOT_INFO: Once<Box<dyn BootInfo + Send + Sync>> = Once::new();
 
 pub fn get_boot_info() -> &'static dyn BootInfo {

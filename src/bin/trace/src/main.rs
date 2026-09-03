@@ -226,6 +226,7 @@ fn run_trace_program(cli: &Cli) -> miette::Result<TracingState> {
         state.kernel_source.total + state.user_source.as_ref().map_or(0, |us| us.total),
         state.nr_wakes
     );
+    tracing::info!("tracer tick cost: {}", tracer::tickstats::report());
 
     let dropped = state
         .data()

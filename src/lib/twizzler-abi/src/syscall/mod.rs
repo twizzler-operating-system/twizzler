@@ -215,14 +215,27 @@ pub fn sys_enumerate(
 
 /// Whole-system maintenance operations for [sys_ctrl]. Each runs on the calling thread, at the
 /// calling thread's priority.
+#[derive(Clone, Copy, Debug)]
 pub enum SysCtrlCmd {
     /// Print kernel debugging state to the kernel console. Returns 0.
     DebugDump,
     /// Sync every mapping registered with `SYNC_FLAG_ASYNC_DURABLE`, along with any syncs already
-    /// queued for the kernel's background sync thread. Returns the number of objects synced.
+    /// queued for the kernel's background sync thread, and then flush the pager's backing store.
+    /// Returns the number of objects synced.
     SyncAll,
     /// Zero every free physical frame. Returns the number of bytes zeroed.
     ZeroAll,
+    /// Turn kernel diagnostic classes on and off at runtime: `arg1` is a [KernelDiagFlags] mask to
+    /// set and `arg2` a mask to clear, applied in that order. Returns the resulting mask, so
+    /// passing zero for both reads the current one without changing it.
+    SetDiag,
+    /// Reap everything awaiting background reclamation -- deleted objects and exited threads --
+    /// rather than waiting for the idle loop and the `BACKGROUND` reaper to get to it. Returns the
+    /// number of objects and threads reaped.
+    ReapAll,
+    /// Flush pending work to the backing store and power the machine off, handing the host the
+    /// exit code in `arg1`. Does not return. `VERBOSE` dumps the kernel's profile counters first.
+    Shutdown,
 }
 
 impl TryFrom<u64> for SysCtrlCmd {
@@ -233,6 +246,9 @@ impl TryFrom<u64> for SysCtrlCmd {
             0 => Ok(SysCtrlCmd::DebugDump),
             1 => Ok(SysCtrlCmd::SyncAll),
             2 => Ok(SysCtrlCmd::ZeroAll),
+            3 => Ok(SysCtrlCmd::SetDiag),
+            4 => Ok(SysCtrlCmd::ReapAll),
+            5 => Ok(SysCtrlCmd::Shutdown),
             _ => Err(TwzError::INVALID_ARGUMENT),
         }
     }
@@ -244,12 +260,40 @@ impl From<SysCtrlCmd> for u64 {
             SysCtrlCmd::DebugDump => 0,
             SysCtrlCmd::SyncAll => 1,
             SysCtrlCmd::ZeroAll => 2,
+            SysCtrlCmd::SetDiag => 3,
+            SysCtrlCmd::ReapAll => 4,
+            SysCtrlCmd::Shutdown => 5,
         }
     }
 }
 
 bitflags::bitflags! {
-    /// Flags for [sys_sysctrl].
+    /// Kernel diagnostic classes, as set at boot by `--diag` / `--diag=<list>` and at runtime by
+    /// [SysCtrlCmd::SetDiag].
+    ///
+    /// Each is a read-mostly atomic the instrumented path loads, so a class that is off costs one
+    /// load. Being able to move them at runtime is the point: armed for a whole boot, a diagnostic
+    /// perturbs every measurement taken alongside it, and the interesting window is usually one
+    /// phase of one workload.
+    #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct KernelDiagFlags: u64 {
+        /// The idle-loop hang diagnostics: stuck-thread reports, orphan-thread and mutex-timeout
+        /// scans. Turning this on at runtime does not enable the page-table zero check, which
+        /// boot's bare `--diag` also arms and which cannot be turned back off.
+        const DIAG = 1 << 0;
+        /// `--diag=pager`: kernel-side pager and large-page milestone reports.
+        const PAGER = 1 << 1;
+        /// `--diag=invls`: per-object invalidation-latch reports.
+        const INVLS = 1 << 2;
+        /// `--diag=wake`: wake and scheduling latency reports.
+        const WAKE = 1 << 3;
+        /// `--diag=fault`: the per-object page-fault census.
+        const FAULT = 1 << 4;
+    }
+}
+
+bitflags::bitflags! {
+    /// Flags for [sys_ctrl].
     #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
     pub struct SysCtrlFlags: u64 {
         /// If set, the kernel submits the requested work but does not block until it completes:
@@ -275,15 +319,15 @@ pub fn sys_ctrl(
     arg2: u64,
     arg3: u64,
 ) -> Result<u64, TwzError> {
-    let ts = timeout.map(|t| TimeSpan::from(t));
-    let args = [
-        cmd.into(),
-        &ts as *const Option<TimeSpan> as u64,
-        flags.bits(),
-        arg1,
-        arg2,
-        arg3,
-    ];
+    let ts = timeout.map(TimeSpan::from);
+    // Null-or-pointer-to-the-bare-value, the same convention [sys_thread_sync] uses, because that
+    // is what the kernel reads. A `*const Option<TimeSpan>` would be wrong twice over: it is the
+    // address of a local and so never null, leaving `None` unrepresentable, and the kernel would
+    // read the `Option`'s discriminant as the span's seconds field.
+    let ts_ptr = ts
+        .as_ref()
+        .map_or(core::ptr::null(), |t| t as *const TimeSpan);
+    let args = [cmd.into(), ts_ptr as u64, flags.bits(), arg1, arg2, arg3];
     let (code, val) = unsafe { raw_syscall(Syscall::SysCtrl, &args) };
     convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v, twzerr)
 }

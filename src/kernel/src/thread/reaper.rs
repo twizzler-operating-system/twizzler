@@ -70,6 +70,31 @@ pub fn notify() {
     }
 }
 
+/// Reap every exited thread that is ready for it, on the calling thread.
+///
+/// Same work as one pass of [`reaper_main`], and safe from an ordinary syscall thread for the same
+/// two reasons the reaper is: it may block (`Thread::drop` -> `IdCounter::release` takes a
+/// *sleeping* mutex), and `drain_exited` hands out each entry exactly once under its lock, so the
+/// self-reference box is still reclaimed exactly once. It also cannot reap the caller: a thread
+/// that has not left its kernel stack is skipped there, and the caller is standing on its own.
+///
+/// Returns the number reaped.
+pub fn drain_now() -> usize {
+    let mut batch: Vec<ThreadRef> = Vec::new();
+    for p in all_processors().iter().flatten() {
+        p.drain_exited(&mut batch);
+    }
+    let n = batch.len();
+    for th in batch.drain(..) {
+        // Safety: as in `reaper_main` -- the box is installed once by `schedule_new_thread` and
+        // reclaimed by whichever of this and `Processor::cleanup_exited` took the entry off the
+        // list, which is exactly one of them.
+        let _ = unsafe { Box::from_raw(*th.self_reference.get().as_ref().unwrap()) };
+        REAPED.fetch_add(1, Ordering::Relaxed);
+    }
+    n
+}
+
 extern "C" fn reaper_start() {
     reaper_main()
 }

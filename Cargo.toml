@@ -103,6 +103,7 @@ members = [
     #"src/test/lltest/llt",
 
     "src/ports/femto", "src/bin/top", "src/bin/otop",
+    "src/bin/ctl",
     "src/bin/brush",
     "src/test/pipestat",
 ]
@@ -134,6 +135,13 @@ test-programs = [
     { crate = "spawn-test" },
     { crate = "signal-test" },
 ]
+# Plain files copied onto the data disk, as `{ from = <repo-relative>, to = <path in the image> }`.
+# The initrd holds only built artifacts and is read whole at boot; the disk is demand-paged, so
+# these cost nothing until something opens them. `to` is the image path -- init symlinks `/pkg` to
+# `/ext/sysroot/pkg`, so the entry below is `/pkg/twizzler/scripts/ctlsweep.sh` in the guest.
+disk-files = [
+    { from = "src/bin/ctl/scripts/ctlsweep.sh", to = "/sysroot/pkg/twizzler/scripts/ctlsweep.sh" },
+]
 initrd = [
     "crate:bootstrap",
     "crate:init",
@@ -154,6 +162,7 @@ initrd = [
     #"crate:debug",
     #"crate:cache",
     "crate:trace",
+    "crate:ctl",
     #"crate:gfxtest",
     "crate:shell",
     "crate:spawn-test",

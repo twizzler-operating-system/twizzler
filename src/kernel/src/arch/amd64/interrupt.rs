@@ -219,7 +219,23 @@ unsafe extern "C" fn common_handler_entry(
             t.set_entry_registers(Registers::Interrupt(ctx));
         }
     }
+    // For an interrupt taken *in* the kernel there are no entry registers to set -- that is the
+    // user-entry path above -- but this frame is what names the kernel pc for a sample. Swapped
+    // rather than stored so a nested interrupt restores its parent's frame on the way out.
+    let prev_kframe = if user || !crate::thread::SAMPLE_KERNEL_IP {
+        0
+    } else {
+        current_thread_ref()
+            .map(|t| t.arch.swap_kernel_frame(ctx))
+            .unwrap_or(0)
+    };
     generic_isr_handler(ctx, number, user);
+    if !user
+        && crate::thread::SAMPLE_KERNEL_IP
+        && let Some(t) = current_thread_ref()
+    {
+        t.arch.restore_kernel_frame(prev_kframe);
+    }
 
     unsafe {
         if user {

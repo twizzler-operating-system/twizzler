@@ -324,6 +324,59 @@ impl Object {
         Ok(())
     }
 
+    /// Write several pieces at consecutive offsets, resolving the backing frame **once**.
+    ///
+    /// [`Self::write_bytes`] resolves per call, and resolving is not cheap: `do_with_frame` takes
+    /// the object's page-table lock (a sleeping mutex), runs `ensure_in_core`, and walks the page
+    /// tables. A trace record is three pieces -- entry head, data header, payload -- at
+    /// consecutive offsets, so appending one cost three of those for what is almost always a
+    /// single page. Measured: the `trace-writer` kernel thread was 11.10% of a guest `cargo
+    /// build`, the largest kernel thread by a factor of four, for 19,248 records.
+    ///
+    /// Falls back to the per-piece path when the run crosses a frame boundary, which keeps the
+    /// fast path free of boundary arithmetic. That case is rare by construction -- records are
+    /// appended sequentially and are small relative to a page -- and correctness does not depend
+    /// on which path runs.
+    pub fn write_pieces(self: &ObjectRef, pieces: &[&[u8]], offset: usize) -> Result<(), TwzError> {
+        let total: usize = pieces.iter().map(|p| p.len()).sum();
+        if total == 0 {
+            return Ok(());
+        }
+        let contiguous = self.with_frame(
+            offset,
+            FindFrameFlags::POPULATE | FindFrameFlags::WRITE,
+            |po, frame| {
+                if frame.size() - po < total {
+                    return false;
+                }
+                let base = unsafe { frame.virtaddr().as_mut_ptr::<u8>().byte_add(po) };
+                let mut at = 0;
+                for piece in pieces {
+                    // SAFETY: the run fits inside this frame, checked above, and the pieces are
+                    // caller-owned reads.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            piece.as_ptr(),
+                            base.byte_add(at),
+                            piece.len(),
+                        );
+                    }
+                    at += piece.len();
+                }
+                true
+            },
+        )?;
+        if contiguous {
+            return Ok(());
+        }
+        let mut at = offset;
+        for piece in pieces {
+            self.write_bytes(piece.as_ptr(), piece.len(), at)?;
+            at += piece.len();
+        }
+        Ok(())
+    }
+
     pub fn write_bytes(
         self: &ObjectRef,
         ptr: *const u8,

@@ -12,6 +12,7 @@ pub mod sink;
 pub mod sys;
 
 pub fn new_trace_entry(kind: TraceKind, event: u64, flags: TraceEntryFlags) -> TraceEntryHead {
+    mgr::enqueuestats::entry();
     let now = Instant::now();
     TraceEntryHead {
         thread: current_thread_ref()
@@ -37,6 +38,7 @@ pub fn new_trace_entry_thread(
     event: u64,
     flags: TraceEntryFlags,
 ) -> TraceEntryHead {
+    mgr::enqueuestats::entry();
     let now = Instant::now();
     TraceEntryHead {
         thread: thread.objid(),

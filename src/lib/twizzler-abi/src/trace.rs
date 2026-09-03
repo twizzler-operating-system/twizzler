@@ -385,7 +385,28 @@ pub struct ThreadSamplingEvent {
     /// size of that individual memset.
     pub di: u64,
     pub cx: u64,
+    /// Kernel pc the thread was interrupted at, or 0 if it was not in the kernel (or the arch
+    /// does not capture it).
+    ///
+    /// [`Self::ip`] cannot answer this: it comes from the thread's *entry* registers, which are
+    /// only set on entry from user -- so a kernel thread reports 0 there and 31% of a profile's
+    /// kernel time had no attributable pc at all.
+    pub kernel_ip: u64,
+    /// [`SAMPLE_IN_KERNEL`] / [`SAMPLE_IDLE_THREAD`].
+    ///
+    /// `ip` cannot answer either question. It is read from the thread's *entry* registers, so a
+    /// thread inside a syscall reports the userspace pc it trapped from -- indistinguishable from
+    /// the same thread running that pc in user mode -- and a thread that never entered from user
+    /// at all reports 0. Without these bits a profile can say which user code is hot but not
+    /// whether the time is being spent in user or in the kernel on its behalf.
+    pub flags: u32,
 }
+
+/// The thread was executing in the kernel (`kernel_depth > 0`), so `ip` names where it entered
+/// from rather than where it is.
+pub const SAMPLE_IN_KERNEL: u32 = 1;
+/// The sample was taken on a per-cpu idle thread, i.e. this cpu had nothing to run.
+pub const SAMPLE_IDLE_THREAD: u32 = 2;
 
 /// Event data for memory mapping operations.
 #[repr(C)]

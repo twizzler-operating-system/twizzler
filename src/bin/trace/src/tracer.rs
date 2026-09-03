@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     fmt::Debug,
     sync::{
         Condvar, Mutex,
@@ -18,10 +18,11 @@ use twizzler::{
 };
 use twizzler_abi::{
     syscall::{
-        EnumerateKind, ObjectCreate, PERTHREAD_TRACE_GEN_SAMPLE, ThreadSctxIds, ThreadSync,
-        ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
-        TraceSpec, sys_enumerate, sys_ktrace, sys_object_read_map, sys_thread_change_state,
-        sys_thread_read_sctx_ids, sys_thread_self_id, sys_thread_set_trace_events, sys_thread_sync,
+        EnumerateKind, ObjectCreate, PERTHREAD_TRACE_GEN_SAMPLE, ThreadSchedStats, ThreadSctxIds,
+        ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep,
+        ThreadSyncWake, TraceSpec, sys_enumerate, sys_ktrace, sys_object_read_map,
+        sys_thread_change_state, sys_thread_read_sctx_ids, sys_thread_read_stats,
+        sys_thread_self_id, sys_thread_set_trace_events, sys_thread_sync,
     },
     thread::ExecutionState,
     trace::{
@@ -62,6 +63,9 @@ pub struct TracingState {
     pub load_map: Vec<LoadedLib>,
     /// Load maps for every compartment a sample was seen from, keyed by security context.
     pub comp_maps: Vec<CompMap>,
+    /// Cumulative per-thread cpu accounting, sampled at 1 Hz while the run is live. Independent
+    /// of the profile's own samples: see the note in [`arm`] on why sample share is not cpu time.
+    pub thread_stats: BTreeMap<ObjID, ThreadSchedStats>,
     /// slot -> object mapped there, resolved *while the run is live*.
     ///
     /// The slot table is global (one vm context, many security contexts), so the tracer's own
@@ -163,6 +167,7 @@ impl TracingState {
             collector_id: 0.into(),
             load_map: Vec::new(),
             comp_maps: Vec::new(),
+            thread_stats: BTreeMap::new(),
             slot_map: BTreeMap::new(),
         })
     }
@@ -427,13 +432,85 @@ fn collector(tracer: &Tracer) {
 /// With `--all-threads` this is every thread on the system: a build spends nearly all its time in
 /// child compartments (each `rustc`) and in the servers those children call, none of which the
 /// traced compartment's own thread list can reach.
-fn arm(cli: &Cli, comp: &CompartmentHandle, tracer: &Tracer, seen: &mut Vec<ObjID>) {
+/// What the 100 ms tick actually costs, in counts.
+///
+/// The kernel side of tracing is already measured and is nothing -- 19,162 events, 334 us of
+/// `Instant::now()`, 14 spins on the enqueue lock for a whole build. The consumer is the half that
+/// was never counted, and both of its per-tick passes are O(N): [`arm`] walks every thread in the
+/// system and re-snapshots every compartment ever seen, and [`resolve_slots`] rescans every event
+/// collected so far, so the second is quadratic in total events over a run.
+pub mod tickstats {
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+
+    pub static TICKS: AtomicUsize = AtomicUsize::new(0);
+    pub static THREADS: AtomicUsize = AtomicUsize::new(0);
+    pub static SNAPSHOTS: AtomicUsize = AtomicUsize::new(0);
+    pub static LIBS: AtomicUsize = AtomicUsize::new(0);
+    pub static SCANS: AtomicUsize = AtomicUsize::new(0);
+
+    pub fn bump(c: &AtomicUsize, n: usize) {
+        c.fetch_add(n, Relaxed);
+    }
+
+    pub fn report() -> String {
+        format!(
+            "{} ticks: {} thread arms ({} syscalls), {} compartment snapshots covering {} libs, {} event rescans",
+            TICKS.load(Relaxed),
+            THREADS.load(Relaxed),
+            THREADS.load(Relaxed) * 2,
+            SNAPSHOTS.load(Relaxed),
+            LIBS.load(Relaxed),
+            SCANS.load(Relaxed),
+        )
+    }
+}
+
+/// What the tick has already done, so it does not do it again.
+///
+/// Every field here exists because a tick was repeating work: 300 ticks of a 30 s build issued
+/// 37,506 thread-arming syscalls and 6,236 compartment snapshots covering 36,029 library
+/// `info()` calls -- each of the latter a monitor gate call, and therefore two
+/// `sys_thread_set_active_sctx_id` syscalls -- against 20,094 trace events actually collected.
+/// The profiler was doing an order of magnitude more syscall work than the thing it measured, and
+/// the resulting gate traffic is what made `sys_thread_set_active_sctx_id` the top hot spot in its
+/// own profile.
+#[derive(Default)]
+pub struct ArmState {
+    /// Security contexts seen on any thread, so their compartments get snapshotted.
+    seen: Vec<ObjID>,
+    /// Threads already told to sample. Arming is idempotent and sticky, so doing it twice is pure
+    /// syscall.
+    armed: HashSet<ObjID>,
+    /// Compartments whose load map has stopped growing. Re-snapshotting exists to catch a
+    /// compartment first seen mid-load, which is a transient -- once the map stops growing there
+    /// is nothing further to learn, and a short-lived compartment stops being looked up at all
+    /// once it can no longer be resolved.
+    stable: HashSet<ObjID>,
+    /// Entries `resolve_slots` has already examined. The scan is over everything collected so far,
+    /// so without a cursor it is quadratic in event count: 2,941,622 rescans over one build.
+    scanned: usize,
+    /// Ticks so far, so per-thread cpu accounting can run at a lower rate than arming.
+    ticks: usize,
+}
+
+fn arm(cli: &Cli, comp: &CompartmentHandle, tracer: &Tracer, st: &mut ArmState) {
     if !cli.prog.all_threads {
         for thread in comp.threads() {
-            let _ = sys_thread_set_trace_events(thread.repr_id, PERTHREAD_TRACE_GEN_SAMPLE);
+            if st.armed.insert(thread.repr_id) {
+                let _ = sys_thread_set_trace_events(thread.repr_id, PERTHREAD_TRACE_GEN_SAMPLE);
+            }
         }
         return;
     }
+    tickstats::bump(&tickstats::TICKS, 1);
+    st.ticks += 1;
+    // Sampling is driven from `needs_reschedule`, so a thread that wakes and blocks constantly
+    // gets a sampling opportunity per pass while a compute-bound one gets few -- sample share
+    // measures scheduling activity as much as cpu. `ThreadSchedStats` is tick-based and immune to
+    // that, so it is the arbiter for "which thread actually used the cpu". Read at 1 Hz rather
+    // than per tick: this is one syscall per thread and the whole point of the memoing above was
+    // to stop doing that 300 times.
+    let read_stats = st.ticks % 10 == 1;
     let mut buf = [ObjID::default(); 128];
     let mut offset = 0;
     loop {
@@ -444,14 +521,26 @@ fn arm(cli: &Cli, comp: &CompartmentHandle, tracer: &Tracer, seen: &mut Vec<ObjI
             break;
         }
         for id in &buf[0..count] {
-            let _ = sys_thread_set_trace_events(*id, PERTHREAD_TRACE_GEN_SAMPLE);
+            // Arming is sticky, so only a thread we have not armed needs the syscall. The sctx
+            // read stays unconditional: a thread's *active* context changes as it makes
+            // cross-compartment calls, and that is how new compartments are discovered.
+            if st.armed.insert(*id) {
+                tickstats::bump(&tickstats::THREADS, 1);
+                let _ = sys_thread_set_trace_events(*id, PERTHREAD_TRACE_GEN_SAMPLE);
+            }
+            if read_stats {
+                let mut ss = ThreadSchedStats::default();
+                if sys_thread_read_stats(*id, &mut ss).is_ok() {
+                    tracer.state.lock().unwrap().thread_stats.insert(*id, ss);
+                }
+            }
             let mut ids = ThreadSctxIds::default();
             if sys_thread_read_sctx_ids(*id, &mut ids).is_err() {
                 continue;
             }
             for sctx in [ids.home, ids.active] {
-                if sctx.raw() != 0 && !seen.contains(&sctx) {
-                    seen.push(sctx);
+                if sctx.raw() != 0 && !st.seen.contains(&sctx) {
+                    st.seen.push(sctx);
                 }
             }
         }
@@ -460,8 +549,13 @@ fn arm(cli: &Cli, comp: &CompartmentHandle, tracer: &Tracer, seen: &mut Vec<ObjI
     // Re-snapshot every tick rather than once per compartment. A compartment first seen while the
     // monitor is still loading it yields a partial map, and a short-lived one (each rustc) is never
     // seen again -- which left every pc in a build unresolvable against a map missing its slots.
-    for sctx in seen.iter() {
-        snapshot_comp(*sctx, tracer);
+    for sctx in st.seen.iter() {
+        if st.stable.contains(sctx) {
+            continue;
+        }
+        if !snapshot_comp(*sctx, tracer) {
+            st.stable.insert(*sctx);
+        }
     }
 }
 
@@ -471,11 +565,16 @@ fn arm(cli: &Cli, comp: &CompartmentHandle, tracer: &Tracer, seen: &mut Vec<ObjI
 /// libraries can no longer be located. Keeping the fullest map (rather than the first) is what
 /// makes a short-lived compartment symbolizable -- the first sighting usually catches it before
 /// the monitor has finished loading its libraries.
-fn snapshot_comp(sctx: ObjID, tracer: &Tracer) {
+/// Returns whether this compartment is still worth re-snapshotting: false once its map has stopped
+/// growing, or once it can no longer be looked up at all.
+fn snapshot_comp(sctx: ObjID, tracer: &Tracer) -> bool {
+    tickstats::bump(&tickstats::SNAPSHOTS, 1);
     let Ok(handle) = CompartmentHandle::lookup_id(sctx) else {
-        return;
+        return false;
     };
-    let Ok(info) = handle.info() else { return };
+    let Ok(info) = handle.info() else {
+        return false;
+    };
     let name = info.name.to_string();
     let libs: Vec<_> = handle
         .libs()
@@ -489,28 +588,39 @@ fn snapshot_comp(sctx: ObjID, tracer: &Tracer) {
             }
         })
         .collect();
+    tickstats::bump(&tickstats::LIBS, libs.len());
     let mut state = tracer.state.lock().unwrap();
     match state.comp_maps.iter_mut().find(|c| c.sctx == sctx) {
         Some(existing) => {
             if libs.len() > existing.libs.len() {
                 existing.libs = libs;
                 existing.name = name;
+                return true;
             }
+            false
         }
-        None => state.comp_maps.push(CompMap {
-            sctx,
-            name,
-            libs,
-            _keepalive: handle,
-        }),
+        None => {
+            state.comp_maps.push(CompMap {
+                sctx,
+                name,
+                libs,
+                _keepalive: handle,
+            });
+            true
+        }
     }
 }
 
 /// Resolve the slot of every sample seen so far to the object mapped there, while it still is.
-fn resolve_slots(tracer: &Tracer) {
+fn resolve_slots(tracer: &Tracer, st: &mut ArmState) {
     let mut state = tracer.state.lock().unwrap();
     let mut want: Vec<usize> = Vec::new();
-    for (head, data) in state.data() {
+    let mut scanned = 0usize;
+    // Skip what earlier ticks already examined. The underlying iterator still walks those entries,
+    // but the per-entry work -- a cast, four slot computations, a map lookup and a linear
+    // `want.contains` each -- is what made this quadratic.
+    for (head, data) in state.data().skip(st.scanned) {
+        scanned += 1;
         if head.kind != TraceKind::Thread || head.event & THREAD_SAMPLE == 0 {
             continue;
         }
@@ -527,6 +637,8 @@ fn resolve_slots(tracer: &Tracer) {
             }
         }
     }
+    tickstats::bump(&tickstats::SCANS, scanned);
+    st.scanned += scanned;
     for slot in want {
         if let Ok(mi) = sys_object_read_map(None, slot) {
             state.slot_map.insert(slot, mi.id);
@@ -583,7 +695,7 @@ pub fn start(
                 sys_thread_set_trace_events(id, PERTHREAD_TRACE_GEN_SAMPLE).into_diagnostic()?;
             }
         }
-        let mut seen_sctx: Vec<ObjID> = Vec::new();
+        let mut arm_state = ArmState::default();
         tracer.set_state(State::Running);
 
         // With a timeout, stop collecting and report even if the target never exits -- the whole
@@ -606,8 +718,8 @@ pub fn start(
                 // `comp.wait` has no timeout of its own; poll on a coarse tick instead.
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 if cli.prog.sample {
-                    arm(cli, &comp, &tracer, &mut seen_sctx);
-                    resolve_slots(&tracer);
+                    arm(cli, &comp, &tracer, &mut arm_state);
+                    resolve_slots(&tracer, &mut arm_state);
                 }
                 flags = comp.info().unwrap().flags;
             } else {

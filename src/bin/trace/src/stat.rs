@@ -9,13 +9,17 @@ use ndarray_stats::QuantileExt;
 use twizzler::object::ObjID;
 use twizzler_abi::{
     object::Protections,
-    syscall::{MapFlags as SysMapFlags, MapInfo, ThreadControl, sys_object_read_map},
+    syscall::{
+        MapFlags as SysMapFlags, MapInfo, ThreadControl, sys_object_enumerate_notes,
+        sys_object_get_note, sys_object_read_map,
+    },
     thread::ExecutionState,
     trace::{
         CONTEXT_INVALIDATION, CONTEXT_SHOOTDOWN, ContextFaultEvent, FaultFlags, KERNEL_ALLOC,
-        KernelAllocationEvent, RUNTIME_ALLOC, RuntimeAllocationEvent, SwitchFlags,
-        SyscallExitEvent, THREAD_BLOCK, THREAD_CONTEXT_SWITCH, THREAD_MIGRATE, THREAD_RESUME,
-        THREAD_SAMPLE, THREAD_SYSCALL_EXIT, ThreadCtxSwitch, ThreadSamplingEvent, TraceKind,
+        KernelAllocationEvent, RUNTIME_ALLOC, RuntimeAllocationEvent, SAMPLE_IDLE_THREAD,
+        SAMPLE_IN_KERNEL, SwitchFlags, SyscallExitEvent, THREAD_BLOCK, THREAD_CONTEXT_SWITCH,
+        THREAD_MIGRATE, THREAD_RESUME, THREAD_SAMPLE, THREAD_SYSCALL_EXIT, ThreadCtxSwitch,
+        ThreadSamplingEvent, TraceKind,
     },
 };
 
@@ -40,6 +44,21 @@ fn resolve<'a>(libs: &'a [LoadedLib], pc: u64) -> Option<(&'a str, u64)> {
 
 fn by_pc_has(pcs: &[((ObjID, u64), usize)], sctx: ObjID) -> bool {
     pcs.iter().any(|((s, _), _)| *s == sctx)
+}
+
+/// A thread's name, stored as a note on its control object (see `Thread::set_name`).
+fn try_read_thread_name(id: ObjID) -> Option<String> {
+    let mut keys = [0u64; 16];
+    let n = sys_object_enumerate_notes(id, 0, &mut keys).ok()?;
+    if n == 0 {
+        return None;
+    }
+    let mut buf = [0u8; 128];
+    let len = sys_object_get_note(id, keys[0], &mut buf).ok()?;
+    if len == 0 {
+        return None;
+    }
+    Some(std::str::from_utf8(&buf[..len.min(128)]).ok()?.to_string())
 }
 
 pub fn stat(state: TracingState) {
@@ -358,8 +377,9 @@ pub fn stat(state: TracingState) {
         })
         .collect::<Vec<_>>();
 
-    if samples.len() > 0 {
-        println!("collected {} samples", samples.len());
+    let samples_len = samples.len();
+    if samples_len > 0 {
+        println!("collected {} samples", samples_len);
 
         // Attribute by compartment first. In a build almost every sample lands in a child
         // compartment, so a flat pc histogram would mix code from contexts that do not share a
@@ -373,9 +393,59 @@ pub fn stat(state: TracingState) {
         // (ip, di, cx): the two scratch registers the kernel captures without touching memory.
         let mut samples_reg: Vec<(u64, u64, u64)> = Vec::new();
         let mut running = 0usize;
+        // user/sys/idle, which `ip` alone cannot give: it is read from the thread's entry
+        // registers, so a thread in a syscall reports the userspace pc it trapped from and a pure
+        // kernel thread reports 0. `SAMPLE_IN_KERNEL` is the only thing that separates them.
+        let mut n_user = 0usize;
+        let mut n_sys = 0usize;
+        let mut n_idle = 0usize;
+        let mut n_blocked = 0usize;
+        // Per compartment, so "this compartment's time is mostly kernel" is answerable.
+        let mut sys_by_comp = HashMap::<ObjID, usize>::new();
+        // Kernel time keyed by the pc that *entered* the kernel. `ip` for an in-kernel sample is
+        // the thread's entry register, so it names the syscall wrapper or faulting instruction
+        // responsible -- which is the answerable half of "where is kernel time going". What the
+        // kernel is executing once inside is not captured: that needs the interrupted kernel pc,
+        // which the sampling path does not read.
+        let mut sys_by_pc = HashMap::<(ObjID, u64), usize>::new();
+        // Where the *kernel* was, as opposed to who trapped in. Symbolized offline against the
+        // kernel binary -- the tracer has no symbols for it -- so these print as raw pcs.
+        let mut kpc = HashMap::<u64, usize>::new();
+        // sctx 0 is kernel threads *and* monitor threads, which behave nothing alike. `ip` splits
+        // them for free: it is read from the thread's entry registers, so a thread that never
+        // entered from user has none and reports 0. Anything else in this bucket ran user code.
+        let mut k0_kern = 0usize;
+        let mut k0_kern_sys = 0usize;
+        let mut k0_mon = 0usize;
+        let mut k0_mon_sys = 0usize;
         for (head, sample) in samples {
             if sample.state != ExecutionState::Running {
+                n_blocked += 1;
                 continue;
+            }
+            if sample.flags & SAMPLE_IDLE_THREAD != 0 {
+                n_idle += 1;
+                continue;
+            }
+            let in_kernel = sample.flags & SAMPLE_IN_KERNEL != 0;
+            if in_kernel {
+                n_sys += 1;
+                *sys_by_comp.entry(head.sctx).or_default() += 1;
+                *sys_by_pc.entry((head.sctx, sample.ip)).or_default() += 1;
+                if sample.kernel_ip != 0 {
+                    *kpc.entry(sample.kernel_ip).or_default() += 1;
+                }
+            } else {
+                n_user += 1;
+            }
+            if head.sctx.raw() == 0 {
+                if sample.ip == 0 {
+                    k0_kern += 1;
+                    k0_kern_sys += usize::from(in_kernel);
+                } else {
+                    k0_mon += 1;
+                    k0_mon_sys += usize::from(in_kernel);
+                }
             }
             running += 1;
             *by_comp.entry(head.sctx).or_default() += 1usize;
@@ -408,31 +478,101 @@ pub fn stat(state: TracingState) {
                 .unwrap_or(&empty)
         };
 
+        let on_cpu = n_user + n_sys;
+        let pct = |n: usize, d: usize| {
+            if d == 0 {
+                0.0
+            } else {
+                n as f64 * 100.0 / d as f64
+            }
+        };
+        println!(
+            "\n{:>8}  {:>7}   WHERE THE TIME GOES ({} samples)",
+            "COUNT", "%", samples_len
+        );
+        for (label, n) in [
+            ("user", n_user),
+            ("sys (in kernel)", n_sys),
+            ("idle thread", n_idle),
+            ("blocked", n_blocked),
+        ] {
+            println!("{:>8}  {:>6.2}%   {}", n, pct(n, samples_len), label);
+        }
+        if on_cpu > 0 {
+            println!(
+                "         of on-cpu time ({} samples): {:.1}% user / {:.1}% sys",
+                on_cpu,
+                pct(n_user, on_cpu),
+                pct(n_sys, on_cpu)
+            );
+        }
+
         let mut comps = by_comp.into_iter().collect::<Vec<_>>();
         comps.sort_by_key(|x| x.1);
         println!(
             "\n{:>8}  {:>7}   COMPARTMENT ({} running samples)",
             "COUNT", "%", running
         );
+        println!("{:>8}  {:>7}  {:>6}   {}", "", "", "SYS", "");
         for (sctx, count) in comps.iter().rev() {
+            let sys = sys_by_comp.get(sctx).copied().unwrap_or(0);
             println!(
-                "{:>8}  {:>6.2}%   {}",
+                "{:>8}  {:>6.2}%  {:>5.1}%   {}",
                 count,
                 100.0 * *count as f64 / running as f64,
+                pct(sys, *count),
                 name_of(*sctx)
+            );
+        }
+
+        if k0_kern + k0_mon > 0 {
+            println!(
+                "\n  sctx 0 splits into: {} kernel-thread samples ({:.2}% of all, {:.1}% sys), \
+                 {} monitor samples ({:.2}% of all, {:.1}% sys)",
+                k0_kern,
+                pct(k0_kern, running),
+                pct(k0_kern_sys, k0_kern),
+                k0_mon,
+                pct(k0_mon, running),
+                pct(k0_mon_sys, k0_mon),
             );
         }
 
         let mut threads = by_thread.into_iter().collect::<Vec<_>>();
         threads.sort_by_key(|x| x.1.1);
-        println!("\n{:>8}  {:>7}   THREAD / COMPARTMENT", "COUNT", "%");
+        // Actual cpu beside sample share, because the two measure different things: sampling runs
+        // from `needs_reschedule`, so a thread that wakes constantly is sampled far more often per
+        // unit of cpu than one that runs in long stretches. Where the columns disagree, `cpu%` is
+        // the one to believe.
+        let total_cpu: u64 = state.thread_stats.values().map(|s| s.user + s.system).sum();
+        println!(
+            "\n{:>8}  {:>7}  {:>6}  {:>7}   THREAD / COMPARTMENT",
+            "COUNT", "%", "CPU%", "WAKES"
+        );
         for (thread, (sctx, count)) in threads.iter().rev().take(24) {
+            // A kernel thread's name is a note on its control object -- there is no name field in
+            // `ThreadRepr` -- so this is the only way to tell "some sctx-0 thread eating 11% of the
+            // build" from "the pager's writeback thread". Best effort: a thread that has already
+            // exited no longer has an object to read.
+            let name = try_read_thread_name(*thread).unwrap_or_default();
+            let ts = state.thread_stats.get(thread);
+            let cpu = ts.map(|s| s.user + s.system).unwrap_or(0);
             println!(
-                "{:>8}  {:>6.2}%   {:0>32x}  {}",
+                "{:>8}  {:>6.2}%  {:>5.1}%  {:>7}   {}{}",
                 count,
                 100.0 * *count as f64 / running as f64,
-                thread.raw(),
-                name_of(*sctx)
+                if total_cpu == 0 {
+                    0.0
+                } else {
+                    cpu as f64 * 100.0 / total_cpu as f64
+                },
+                ts.map(|s| s.wakes).unwrap_or(0),
+                name_of(*sctx),
+                if name.is_empty() {
+                    String::new()
+                } else {
+                    format!("  [{}]", name.trim_end_matches('\0'))
+                }
             );
         }
 
@@ -525,6 +665,97 @@ pub fn stat(state: TracingState) {
             pcs.len() - shown_pcs,
             pcs.len(),
             shown_pcs.min(40)
+        );
+
+        // Same two-step resolution the main pc table uses. Resolving only against the
+        // compartment's reported library list -- which is what this table did at first -- silently
+        // degrades to "slot N +off" for exactly the pcs that matter, because most of them resolve
+        // through the *slot* map instead: one vm context is shared across security contexts, so
+        // the slot table names the object actually mapped there even when the compartment's own
+        // library list does not cover the address.
+        let describe = |sctx: ObjID, ip: u64| -> String {
+            if ip == 0 {
+                return "<kernel thread, no entry frame>".to_string();
+            }
+            if let Some((lib, off)) = resolve(libs_of(sctx), ip) {
+                return format!("{}+{:x}", lib, off);
+            }
+            let slot = (ip >> 30) as usize;
+            let off = ip & 0x3fff_ffff;
+            let mctx = mctx_of.get(&(sctx, ip)).copied().unwrap_or(0.into());
+            let via = state
+                .slot_map
+                .get(&slot)
+                .copied()
+                .map(|id| MapInfo {
+                    id,
+                    prot: Protections::empty(),
+                    slot,
+                    flags: SysMapFlags::empty(),
+                })
+                .ok_or(())
+                .or_else(|_| sys_object_read_map(None, slot).map_err(|_| ()))
+                .or_else(|_| sys_object_read_map(Some(mctx), slot).map_err(|_| ()));
+            match via {
+                Ok(mi) => {
+                    let named = state
+                        .comp_maps
+                        .iter()
+                        .flat_map(|c| c.libs.iter())
+                        .find(|l| l.objid == mi.id)
+                        .map(|l| l.name.clone())
+                        .unwrap_or_else(|| format!("obj:{:x}", mi.id.raw()));
+                    format!("{}+{:x}", named, off)
+                }
+                Err(_) => format!("slot {} +{:x} (unresolved)", slot, off),
+            }
+        };
+
+        // Aggregate by *what the pc is*, not by (compartment, pc): the same library is mapped in
+        // every rustc compartment at a different slot, so keying on the address fragments one hot
+        // syscall into a dozen rows and inflates the remainder. That is what made a 12% entry
+        // point read as 7%.
+        let mut sys_by_site = HashMap::<String, usize>::new();
+        for ((sctx, ip), count) in sys_by_pc.iter() {
+            *sys_by_site.entry(describe(*sctx, *ip)).or_default() += count;
+        }
+        let mut syspcs = sys_by_site.into_iter().collect::<Vec<_>>();
+        syspcs.sort_by_key(|x| x.1);
+        println!(
+            "\n{:>8}  {:>7}   KERNEL TIME BY ENTRY SITE ({} sys samples; who trapped in, \
+             summed over compartments)",
+            "COUNT", "%", n_sys
+        );
+        let mut sys_shown = 0usize;
+        for (site, count) in syspcs.iter().rev().take(20) {
+            sys_shown += *count;
+            println!("{:>8}  {:>6.2}%   {}", count, pct(*count, n_sys), site);
+        }
+        println!(
+            "{:>8}  {:>6.2}%   REMAINDER, in {} further entry pcs",
+            n_sys - sys_shown,
+            pct(n_sys - sys_shown, n_sys),
+            syspcs.len().saturating_sub(20)
+        );
+
+        let mut kpcs = kpc.into_iter().collect::<Vec<_>>();
+        kpcs.sort_by_key(|x| x.1);
+        let kpc_total: usize = kpcs.iter().map(|x| x.1).sum();
+        println!(
+            "\n{:>8}  {:>7}   KERNEL PC ({} of {} sys samples carried one; symbolize against the \
+             kernel binary)",
+            "COUNT", "%", kpc_total, n_sys
+        );
+        let mut kshown = 0usize;
+        for (ip, count) in kpcs.iter().rev().take(24) {
+            kshown += *count;
+            println!("{:>8}  {:>6.2}%   {:x}", count, pct(*count, kpc_total), ip);
+        }
+        println!(
+            "{:>8}  {:>6.2}%   REMAINDER, in {} further kernel pcs",
+            kpc_total - kshown,
+            pct(kpc_total - kshown, kpc_total),
+            kpcs.len().saturating_sub(24)
         );
 
         // What the hottest leaf is writing. A sample cannot carry a return address -- reading

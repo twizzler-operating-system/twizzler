@@ -255,6 +255,13 @@ fn read_current_thread_ptr() -> *const ThreadRef {
     }
 }
 
+/// Capture the interrupted kernel pc on each sample, so in-kernel time is attributable.
+///
+/// Costs an atomic swap and restore on *every* in-kernel interrupt, whether or not a sample fires
+/// -- which is why it is a switch: the run that introduced it reported 28.3% sys against a prior
+/// three-run cluster of 22.9-24.1%, and that gap has to be shown to be noise rather than this.
+pub const SAMPLE_KERNEL_IP: bool = true;
+
 #[inline(always)]
 pub fn current_thread_ref() -> Option<&'static ThreadRef> {
     #[allow(unused_unsafe)]
@@ -1117,13 +1124,26 @@ impl Thread {
             if TRACE_MGR.any_enabled(TraceKind::Thread, twizzler_abi::trace::THREAD_SAMPLE) {
                 let sp_val = self.read_sp();
                 let (di, cx) = self.read_di_cx();
+                let mut flags = 0;
+                if !self.is_in_user() {
+                    flags |= twizzler_abi::trace::SAMPLE_IN_KERNEL;
+                }
+                if self.is_idle_thread() {
+                    flags |= twizzler_abi::trace::SAMPLE_IDLE_THREAD;
+                }
                 let data = ThreadSamplingEvent {
                     ip: self.read_ip(),
+                    kernel_ip: if SAMPLE_KERNEL_IP {
+                        self.read_kernel_ip()
+                    } else {
+                        0
+                    },
                     state: self.get_state(),
                     bp: self.read_bp(),
                     sp: sp_val,
                     di,
                     cx,
+                    flags,
                 };
                 let entry = new_trace_entry(
                     TraceKind::Thread,

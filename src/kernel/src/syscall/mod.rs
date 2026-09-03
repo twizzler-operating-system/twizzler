@@ -345,7 +345,67 @@ fn sync_all(wait: bool, expired: &dyn Fn() -> bool) -> Result<u64> {
         );
         return Err(TwzError::TIMED_OUT);
     }
+
+    // The store's block cache is write-back, and the flush points a sync goes through cover the
+    // data but not the metadata they leave dirty. Stopping before this would make "sync everything"
+    // mean "everything reached the pager", which is not the durability the caller asked for.
+    // Skipped under NO_WAIT, which is a pager round trip by definition.
+    if wait {
+        crate::pager::flush_pager();
+    }
     Ok(synced)
+}
+
+/// Reap what the idle loop and the `BACKGROUND` reaper would eventually get to: objects marked for
+/// deletion, and exited threads still holding their 2 MiB kernel stacks.
+///
+/// Both are starved by exactly the workloads that produce them. `scan_deleted` runs one idle-loop
+/// pass in a thousand and was deliberately taken off the unmap path as too expensive there, so a
+/// machine that never idles never runs it; the thread reaper is `BACKGROUND`, and a spawn/join
+/// workload is in the kernel or blocked for nearly all of its time.
+///
+/// Repeats until a pass finds nothing, because a thread that has not yet left its kernel stack is
+/// skipped and may become reapable while this runs. `NO_WAIT` does a single pass.
+fn reap_all(wait: bool, expired: &dyn Fn() -> bool) -> Result<u64> {
+    // As in `zero_all`: a machine producing exits as fast as this reaps them never converges, and
+    // this has to terminate for a caller that passed no timeout.
+    const MAX_PASSES: usize = 4096;
+    let mut reaped = 0u64;
+    let mut passes = 0;
+    loop {
+        let objs = crate::obj::scan_deleted() as u64;
+        let threads = crate::thread::reaper::drain_now() as u64;
+        reaped += objs + threads;
+        passes += 1;
+        if !wait || objs + threads == 0 {
+            break;
+        }
+        if expired() || passes >= MAX_PASSES {
+            log::warn!("sysctrl: ReapAll gave up after reaping {}", reaped);
+            return Err(TwzError::TIMED_OUT);
+        }
+        // Both halves take global locks and can block; do not hold a cpu across a long backlog.
+        schedule(SchedFlags::REINSERT | SchedFlags::YIELD | SchedFlags::PREEMPT);
+    }
+    Ok(reaped)
+}
+
+/// Write everything back and power off, handing `code` to the host.
+///
+/// The order is the one the `0x12345678` debug path established and documents: queued background
+/// syncs first, because the thread that would run them is `BACKGROUND` and has no claim on the time
+/// before poweroff and a queued-but-unrun sync is a guest's write discarded; then the store flush,
+/// because the drain only gets those bytes as far as the pager's write-back cache.
+fn shutdown(code: u32, verbose: bool) -> ! {
+    if verbose {
+        debug_dump(true);
+    }
+    crate::pager::drain_background_sync(false);
+    crate::pager::shutdown_pager();
+    crate::arch::debug_shutdown(code);
+    // `debug_shutdown` is not marked divergent on every arch, and a shutdown that quietly returns
+    // into the syscall path would be worse than a stop.
+    panic!("debug shutdown returned");
 }
 
 /// Zero every free frame: the physical allocator's non-zeroed free lists, and the per-cpu frame
@@ -407,13 +467,14 @@ fn zero_all(wait: bool, expired: &dyn Fn() -> bool) -> Result<u64> {
 /// wait for pager acknowledgements, `ZeroAll` does a single pass); it is meaningless for
 /// `DebugDump`. `VERBOSE` widens what `DebugDump` prints.
 ///
-/// `arg1`-`arg3` are unused by every command today.
+/// `arg1`/`arg2` carry the per-command operands: the diag masks to set and clear for `SetDiag`,
+/// the exit code for `Shutdown`. `arg3` is unused by every command today.
 fn sys_sysctrl(
     cmd: SysCtrlCmd,
     timeout: Option<TimeSpan>,
     flags: SysCtrlFlags,
-    _arg1: u64,
-    _arg2: u64,
+    arg1: u64,
+    arg2: u64,
     _arg3: u64,
 ) -> Result<u64> {
     let start = Instant::now();
@@ -427,6 +488,9 @@ fn sys_sysctrl(
         }
         SysCtrlCmd::SyncAll => sync_all(wait, &expired),
         SysCtrlCmd::ZeroAll => zero_all(wait, &expired),
+        SysCtrlCmd::SetDiag => Ok(crate::set_kdiag_mask(arg1, arg2)),
+        SysCtrlCmd::ReapAll => reap_all(wait, &expired),
+        SysCtrlCmd::Shutdown => shutdown(arg1 as u32, flags.contains(SysCtrlFlags::VERBOSE)),
     }
 }
 
@@ -553,7 +617,11 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
                 crate::obj::coldfieldstats::print();
                 crate::obj::reapstats::print();
                 object::copystats::print();
+                crate::trace::mgr::signalstats::print();
+                crate::trace::mgr::enqueuestats::print();
+                crate::trace::sink::resolvestats::print();
                 crate::memory::pagetables::table::ptcountdrift::print();
+                crate::memory::pagetables::table::zeroswap::print();
                 crate::memory::pagetables::zeroprobe::print();
                 crate::arch::debug_shutdown(context.arg1::<u64>() as u32);
             }
