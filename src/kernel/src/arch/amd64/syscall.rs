@@ -60,6 +60,16 @@ impl From<X86SyscallContext> for UpcallFrame {
     }
 }
 
+impl X86SyscallContext {
+    pub fn get_di(&self) -> u64 {
+        self.rdi
+    }
+
+    pub fn get_cx(&self) -> u64 {
+        self.rcx
+    }
+}
+
 impl UpcallAble for X86SyscallContext {
     fn set_upcall(&mut self, target: VirtAddr, frame: u64, info: u64, stack: u64) {
         self.rcx = target.into();

@@ -257,6 +257,41 @@ impl Thread {
         frame.unwrap().pc
     }
 
+    /// Frame pointer (x29) at sampling time. Mirrors amd64's `read_bp`; without it the sampling
+    /// path does not compile for this arch.
+    pub fn read_bp(&self) -> u64 {
+        let mut frame: Option<UpcallFrame> = *self.arch.upcall_restore_frame.borrow();
+        unsafe {
+            if frame.is_none() {
+                frame = Some((**self.arch.entry_registers.borrow()).into());
+            }
+        }
+        frame.unwrap().x29
+    }
+
+    /// Stack pointer at sampling time. See `ThreadSamplingEvent::sp` for why a frameless leaf
+    /// needs this rather than the frame pointer.
+    pub fn read_di_cx(&self) -> (u64, u64) {
+        let mut frame: Option<UpcallFrame> = *self.arch.upcall_restore_frame.borrow();
+        unsafe {
+            if frame.is_none() {
+                frame = Some((**self.arch.entry_registers.borrow()).into());
+            }
+        }
+        let frame = frame.unwrap();
+        (frame.x0, frame.x2)
+    }
+
+    pub fn read_sp(&self) -> u64 {
+        let mut frame: Option<UpcallFrame> = *self.arch.upcall_restore_frame.borrow();
+        unsafe {
+            if frame.is_none() {
+                frame = Some((**self.arch.entry_registers.borrow()).into());
+            }
+        }
+        frame.unwrap().sp
+    }
+
     pub fn read_registers(&self) -> Result<ArchRegisters, TwzError> {
         if self.get_state() != ExecutionState::Suspended {
             return Err(TwzError::Generic(

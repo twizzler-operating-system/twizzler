@@ -890,7 +890,7 @@ static BG_SYNC: Once<BgSync> = Once::new();
 /// Capture whatever `obj` has dirty and submit it. Runs on the background thread, so both the
 /// page-table walk and the pager backpressure in `do_sync_region` land there instead of on a
 /// thread that was only trying to unmap something.
-fn sync_object_dirty(obj: &ObjectRef) {
+fn sync_object_dirty(obj: &ObjectRef, wait: bool) {
     // A delete makes the data moot, and syncing here would race the reap that follows an unmap.
     if obj.is_pending_delete() || !obj.use_pager() {
         return;
@@ -912,14 +912,14 @@ fn sync_object_dirty(obj: &ObjectRef) {
     if dirty.is_empty() {
         return;
     }
-    sync_object_region(obj, dirty, None, 0, false);
+    sync_object_region(obj, dirty, None, 0, wait);
 }
 
 /// Note that `obj` needs an async-durable sync, to happen off this thread.
 pub fn queue_background_sync(obj: &ObjectRef) {
     let Some(bg) = BG_SYNC.poll() else {
         // Before the thread exists (early boot): inline, rather than dropping the sync.
-        sync_object_dirty(obj);
+        sync_object_dirty(obj, false);
         return;
     };
     let parked = {
@@ -954,14 +954,19 @@ pub fn queue_background_sync(obj: &ObjectRef) {
 /// Drains on the calling thread rather than waiting for the background one, so the work runs at
 /// the caller's priority instead of behind everything else on the run queue. Both pop under the
 /// same lock, so racing with the background thread only splits the queue between them.
-pub fn drain_background_sync() {
+/// `wait` blocks on the pager for each object rather than submitting and moving on, which is what
+/// an explicit [`twizzler_abi::syscall::SysCtrlCmd::SyncAll`] without `NO_WAIT` asks for. The
+/// shutdown path passes `false`: it follows this with [`shutdown_pager`], which waits for the
+/// store's own flush and so covers everything submitted here.
+pub fn drain_background_sync(wait: bool) -> usize {
     let Some(bg) = BG_SYNC.poll() else {
-        return;
+        return 0;
     };
     // Bounded: losing a sync is bad, but a kernel that never powers off is worse -- a wedged
     // pager would otherwise hang shutdown here and turn a reported failure into a CI timeout.
     const MAX_IDLE_SPINS: usize = 10_000;
     let mut idle_spins = 0;
+    let mut synced = 0;
     loop {
         let next = bg.inner.lock().pending.pop_first();
         let Some((_, obj)) = next else {
@@ -969,18 +974,19 @@ pub fn drain_background_sync() {
             // object it popped before we got here. It sets `parked` only after finding the queue
             // empty, so waiting for that covers the in-flight one too.
             if bg.inner.lock().parked {
-                return;
+                return synced;
             }
             idle_spins += 1;
             if idle_spins > MAX_IDLE_SPINS {
                 log::warn!("drain_background_sync: gave up waiting for an in-flight sync");
-                return;
+                return synced;
             }
             schedule(SchedFlags::REINSERT | SchedFlags::YIELD | SchedFlags::PREEMPT);
             continue;
         };
         idle_spins = 0;
-        sync_object_dirty(&obj);
+        sync_object_dirty(&obj, wait);
+        synced += 1;
     }
 }
 
@@ -996,7 +1002,7 @@ pub fn start_background_sync_thread() {
                 // `--nobgsync` drains the queue without writing: the measurement arm that prices
                 // deferred write-back. See `crate::bg_sync_drop`.
                 if !crate::bg_sync_drop() {
-                    sync_object_dirty(&obj);
+                    sync_object_dirty(&obj, false);
                 }
                 drop(obj);
                 inner = bg.inner.lock();

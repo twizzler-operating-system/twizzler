@@ -2,7 +2,10 @@
 #![feature(lock_value_accessors)]
 
 use std::{
-    sync::{Mutex, OnceLock, RwLock},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex, OnceLock, RwLock,
+    },
     time::{Duration, Instant},
 };
 
@@ -10,7 +13,10 @@ use secgate::util::HandleMgr;
 use tracing::Level;
 use twizzler_abi::{
     object::ObjID,
-    syscall::{sys_thread_sync, ThreadSync, ThreadSyncSleep},
+    syscall::{
+        sys_thread_sync, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
+        ThreadSyncSleep, ThreadSyncWake,
+    },
 };
 use twizzler_display::{BufferObject, Rect, WindowConfig};
 use twizzler_rt_abi::{error::TwzError, Result};
@@ -32,6 +38,38 @@ struct DisplayInfo {
     height: u32,
     handles: Mutex<HandleMgr<DisplayClient>>,
     buffer: BufferObject,
+    /// Bumped by every gate call that changes what the compositor would draw.
+    ///
+    /// The client buffer waitpoints cover a window whose *contents* moved, and nothing else. They
+    /// cannot cover a window being created (it has no word the sleeping compositor is already
+    /// waiting on), or reconfigured (which moves a window without touching its buffer), or the
+    /// case of no windows at all (an empty wait set). Those three were what the 1s idle backstop
+    /// was really for; this is the wake they were missing, so the loops can now block outright.
+    windows: AtomicU64,
+}
+
+impl DisplayInfo {
+    /// Sleep while the window set is unchanged from `gen`, which the caller must read *before*
+    /// looking at the handles -- otherwise a change made during the scan is missed rather than
+    /// cancelling the sleep.
+    fn windows_waitpoint(&self, gen: u64) -> ThreadSyncSleep {
+        ThreadSyncSleep::new(
+            ThreadSyncReference::Virtual(&self.windows as *const AtomicU64),
+            gen,
+            ThreadSyncOp::Equal,
+            ThreadSyncFlags::empty(),
+        )
+    }
+
+    /// Announce a change to the window set and wake the compositor.
+    fn windows_changed(&self) {
+        self.windows.fetch_add(1, Ordering::SeqCst);
+        let mut ops = [ThreadSync::new_wake(ThreadSyncWake::new(
+            ThreadSyncReference::Virtual(&self.windows as *const AtomicU64),
+            usize::MAX,
+        ))];
+        let _ = sys_thread_sync(&mut ops, None);
+    }
 }
 
 unsafe impl Send for DisplayInfo {}
@@ -83,6 +121,7 @@ pub fn start_display() -> Result<()> {
         height: current_info.1,
         handles: Mutex::new(HandleMgr::new(None)),
         buffer: BufferObject::create_new(current_info.0, current_info.1)?,
+        windows: AtomicU64::new(0),
     });
 
     let _ = std::thread::Builder::new()
@@ -123,9 +162,6 @@ impl DisplayClient {
 
 /// Frame-rate cap once there is something to draw.
 const FRAME_MS: u64 = 16;
-/// How long a blocked loop waits before re-checking anyway. Only a safety net against a wake
-/// that never arrives; the wakes themselves are what drive the loops.
-const IDLE_BACKSTOP: Duration = Duration::from_secs(1);
 
 fn render_thread() {
     tracing::debug!("render thread started");
@@ -174,10 +210,11 @@ fn render_thread() {
             }
             std::thread::sleep(remaining);
         } else if let Some(sleep) = info.buffer.read_waitpoint() {
-            // Nothing to draw: block until a client flips a frame rather than waking 62 times a
-            // second to find the same empty screen. The timeout is a backstop against a missed
-            // wake, not the mechanism -- losing one costs a second of latency, not the display.
-            let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(sleep)], Some(IDLE_BACKSTOP));
+            // Nothing to draw: block until the compositor flips a frame. Untimed, deliberately.
+            // A periodic re-check cannot tell a complete wait set from a broken one -- every
+            // missed wake becomes latency instead of a fault, permanently invisible -- and the
+            // compositor's flip is the only thing that can ever give this thread work.
+            let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(sleep)], None);
         }
     }
 }
@@ -195,8 +232,12 @@ fn compositor_thread() {
         damage.clear();
         waits.clear();
         let start = Instant::now();
+        // Before the scan below, so a window created or reconfigured while it runs cancels the
+        // sleep at the bottom instead of being missed by it.
+        let gen = info.windows.load(Ordering::SeqCst);
 
         let mut clients = Vec::new();
+        let mut pending = false;
         let handles = info.handles.lock().unwrap();
         for h in handles.handles() {
             if let Some(new_config) = h.2.new_config.replace(None).unwrap() {
@@ -207,6 +248,7 @@ fn compositor_thread() {
             }
             let config = *h.2.config.read().unwrap();
             if h.2.window.has_data_for_read() {
+                pending = true;
                 h.2.window.read_buffer(|b, _, _| {
                     for dmg in b.damage_rects() {
                         damage.push(Rect::new(
@@ -239,7 +281,12 @@ fn compositor_thread() {
             damage.push(Rect::full());
         }
 
-        let did_composite = !damage.is_empty();
+        // `pending`, not just `!damage.is_empty()`: a client can flip a buffer whose damage set is
+        // empty, and that buffer still has to be consumed -- `read_done` below is what clears its
+        // ready flag. Skip it and the flag stays set, so `read_waitpoint` keeps returning `None`
+        // and the sleep at the bottom omits the one window that actually has work. The old 1s
+        // backstop hid that as a stutter; without it, it would be a stall.
+        let did_composite = !damage.is_empty() || pending;
         if did_composite {
             tracing::debug!("damage = {:?}", damage);
             info.buffer.update_buffer(|mut fbbuf, fbw, fbh| {
@@ -326,18 +373,15 @@ fn compositor_thread() {
         } else {
             // Nothing changed. Sleep on every client's buffer at once -- `sys_thread_sync` takes
             // the whole set and releases on the first to move -- so a window updating anywhere
-            // wakes us immediately, and an idle screen costs one wake per backstop instead of 62
-            // a second. A client connecting while we sleep is covered by the backstop, since a
-            // new window has no word here to wake.
+            // wakes us immediately, and an idle screen costs nothing at all rather than 62 wakes
+            // a second. `windows_waitpoint` completes the set: it is what a client *connecting*
+            // wakes, and it keeps the set non-empty when there are no windows to sleep on.
             //
             // Waitpoints are collected after the handle lock is dropped: sleeping under it would
             // block every gate call into this compartment, including the one creating a window.
             let mut ops: Vec<ThreadSync> = waits.drain(..).map(ThreadSync::new_sleep).collect();
-            if ops.is_empty() {
-                std::thread::sleep(IDLE_BACKSTOP);
-            } else {
-                let _ = sys_thread_sync(&mut ops, Some(IDLE_BACKSTOP));
-            }
+            ops.push(ThreadSync::new_sleep(info.windows_waitpoint(gen)));
+            let _ = sys_thread_sync(&mut ops, None);
         }
     }
 }
@@ -359,6 +403,8 @@ pub fn create_window(winfo: WindowConfig) -> Result<(ObjID, u32)> {
         )
         .ok_or(TwzError::INVALID_ARGUMENT)?;
     tracing::debug!("created window {:?} as handle {}", winfo, handle);
+    drop(handles);
+    info.windows_changed();
     Ok((bo.id(), handle))
 }
 
@@ -371,6 +417,8 @@ pub fn drop_window(handle: u32) -> Result<()> {
     handles
         .remove(call_info.source_context().unwrap_or(0.into()), handle)
         .ok_or(TwzError::INVALID_ARGUMENT)?;
+    drop(handles);
+    info.windows_changed();
     Ok(())
 }
 
@@ -379,11 +427,14 @@ pub fn reconfigure_window(handle: u32, wconfig: WindowConfig) -> Result<()> {
     tracing::debug!("reconfiguring window {} => {:?}", handle, wconfig);
     let call_info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let info = DISPLAY_INFO.get().unwrap();
-    let handles = info.handles.lock().unwrap();
-    let client = handles
-        .lookup(call_info.source_context().unwrap_or(0.into()), handle)
-        .ok_or(TwzError::INVALID_ARGUMENT)?;
-    *client.new_config.write().unwrap() = Some(wconfig);
+    {
+        let handles = info.handles.lock().unwrap();
+        let client = handles
+            .lookup(call_info.source_context().unwrap_or(0.into()), handle)
+            .ok_or(TwzError::INVALID_ARGUMENT)?;
+        *client.new_config.write().unwrap() = Some(wconfig);
+    }
+    info.windows_changed();
     Ok(())
 }
 

@@ -485,6 +485,11 @@ impl<T> Mutex<T> {
                     charged,
                 };
             }
+            // Inside the `if let`, not below it: an acquisition with no current thread never
+            // attempts the CAS, so counting it there scored every pre-threading acquisition as
+            // contended. That is ~10k initrd `add_frame` calls per boot, which is how a
+            // single-threaded boot path came to look like the most contended lock in the system.
+            contend::record(caller);
         }
 
         let int_state = crate::interrupt::disable();
@@ -1218,5 +1223,79 @@ mod test {
         let expected = MAIN_ITERS + contender_count.load(Ordering::Relaxed);
         let val = *lock.lock();
         assert_eq!(val, expected);
+    }
+}
+
+/// Which call sites lose the mutex CAS, and how often.
+///
+/// Only the slow path touches this, so an uncontended lock pays nothing. Keyed on the address of
+/// the `&'static Location` -- unique per call site, and printable at the end without storing a
+/// string.
+pub mod contend {
+    use core::{
+        panic::Location,
+        sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed},
+    };
+
+    const CAP: usize = 64;
+    static SITE: [AtomicUsize; CAP] = [const { AtomicUsize::new(0) }; CAP];
+    static HITS: [AtomicU64; CAP] = [const { AtomicU64::new(0) }; CAP];
+    static OVERFLOW: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record(caller: &'static Location<'static>) {
+        let key = caller as *const Location<'static> as usize;
+        let home = (key >> 4) % CAP;
+        let mut i = home;
+        for _ in 0..CAP {
+            match SITE[i].compare_exchange(0, key, Relaxed, Relaxed) {
+                Ok(_) => break,
+                Err(cur) if cur == key => break,
+                Err(_) => i = (i + 1) % CAP,
+            }
+        }
+        if SITE[i].load(Relaxed) != key {
+            OVERFLOW.fetch_add(1, Relaxed);
+            return;
+        }
+        HITS[i].fetch_add(1, Relaxed);
+    }
+
+    /// Sorted, descending. An unsorted dump reads as a ranking to anyone who truncates it, and
+    /// truncating one is how a site that was flat across two arms got reported as 0 -> 10,079.
+    pub fn print() {
+        let mut order: [usize; CAP] = [0; CAP];
+        for (i, o) in order.iter_mut().enumerate() {
+            *o = i;
+        }
+        for a in 0..CAP {
+            for b in (a + 1)..CAP {
+                if HITS[order[b]].load(Relaxed) > HITS[order[a]].load(Relaxed) {
+                    order.swap(a, b);
+                }
+            }
+        }
+        let mut any = false;
+        for &i in order.iter() {
+            let key = SITE[i].load(Relaxed);
+            if key == 0 {
+                continue;
+            }
+            if !any {
+                emerglogln!("== mutex contention (acquisitions that lost the cas), by call site:");
+                any = true;
+            }
+            // SAFETY: the key is the address of a `&'static Location`, which outlives everything.
+            let loc = unsafe { &*(key as *const Location<'static>) };
+            emerglogln!(
+                "  {}: {}:{} ",
+                HITS[i].load(Relaxed),
+                loc.file(),
+                loc.line()
+            );
+        }
+        let of = OVERFLOW.load(Relaxed);
+        if any && of != 0 {
+            emerglogln!("  (overflow: {})", of);
+        }
     }
 }

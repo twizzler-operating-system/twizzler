@@ -17,6 +17,7 @@
 #![feature(io_error_inprogress)]
 #![feature(backtrace_frames)]
 #![feature(btreemap_alloc)]
+#![feature(link_llvm_intrinsics)]
 
 pub(crate) mod arch;
 

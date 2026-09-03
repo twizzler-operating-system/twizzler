@@ -8,7 +8,8 @@ use ndarray::Array1;
 use ndarray_stats::QuantileExt;
 use twizzler::object::ObjID;
 use twizzler_abi::{
-    syscall::ThreadControl,
+    object::Protections,
+    syscall::{MapFlags as SysMapFlags, MapInfo, ThreadControl, sys_object_read_map},
     thread::ExecutionState,
     trace::{
         CONTEXT_INVALIDATION, CONTEXT_SHOOTDOWN, ContextFaultEvent, FaultFlags, KERNEL_ALLOC,
@@ -18,37 +19,27 @@ use twizzler_abi::{
     },
 };
 
-use crate::tracer::TracingState;
+use crate::tracer::{LoadedLib, TracingState};
 
 struct PfEvent {
     data: ContextFaultEvent,
 }
 
-/// One frame up from `bp`, read directly.
+/// Which library a pc lands in, and the offset within it.
 ///
-/// Twizzler is a single address space, so the tracer can follow the target's frame chain itself --
-/// which is why the kernel records `bp` without dereferencing it. Only the return address is taken
-/// (one frame): that is enough to name a caller, and each extra hop multiplies the chance of
-/// reading a frame that has already been reused.
-///
-/// Validated before dereference: nonzero, 8-byte aligned, and the saved-`bp` slot must point
-/// *upward* (stacks grow down), which rejects the common garbage cases. A surviving bad pointer
-/// faults this process rather than the kernel.
-fn caller_of(bp: u64) -> Option<u64> {
-    if bp == 0 || bp & 0x7 != 0 {
-        return None;
-    }
-    // SAFETY: same address space as the target; validated above, and a fault here is an ordinary
-    // userspace fault in the tracer, not a kernel one.
-    let (saved_bp, ret) = unsafe {
-        let f = bp as *const u64;
-        (f.read_volatile(), f.add(1).read_volatile())
-    };
-    // A frame whose saved bp does not grow upward is not a frame we followed correctly.
-    if saved_bp != 0 && saved_bp <= bp {
-        return None;
-    }
-    (ret != 0).then_some(ret)
+/// Compartment-scoped by construction: slots are per-context, so the same pc names different code
+/// in two compartments.
+fn resolve<'a>(libs: &'a [LoadedLib], pc: u64) -> Option<(&'a str, u64)> {
+    libs.iter()
+        .find(|l| pc >= l.start as u64 && pc < (l.start + l.len) as u64)
+        // Offset from the *slot base*, not from `l.start`. A library's load address excludes the
+        // null page (`start == slot_base + NULLPAGE_SIZE`) while its first PT_LOAD vaddr is
+        // `0x1000`, so subtracting `start` would report every symbol 0x1000 low.
+        .map(|l| (l.name.as_str(), pc & 0x3fff_ffff))
+}
+
+fn by_pc_has(pcs: &[((ObjID, u64), usize)], sctx: ObjID) -> bool {
+    pcs.iter().any(|((s, _), _)| *s == sctx)
 }
 
 pub fn stat(state: TracingState) {
@@ -370,100 +361,267 @@ pub fn stat(state: TracingState) {
     if samples.len() > 0 {
         println!("collected {} samples", samples.len());
 
-        let mut map = HashMap::<_, usize>::new();
-        let mut thread_map = HashMap::<_, usize>::new();
-        let mut caller_map = HashMap::<(u64, u64), usize>::new();
+        // Attribute by compartment first. In a build almost every sample lands in a child
+        // compartment, so a flat pc histogram would mix code from contexts that do not share a
+        // slot layout, and read as noise.
+        let mut by_comp = HashMap::<ObjID, usize>::new();
+        let mut by_pc = HashMap::<(ObjID, u64), usize>::new();
+        let mut by_thread = HashMap::<ObjID, (ObjID, usize)>::new();
+        // The memory context is what can translate an address to the object actually mapped at
+        // that slot; the compartment's reported library list cannot (see the load-map note).
+        let mut mctx_of = HashMap::<(ObjID, u64), ObjID>::new();
+        // (ip, di, cx): the two scratch registers the kernel captures without touching memory.
+        let mut samples_reg: Vec<(u64, u64, u64)> = Vec::new();
+        let mut running = 0usize;
         for (head, sample) in samples {
-            if sample.state == ExecutionState::Running {
-                *map.entry(sample.ip).or_default() += 1usize;
-                *thread_map.entry(head.thread).or_default() += 1usize;
-                if let Some(ret) = caller_of(sample.bp) {
-                    *caller_map.entry((sample.ip, ret)).or_default() += 1usize;
-                }
+            if sample.state != ExecutionState::Running {
+                continue;
             }
+            running += 1;
+            *by_comp.entry(head.sctx).or_default() += 1usize;
+            *by_pc.entry((head.sctx, sample.ip)).or_default() += 1usize;
+            mctx_of.insert((head.sctx, sample.ip), head.mctx);
+            by_thread.entry(head.thread).or_insert((head.sctx, 0)).1 += 1;
+            samples_reg.push((sample.ip, sample.di, sample.cx));
         }
-        let mut coll = thread_map.into_iter().collect::<Vec<_>>();
-        coll.sort_by_key(|x| x.1);
+        let name_of = |sctx: ObjID| -> String {
+            state
+                .comp_maps
+                .iter()
+                .find(|c| c.sctx == sctx)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| {
+                    if sctx.raw() == 0 {
+                        "<kernel/no sctx>".to_string()
+                    } else {
+                        format!("<{:x}>", sctx.raw())
+                    }
+                })
+        };
+        let empty: Vec<LoadedLib> = Vec::new();
+        let libs_of = |sctx: ObjID| -> &[LoadedLib] {
+            state
+                .comp_maps
+                .iter()
+                .find(|c| c.sctx == sctx)
+                .map(|c| c.libs.as_slice())
+                .unwrap_or(&empty)
+        };
 
-        let mut banner = false;
-        for (thread, count) in coll.iter().rev() {
-            if *count > 1 {
-                if !banner {
-                    banner = true;
-                    println!("                            THREAD ID      COUNT");
-                }
-                println!("     {:0>32x}    {:7}", thread.raw(), count);
-            }
+        let mut comps = by_comp.into_iter().collect::<Vec<_>>();
+        comps.sort_by_key(|x| x.1);
+        println!(
+            "\n{:>8}  {:>7}   COMPARTMENT ({} running samples)",
+            "COUNT", "%", running
+        );
+        for (sctx, count) in comps.iter().rev() {
+            println!(
+                "{:>8}  {:>6.2}%   {}",
+                count,
+                100.0 * *count as f64 / running as f64,
+                name_of(*sctx)
+            );
         }
 
-        let mut coll = map.into_iter().collect::<Vec<_>>();
-        coll.sort_by_key(|x| x.1);
+        let mut threads = by_thread.into_iter().collect::<Vec<_>>();
+        threads.sort_by_key(|x| x.1.1);
+        println!("\n{:>8}  {:>7}   THREAD / COMPARTMENT", "COUNT", "%");
+        for (thread, (sctx, count)) in threads.iter().rev().take(24) {
+            println!(
+                "{:>8}  {:>6.2}%   {:0>32x}  {}",
+                count,
+                100.0 * *count as f64 / running as f64,
+                thread.raw(),
+                name_of(*sctx)
+            );
+        }
 
         // Percentages are of *running* samples, and the count<=1 tail is reported rather than
         // silently dropped. Suppressing singletons without saying so makes whatever survives look
         // dominant -- which is exactly how a 2.1% pc got read as a 27.4% hot spot.
-        let running: usize = coll.iter().map(|x| x.1).sum();
+        let mut pcs = by_pc.into_iter().collect::<Vec<_>>();
+        pcs.sort_by_key(|x| x.1);
         let (mut shown, mut shown_pcs) = (0usize, 0usize);
-        let mut banner = false;
-        for (ip, count) in coll.iter().rev() {
-            if *count > 1 {
-                if !banner {
-                    banner = true;
-                    println!("PROGRAM COUNTER ADDRESS      COUNT    % OF RUNNING");
-                }
-                shown += *count;
-                shown_pcs += 1;
-                println!(
-                    "     {:0>18x}    {:7}    {:6.2}%",
-                    ip,
+        println!(
+            "\n{:>8}  {:>7}   PC = LIBRARY + OFFSET (symbolize the offset, not the pc)",
+            "COUNT", "%"
+        );
+        for ((sctx, ip), count) in pcs.iter().rev() {
+            if *count <= 1 {
+                continue;
+            }
+            shown += *count;
+            shown_pcs += 1;
+            if shown_pcs > 40 {
+                continue;
+            }
+            match resolve(libs_of(*sctx), *ip) {
+                Some((lib, off)) => println!(
+                    "{:>8}  {:>6.2}%   {}+{:x}   [{}]",
                     count,
-                    100.0 * *count as f64 / running as f64
-                );
+                    100.0 * *count as f64 / running as f64,
+                    lib,
+                    off,
+                    name_of(*sctx)
+                ),
+                None => {
+                    let slot = (*ip >> 30) as usize;
+                    let off = *ip & 0x3fff_ffff;
+                    let mctx = mctx_of.get(&(*sctx, *ip)).copied().unwrap_or(0.into());
+                    // One vm context is shared across security contexts, so the slot table is
+                    // global and the tracer's own context resolves any address. The per-context
+                    // handle is only a fallback in case that ever stops being true.
+                    // Prefer the live-resolved map: by report time every rustc has exited and
+                    // its slots no longer resolve, which is what left a whole build unsymbolized.
+                    let via = state
+                        .slot_map
+                        .get(&slot)
+                        .copied()
+                        .map(|id| MapInfo {
+                            id,
+                            prot: Protections::empty(),
+                            slot,
+                            flags: SysMapFlags::empty(),
+                        })
+                        .ok_or(())
+                        .or_else(|_| sys_object_read_map(None, slot).map_err(|_| ()))
+                        .or_else(|_| sys_object_read_map(Some(mctx), slot).map_err(|_| ()));
+                    match via {
+                        Ok(mi) => {
+                            let named = state
+                                .comp_maps
+                                .iter()
+                                .flat_map(|c| c.libs.iter())
+                                .find(|l| l.objid == mi.id)
+                                .map(|l| l.name.clone())
+                                .unwrap_or_else(|| format!("obj:{:x}", mi.id.raw()));
+                            println!(
+                                "{:>8}  {:>6.2}%   {}+{:x}   [{}]",
+                                count,
+                                100.0 * *count as f64 / running as f64,
+                                named,
+                                off,
+                                name_of(*sctx)
+                            )
+                        }
+                        Err(_) => println!(
+                            "{:>8}  {:>6.2}%   slot {} +{:x} (unresolved{})   [{}]",
+                            count,
+                            100.0 * *count as f64 / running as f64,
+                            slot,
+                            off,
+                            "",
+                            name_of(*sctx)
+                        ),
+                    }
+                }
             }
         }
         let tail = running - shown;
         println!(
-            "     {:<18}    {:7}    {:6.2}%   (in {} single-sample pcs, not listed)",
-            "SUPPRESSED TAIL",
+            "{:>8}  {:>6.2}%   SUPPRESSED TAIL, in {} single-sample pcs; {} pcs total, {} listed",
             tail,
             100.0 * tail as f64 / running as f64,
-            coll.len() - shown_pcs
-        );
-        println!(
-            "     {:<18}    {:7}             ({} pcs total, {} listed)",
-            "TOTAL RUNNING",
-            running,
-            coll.len(),
-            shown_pcs
+            pcs.len() - shown_pcs,
+            pcs.len(),
+            shown_pcs.min(40)
         );
 
-        if !caller_map.is_empty() {
-            let mut cc = caller_map.into_iter().collect::<Vec<_>>();
-            cc.sort_by_key(|x| x.1);
-            println!(
-                "\nLEAF <- CALLER (one frame up, {} pairs resolved)",
-                cc.len()
-            );
-            for ((ip, ret), count) in cc.iter().rev().take(20) {
-                if *count > 1 {
-                    println!(
-                        "     {:0>18x} <- {:0>18x}    {:7}    {:6.2}%",
-                        ip,
-                        ret,
-                        count,
-                        100.0 * *count as f64 / running as f64
-                    );
+        // What the hottest leaf is writing. A sample cannot carry a return address -- reading
+        // `[sp]` from the tick path halted the processor, and by report time the stack word is
+        // overwritten -- but the *registers* cost nothing to capture. For a `rep stos` leaf that
+        // is enough to name the destination object and bound the size of each individual call,
+        // which between them identify the caller far more sharply than a flat pc histogram does.
+        // Not `pcs.last()`: the highest-count pc is the idle thread's pc=0.
+        if let Some(((_, hot_ip), _)) = pcs
+            .iter()
+            .rev()
+            .find(|((_, ip), _)| *ip != 0 && ip & 0x3fff_ffff != 0)
+        {
+            let hot_slot_off = hot_ip & 0x3fff_ffff;
+            let mut dests = HashMap::<usize, usize>::new();
+            let mut sizes = HashMap::<u32, usize>::new();
+            let mut bytes = 0u128;
+            let mut tried = 0usize;
+            for (ip, di, cx) in &samples_reg {
+                if ip & 0x3fff_ffff != hot_slot_off {
+                    continue;
                 }
+                tried += 1;
+                *dests.entry((*di >> 30) as usize).or_default() += 1usize;
+                // `cx` counts what is *left* to store, so `cx * 8` is a lower bound on the size
+                // of this particular memset -- uniform sampling within a rep makes the observed
+                // maximum approach the real size.
+                let rem = cx.saturating_mul(8);
+                bytes += rem as u128;
+                *sizes.entry(64 - (rem | 1).leading_zeros()).or_default() += 1usize;
+            }
+            let name_slot = |slot: usize| -> String {
+                state
+                    .slot_map
+                    .get(&slot)
+                    .map(|id| {
+                        state
+                            .comp_maps
+                            .iter()
+                            .flat_map(|c| c.libs.iter())
+                            .find(|l| l.objid == *id)
+                            .map(|l| l.name.clone())
+                            .unwrap_or_else(|| format!("obj:{:x}", id.raw()))
+                    })
+                    .unwrap_or_else(|| "<unmapped by report time>".to_string())
+            };
+            println!(
+                "\nHOTTEST LEAF (+{:x}): {} samples; mean remaining {} bytes",
+                hot_slot_off,
+                tried,
+                if tried == 0 {
+                    0
+                } else {
+                    (bytes / tried as u128) as u64
+                }
+            );
+            let mut dd = dests.into_iter().collect::<Vec<_>>();
+            dd.sort_by_key(|x| x.1);
+            println!("{:>8}  {:>7}   DESTINATION (slot of di)", "COUNT", "%");
+            for (slot, count) in dd.iter().rev().take(12) {
+                println!(
+                    "{:>8}  {:>6.2}%   slot {:<5} {}",
+                    count,
+                    100.0 * *count as f64 / tried.max(1) as f64,
+                    slot,
+                    name_slot(*slot)
+                );
+            }
+            let mut ss = sizes.into_iter().collect::<Vec<_>>();
+            ss.sort_by_key(|x| x.0);
+            println!(
+                "{:>8}  {:>7}   REMAINING BYTES (cx*8, log2 bucket)",
+                "COUNT", "%"
+            );
+            for (lg, count) in ss.iter() {
+                println!(
+                    "{:>8}  {:>6.2}%   <= {}",
+                    count,
+                    100.0 * *count as f64 / tried.max(1) as f64,
+                    1u64 << lg
+                );
             }
         }
 
         // Without this a histogram cannot be symbolized safely: it names the exact object each
-        // library was loaded from, so a rebuilt copy on the host is detectable rather than silently
-        // producing whatever now sits at that offset.
-        if !state.load_map.is_empty() {
-            println!("\nLOAD MAP (symbolize against these objects only)");
+        // library was loaded from, so a rebuilt copy on the host is detectable rather than
+        // silently producing whatever now sits at that offset.
+        for c in &state.comp_maps {
+            if !by_pc_has(&pcs, c.sctx) {
+                continue;
+            }
+            println!(
+                "\nLOAD MAP for {} (symbolize against these objects only)",
+                c.name
+            );
             println!("{:>18}  {:>18}  {:>34}  NAME", "START", "LEN", "OBJID");
-            for l in &state.load_map {
+            for l in &c.libs {
                 println!(
                     "{:>18x}  {:>18x}  {:>34x}  {}",
                     l.start,

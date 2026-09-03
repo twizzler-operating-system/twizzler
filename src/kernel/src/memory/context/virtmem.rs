@@ -1405,6 +1405,11 @@ impl VirtContext {
         })
     }
 
+    /// Every region mapped in this context. Cold path; see [RegionManager::mappings].
+    pub fn mappings(&self) -> Vec<Arc<MapRegion>> {
+        self.regions.mappings()
+    }
+
     pub fn print_objects(&self) {
         for obj in self.regions.objects() {
             log!("{} => ", obj);

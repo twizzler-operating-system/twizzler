@@ -175,6 +175,14 @@ check_ffi_type!(twz_rt_set_upcall_handler, _);
 // alloc.h
 
 use twizzler_rt_abi::bindings::{alloc_flags, ZERO_MEMORY};
+
+/// Page size for the lazy-zero path below. Not imported from `twizzler_abi` so that the two
+/// conditions this file cares about -- page alignment and a page-multiple length -- read together.
+const PAGE: usize = 0x1000;
+/// Below this a syscall plus page-table work is not obviously cheaper than storing the bytes, so
+/// small zeroed requests keep the memset.
+const LAZY_ZERO_MIN: usize = 128 * 1024;
+
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_malloc(
     sz: usize,
@@ -199,6 +207,34 @@ pub unsafe extern "C-unwind" fn twz_rt_malloc(
         return core::ptr::null_mut();
     };
     if flags & ZERO_MEMORY != 0 {
+        #[cfg(target_arch = "x86_64")]
+        if sz >= crate::runtime::memsettrace::BIG {
+            crate::runtime::memsettrace::ZMALLOC
+                .record(crate::runtime::memsettrace::return_address(), sz);
+        }
+        // An anonymous mmap reaches the runtime as a page-aligned, page-multiple zeroed request
+        // (mlibc `sys_vm_map`). Zeroing it with the CPU costs a byte-for-byte memset of the whole
+        // mapping; the kernel can do it as a page-table operation and leave the bytes to first
+        // touch, which is what mmap does on every other system. rustc maps a 1 MiB stack per
+        // `ensure_sufficient_stack` and touches almost none of it -- 81,136 such mappings and
+        // 85.7 GB of `rep stosq` in one measured `cargo build`, 99.5% of all runtime zeroing.
+        if sz >= LAZY_ZERO_MIN && align >= PAGE && sz % PAGE == 0 {
+            // Whole pages out of a dedicated arena: already zero, so nothing is written and no
+            // syscall is made. Declines (not ready, too big, table full) fall through to the
+            // heap-backed path below, which still beats a memset.
+            if let Some(p) = crate::runtime::alloc::anon::alloc(sz) {
+                return p.cast();
+            }
+            let ptr = OUR_RUNTIME.alloc(layout);
+            if ptr.is_null() {
+                return core::ptr::null_mut();
+            }
+            // The kernel is allowed to decline; it still has to end up zeroed either way.
+            if !unsafe { crate::runtime::alloc::ferroc::zero_range(ptr, sz) } {
+                unsafe { ptr.write_bytes(0, sz) };
+            }
+            return ptr.cast();
+        }
         OUR_RUNTIME.alloc_zeroed(layout).cast()
     } else {
         OUR_RUNTIME.alloc(layout).cast()
@@ -216,6 +252,13 @@ pub unsafe extern "C-unwind" fn twz_rt_dealloc(
     let Ok(layout) = core::alloc::Layout::from_size_align(sz, align) else {
         return;
     };
+    // Cheap shape test before the arena's lock: only a page-aligned, large free can be one of
+    // ours, and this is the hottest path in the runtime.
+    if align >= PAGE && sz >= crate::runtime::alloc::anon::SEG_MIN {
+        if crate::runtime::alloc::anon::free(ptr.cast(), sz) {
+            return;
+        }
+    }
     if flags & ZERO_MEMORY != 0 {
         let slice = unsafe { core::slice::from_raw_parts_mut(ptr.cast::<u8>(), sz) };
         slice.fill(0);

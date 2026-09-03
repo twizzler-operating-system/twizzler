@@ -88,7 +88,9 @@ const NR_WINDOW_ENTRIES: usize = 32;
 #[derive(Debug)]
 struct TimeoutQueue {
     queues: [heapless::Vec<TimeoutEntry, NR_WINDOW_ENTRIES>; NR_WINDOWS],
-    /// One bit per window, set while that window has entries.
+    /// One bit per window, set while that window holds an entry the head will reach no earlier
+    /// than its deadline -- i.e. one for which "the head is crossing this window" means "this is
+    /// due". Entries further out than a revolution are in `far_occupied` instead.
     ///
     /// [`TimeoutQueue::next_wake_delta_ns`] asks "which is the next non-empty window", and used to
     /// answer it by reading `is_empty()` on up to 1023 of the `queues` themselves. Each window is
@@ -96,6 +98,27 @@ struct TimeoutQueue {
     /// touched 1023 distinct cache lines spread over 1.3 MiB, on **every hardtick**. This
     /// bitmap is 128 bytes -- two cache lines -- and answers the same question.
     occupied: [u64; NR_WINDOWS / 64],
+    /// One bit per window, set while that window holds an entry more than a revolution out.
+    ///
+    /// The wheel is modular, so such an entry is already in the window it will fire from -- but
+    /// the head crosses that window once per revolution *before* it is due, and `hard_advance`
+    /// reads a bitmap precisely so it need not look at deadlines. Folding these into `occupied`
+    /// therefore made every long timeout signal the INTERRUPT-priority timeout thread twice a
+    /// second, for its whole life, to be told nothing was ready: a 30s watchdog cost ~58 wakes
+    /// before it fired once, and an idle system was spending most of this thread's wakeups on it.
+    ///
+    /// They are invisible to the tick path instead, and [`TimeoutQueue::far_min_ticks`] says when
+    /// the earliest of them has to be reclassified.
+    far_occupied: [u64; NR_WINDOWS / 64],
+    /// Smallest [`TimeoutQueue::promote_at`] over the far entries; `usize::MAX` with none.
+    ///
+    /// A lower bound, not an exact minimum: `insert` lowers it, removals leave it alone, and
+    /// `promote_far` recomputes it exactly. Being conservative costs a sweep that finds nothing.
+    far_min_ticks: usize,
+    /// Count of entries [`TimeoutQueue::rehome_undue`] has relocated. A key stamped with this at
+    /// insert can tell "my entry fired" from "my entry may have moved" on a lookup miss, without
+    /// which every ordinary expiry would pay the search in [`TimeoutQueue::remove`].
+    rehomes: u64,
     current: usize,
     /// Absolute ns deadline of the wake currently programmed on the bsp's oneshot; inserts
     /// compare against this to decide whether to pull the wake in (the old TODO #41).
@@ -109,6 +132,8 @@ struct TimeoutQueue {
 pub struct TimeoutKey {
     key: usize,
     window: usize,
+    /// `TimeoutQueue::rehomes` as of insert; see there.
+    rehomes: u64,
 }
 
 impl TimeoutKey {
@@ -126,6 +151,9 @@ impl TimeoutQueue {
         Self {
             queues: [INIT; NR_WINDOWS],
             occupied: [0; NR_WINDOWS / 64],
+            far_occupied: [0; NR_WINDOWS / 64],
+            far_min_ticks: usize::MAX,
+            rehomes: 0,
             current: 0,
             next_wake_abs_ns: u64::MAX,
             soft_current: 0,
@@ -154,9 +182,25 @@ impl TimeoutQueue {
         }
     }
 
-    fn hard_advance(&mut self, ticks: usize) {
+    /// First `current` at which `expire_ticks` is inside a revolution, i.e. at which the head
+    /// reaches its window no earlier than the deadline and the window's occupancy means "due".
+    fn promote_at(expire_ticks: u64) -> usize {
+        (expire_ticks as usize).saturating_sub(NR_WINDOWS - 1)
+    }
+
+    /// Advance the head by `ticks`. Returns whether the timeout thread has work; the caller
+    /// signals it, outside this queue's lock.
+    fn hard_advance(&mut self, ticks: usize) -> bool {
         let mut wakeup = false;
-        for i in 0..(ticks + 1) {
+        // The windows the head passes *over*, not the one it lands on. An entry in the new head
+        // window is checked against its ns deadline rather than mere occupancy, by the
+        // `next_wake_delta_ns` call immediately after this one -- see `oneshot_clock_hardtick`.
+        // Signalling for it here too woke the thread a tick before the deadline, every time, to
+        // find nothing ready; and when the deadline fell mid-tick, the entry then had to be
+        // rehomed and the thread woken a third time. The windows below are different: the head
+        // has already left them, so `next_wake_delta_ns` (which searches forward from the head)
+        // cannot see them, and anything still in them is owed a visit.
+        for i in 0..ticks {
             let window = (self.current + i) % NR_WINDOWS;
             // Via `occupied` rather than the queue, so the tick path touches none of the 1.3 MiB
             // `queues` array.
@@ -166,19 +210,55 @@ impl TimeoutQueue {
             }
         }
         self.current += ticks;
-        if wakeup {
-            TIMEOUT_THREAD_CONDVAR.signal();
+        // One compare rather than a scan: far entries are invisible to the loop above, and this
+        // is the tick on which the earliest of them has to be reclassified as due-on-arrival.
+        if self.current >= self.far_min_ticks {
+            wakeup = true;
         }
+        wakeup
     }
 
-    /// Bring `window`'s bit in [`TimeoutQueue::occupied`] back in line with its queue. Call after
-    /// every mutation of `queues[window]`.
+    /// Bring `window`'s bits in [`TimeoutQueue::occupied`] and [`TimeoutQueue::far_occupied`] back
+    /// in line with its queue, and fold any far entry into [`TimeoutQueue::far_min_ticks`]. Call
+    /// after every mutation of `queues[window]`.
     fn sync_occupied(&mut self, window: usize) {
         let (word, bit) = (window / 64, 1u64 << (window % 64));
-        if self.queues[window].is_empty() {
-            self.occupied[word] &= !bit;
-        } else {
+        let (mut near, mut far) = (false, false);
+        let mut far_min = usize::MAX;
+        for entry in self.queues[window].iter() {
+            let at = Self::promote_at(entry.expire_ticks);
+            if at <= self.current {
+                near = true;
+            } else {
+                far = true;
+                far_min = far_min.min(at);
+            }
+        }
+        if near {
             self.occupied[word] |= bit;
+        } else {
+            self.occupied[word] &= !bit;
+        }
+        if far {
+            self.far_occupied[word] |= bit;
+        } else {
+            self.far_occupied[word] &= !bit;
+        }
+        self.far_min_ticks = self.far_min_ticks.min(far_min);
+    }
+
+    /// Reclassify the far windows: entries now within a revolution join `occupied`, where the head
+    /// crossing their window means they are due. Runs on the timeout thread, once per far entry
+    /// rather than once per revolution per far entry, and rebuilds `far_min_ticks` exactly.
+    fn promote_far(&mut self) {
+        let far = self.far_occupied;
+        self.far_min_ticks = usize::MAX;
+        for (idx, mut word) in far.into_iter().enumerate() {
+            while word != 0 {
+                let bit = word.trailing_zeros() as usize;
+                word &= word - 1;
+                self.sync_occupied(idx * 64 + bit);
+            }
         }
     }
 
@@ -232,22 +312,60 @@ impl TimeoutQueue {
             entry.call();
         }
         self.sync_occupied(window);
-        (TimeoutKey { key, window }, expire_ns)
+        (
+            TimeoutKey {
+                key,
+                window,
+                rehomes: self.rehomes,
+            },
+            expire_ns,
+        )
     }
 
     // Remove a timeout key. Returns true if the key was actually removed (timeout hasn't fired).
     fn remove(&mut self, key: &TimeoutKey) -> bool {
-        let old_len = self.queues[key.window].len();
-        while let Some(pos) = self.queues[key.window]
-            .iter()
-            .position(|entry| entry.key == key.key)
-        {
-            self.queues[key.window].swap_remove(pos);
+        let mut removed = self.remove_from(key.window, key.key);
+        // Nothing has been relocated since this key was handed out, so a miss means the entry
+        // fired -- which is the common case, and must not pay for the search below.
+        if !removed && key.rehomes != self.rehomes {
+            // `rehome_undue` relocates an entry without the sleeper's key learning about it, so a
+            // key that comes up empty in its own window can still name a live entry sitting in the
+            // span the timeout thread has not walked yet. Two things went wrong without this: the
+            // caller reads the miss as "the timeout fired" (`!release()`) and reports TIMED_OUT for
+            // a sleep that was woken, and the key is retired below while an entry still carries it,
+            // so a later reuse of that key can remove someone else's timeout.
+            let span = (self.current + 1)
+                .saturating_sub(self.soft_current)
+                .min(NR_WINDOWS - 1);
+            for i in 0..=span {
+                let window = (self.soft_current + i) % NR_WINDOWS;
+                if self.remove_from(window, key.key) {
+                    removed = true;
+                    break;
+                }
+            }
         }
-        self.sync_occupied(key.window);
+        // Unconditional, and deliberately so: this is the key's one retirement point. An entry that
+        // already fired was taken by `check_window`, which does not release keys, so a release
+        // gated on `removed` would leak a key per expired timeout.
         self.release_key(key.key);
-        // Did we remove anything?
-        old_len != self.queues[key.window].len()
+        removed
+    }
+
+    /// Remove every entry carrying `key` from `window`. True if anything went.
+    fn remove_from(&mut self, window: usize, key: usize) -> bool {
+        let old_len = self.queues[window].len();
+        while let Some(pos) = self.queues[window]
+            .iter()
+            .position(|entry| entry.key == key)
+        {
+            self.queues[window].swap_remove(pos);
+        }
+        if old_len == self.queues[window].len() {
+            return false;
+        }
+        self.sync_occupied(window);
+        true
     }
 
     fn check_window(&mut self, window: usize, now_ns: u64) -> Option<TimeoutEntry> {
@@ -272,6 +390,7 @@ impl TimeoutQueue {
                 continue;
             }
             let mut entry = self.queues[window].swap_remove(i);
+            self.rehomes += 1;
             entry.expire_ticks = (self.current + 1) as u64;
             let dest = (self.current + 1) % NR_WINDOWS;
             if let Err(entry) = self.queues[dest].push(entry) {
@@ -284,8 +403,19 @@ impl TimeoutQueue {
     }
 
     fn soft_advance(&mut self, now_ns: u64) -> Option<TimeoutEntry> {
+        if self.current >= self.far_min_ticks {
+            self.promote_far();
+        }
         while self.soft_current < self.current {
             let window = self.soft_current % NR_WINDOWS;
+            // Same reason `hard_advance` reads the bitmaps rather than the queues: this walk is now
+            // spread over far fewer wakes, so a wake can have hundreds of windows to cover, and
+            // skipping the empty ones must not cost a cache line apiece.
+            let (word, bit) = (window / 64, 1u64 << (window % 64));
+            if (self.occupied[word] | self.far_occupied[word]) & bit == 0 {
+                self.soft_current += 1;
+                continue;
+            }
             if let Some(t) = self.check_window(window, now_ns) {
                 return Some(t);
             }
@@ -481,14 +611,18 @@ pub fn check_reschedule_oneshot() {
         let Some(delta) = timeout_queue.next_wake_delta_ns(now) else {
             return;
         };
-        if delta == 0 {
-            TIMEOUT_THREAD_CONDVAR.signal();
-        }
         let programmed = delta.clamp(MIN_ONESHOT_NS, NANOS_PER_TICK);
         let deadline = now.saturating_add(programmed);
         if deadline.saturating_add(KICK_SLACK_NS) < timeout_queue.next_wake_abs_ns {
             timeout_queue.next_wake_abs_ns = deadline;
             schedule_oneshot_nanos(programmed);
+        }
+        // Outside the queue lock: `signal` takes the condvar's lock and runs `requeue_all`, which
+        // schedules threads. Doing that while holding the lock every timeout path needs put the
+        // scheduler inside this queue's critical section.
+        drop(timeout_queue);
+        if delta == 0 {
+            TIMEOUT_THREAD_CONDVAR.signal();
         }
     });
 }
@@ -512,12 +646,13 @@ pub fn oneshot_clock_hardtick() {
         };
         BSP_TICK.fetch_add(whole, Ordering::SeqCst);
         let mut timeout_queue = TIMEOUT_QUEUE.lock();
-        timeout_queue.hard_advance(whole as usize);
+        let mut wake = timeout_queue.hard_advance(whole as usize);
         let next = timeout_queue.next_wake_delta_ns(now);
         if next == Some(0) {
-            // Due by ns in a head window `hard_advance`'s passed-window scan cannot see
-            // (a sub-tick wake advances the wheel by zero whole ticks).
-            TIMEOUT_THREAD_CONDVAR.signal();
+            // The head window, by ns deadline rather than occupancy. This is what covers a
+            // sub-tick wake (which advances the wheel by zero whole ticks, so `hard_advance`
+            // scans nothing) and what lets `hard_advance` leave the head window alone.
+            wake = true;
         }
         // The scheduler pins the bsp to a one-tick cadence regardless (below), so the timer
         // gets the sooner of that and the nearest deadline.
@@ -525,6 +660,11 @@ pub fn oneshot_clock_hardtick() {
             .unwrap_or(u64::MAX)
             .clamp(MIN_ONESHOT_NS, NANOS_PER_TICK);
         timeout_queue.next_wake_abs_ns = now.saturating_add(programmed);
+        // Outside the queue lock; see `check_reschedule_oneshot`.
+        drop(timeout_queue);
+        if wake {
+            TIMEOUT_THREAD_CONDVAR.signal();
+        }
         Some(programmed)
     } else {
         None

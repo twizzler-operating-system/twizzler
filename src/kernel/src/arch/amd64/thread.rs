@@ -704,6 +704,44 @@ impl Thread {
         frame.rbp
     }
 
+    /// Two scratch registers from the entry frame. No memory is dereferenced -- see the
+    /// `ThreadSamplingEvent::di` docs for why that constraint is absolute here.
+    pub fn read_di_cx(&self) -> (u64, u64) {
+        // SAFETY: as in `read_sp` -- must not touch the borrow counter.
+        let Some(frame) = (unsafe { &*self.arch.upcall_restore_frame.as_ptr() }) else {
+            return match self.arch.entry_registers.as_registers() {
+                Registers::None => (0, 0),
+                Registers::Interrupt(int) => {
+                    let int = unsafe { &mut *int };
+                    ((*int).get_di(), (*int).get_cx())
+                }
+                Registers::Syscall(sys) => {
+                    let sys = unsafe { &mut *sys };
+                    ((*sys).get_di(), (*sys).get_cx())
+                }
+            };
+        };
+        (frame.rdi, frame.rcx)
+    }
+
+    pub fn read_sp(&self) -> u64 {
+        // SAFETY: as in `read_bp` -- must not touch the borrow counter.
+        let Some(frame) = (unsafe { &*self.arch.upcall_restore_frame.as_ptr() }) else {
+            return match self.arch.entry_registers.as_registers() {
+                Registers::None => 0,
+                Registers::Interrupt(int) => {
+                    let int = unsafe { &mut *int };
+                    (*int).get_stack_top()
+                }
+                Registers::Syscall(sys) => {
+                    let sys = unsafe { &mut *sys };
+                    (*sys).get_stack_top()
+                }
+            };
+        };
+        frame.rsp
+    }
+
     pub fn read_registers(&self) -> Result<ArchRegisters, TwzError> {
         if self.get_state() != ExecutionState::Suspended
             && self.id() != current_thread_ref().unwrap().id()

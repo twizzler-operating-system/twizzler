@@ -52,6 +52,16 @@ pub struct IsrContext {
     ss: u64,
 }
 
+impl IsrContext {
+    pub fn get_di(&self) -> u64 {
+        self.rdi
+    }
+
+    pub fn get_cx(&self) -> u64 {
+        self.rcx
+    }
+}
+
 impl UpcallAble for IsrContext {
     fn set_upcall(&mut self, target: VirtAddr, frame: u64, info: u64, stack: u64) {
         self.rip = target.into();

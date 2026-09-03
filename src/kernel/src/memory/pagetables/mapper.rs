@@ -81,14 +81,9 @@ impl Mapper {
     pub fn set_top_level_table(&mut self, index: usize, entry: Entry) {
         let root = self.root_mut();
         let was_present = root[index].is_present();
-        let count = root.read_count();
         root[index] = entry;
-        if was_present && !entry.is_present() {
-            root.set_count(count - 1)
-        } else if !was_present && entry.is_present() {
-            root.set_count(count + 1)
-        } else {
-            root.set_count(count)
+        if was_present != entry.is_present() {
+            root.adjust_count(entry.is_present());
         }
         self.generation += 1;
         // Writes an entry without going through `update_entry`, so the counter cannot see it.

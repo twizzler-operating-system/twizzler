@@ -15,6 +15,70 @@ use crate::{
 
 const LOG_LEVEL: log::Level = log::Level::Debug;
 
+/// Let [`Table::setup_zero_range`] skip runs of absent entries in one step, using the exact
+/// per-table present count, instead of stepping one entry at a time across the whole range.
+///
+/// A const rather than a runtime flag so the walk keeps no branch when it is on; off, `present`
+/// starts at `usize::MAX` and never reaches zero, which reproduces the original walk exactly from
+/// one tree state.
+const ZERO_RANGE_SKIP_ABSENT: bool = true;
+
+/// Cross-check the stored page-table population count against an actual scan on every read.
+///
+/// The count used to live *inside* the table page, so anything that duplicated or rewrote that
+/// page carried it implicitly. It lives in the backing [`Frame`] now, which means every such site
+/// has to move it across by hand -- `Frame::cow_frame` is the one that does, and this is what
+/// proves there is not a second one. The count backs COW (`do_cow_copy` descends on it), the
+/// empty-table free in [`Table::unmap`], `is_empty_at_level`, and
+/// [`Table::setup_zero_range`]'s absent-run skip, so a silent under-count frees a live table.
+///
+/// Off: it turns a one-load read into a 512-entry scan. On for validation runs, where the expected
+/// reading is **1023 disagreements, all from `test_count`** -- that kernel test writes counts onto
+/// an empty table and reads them back, so it desynchronizes the two on purpose (512 iterations,
+/// less the i=0 read that sees a true zero). A full guest `cargo build`, which never runs it,
+/// reported 0 over 7,847,243 checks; the suite reported 1023 over 1,415,607 at smp1 and smp4,
+/// kvm and tcg, 65/65 passing. Anything above that baseline is real.
+const PT_COUNT_VERIFY: bool = false;
+
+/// Keep the page-table population count in the table page, the way it used to be: one bit per
+/// entry in the `AVAIL_1` flag of entries 0..16, so a read is sixteen entry loads and a write is
+/// sixteen read-modify-writes -- performed on *every* entry update, including the ones that leave
+/// the count alone. On aarch64 that encoding stored nothing at all and a read scanned 512 entries.
+///
+/// Exists so the move into [`Frame::pt_count`] can be measured from one tree state.
+const PT_COUNT_LEGACY: bool = false;
+
+/// Disagreements between the stored count and a scan, when [`PT_COUNT_VERIFY`] is on.
+pub mod ptcountdrift {
+    use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    static DRIFT: AtomicU64 = AtomicU64::new(0);
+    static CHECKS: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record(stored: usize, actual: usize) {
+        let n = DRIFT.fetch_add(1, Relaxed) + 1;
+        if n.is_power_of_two() {
+            emerglogln!("PT COUNT DRIFT #{}: stored {} actual {}", n, stored, actual);
+        }
+    }
+
+    pub fn tick() {
+        CHECKS.fetch_add(1, Relaxed);
+    }
+
+    pub fn print() {
+        let checks = CHECKS.load(Relaxed);
+        if checks == 0 {
+            return;
+        }
+        logln!(
+            "== pt count verify: {} checks, {} disagreements ==",
+            checks,
+            DRIFT.load(Relaxed)
+        );
+    }
+}
+
 /// Take the frame `Table::map` installs from the provider when it already has it, instead of
 /// looking it up by physical address.
 ///
@@ -42,6 +106,55 @@ mod splits {
 }
 
 impl Table {
+    /// The frame holding this table, when the physical page is tracked.
+    ///
+    /// `None` for a table reached through [`Mapper::current`] -- the bootloader's own tables, which
+    /// no [`Frame`] describes. Those keep the old in-table encoding, so the two never mix for a
+    /// given table: whether a physical page is tracked is fixed for its lifetime.
+    fn own_frame(&self) -> Option<FrameRef> {
+        crate::arch::memory::virt_to_phys(VirtAddr::from(self as *const Table)).and_then(get_frame)
+    }
+
+    /// Present entries in this table. See [`Frame::pt_count`] for why it lives in the frame.
+    pub fn read_count(&self) -> usize {
+        let stored = match self.own_frame() {
+            Some(frame) if !PT_COUNT_LEGACY => frame.pt_count(),
+            _ => self.read_count_spread(),
+        };
+        if PT_COUNT_VERIFY {
+            ptcountdrift::tick();
+            let actual = (0..Table::PAGE_TABLE_ENTRIES)
+                .filter(|i| self[*i].is_present())
+                .count();
+            if actual != stored {
+                ptcountdrift::record(stored, actual);
+            }
+        }
+        stored
+    }
+
+    pub fn set_count(&mut self, count: usize) {
+        match self.own_frame() {
+            Some(frame) if !PT_COUNT_LEGACY => frame.set_pt_count(count),
+            _ => self.set_count_spread(count),
+        }
+    }
+
+    /// Step the count by one, without reading it first.
+    ///
+    /// The point of the move: an entry update that leaves the population alone -- a permission
+    /// change, a same-size remap -- now touches the count not at all, and one that does not is a
+    /// single atomic add instead of a read of sixteen entries followed by writes to sixteen more.
+    pub(super) fn adjust_count(&mut self, up: bool) {
+        match self.own_frame() {
+            Some(frame) if !PT_COUNT_LEGACY => frame.adjust_pt_count(up),
+            _ => {
+                let count = self.read_count_spread();
+                self.set_count_spread(if up { count + 1 } else { count - 1 });
+            }
+        }
+    }
+
     pub(super) fn next_table_mut(&mut self, index: usize) -> Option<&mut Table> {
         let entry = self[index];
         if !entry.is_present() || entry.is_huge() {
@@ -90,7 +203,6 @@ impl Table {
         flags: EntryFlags,
         fa: &mut FrameAllocator,
     ) -> Result<(), TwzError> {
-        let count = self.read_count();
         let entry = &mut self[index];
         if !entry.is_present() {
             crate::obj::pagetables::mapprobe::tick(&crate::obj::pagetables::mapprobe::POPULATED);
@@ -101,7 +213,7 @@ impl Table {
             frame.set_pt(true);
             frame.inc_refcount();
             *entry = Entry::new(frame.start_address(), flags);
-            self.set_count(count + 1);
+            self.adjust_count(true);
         }
         Ok(())
     }
@@ -126,7 +238,6 @@ impl Table {
         was_terminal: bool,
         level: usize,
     ) {
-        let count = self.read_count();
         let entry = &mut self[index];
         if *entry == new_entry {
             return;
@@ -164,12 +275,13 @@ impl Table {
             consist.add_page_delta(if new_leaf { units } else { -units });
         }
 
-        if was_present && !new_entry.is_present() {
-            self.set_count(count - 1);
-        } else if !was_present && new_entry.is_present() {
-            self.set_count(count + 1);
-        } else {
-            self.set_count(count);
+        if was_present != new_entry.is_present() {
+            self.adjust_count(new_entry.is_present());
+        } else if PT_COUNT_LEGACY {
+            // The old encoding rewrote all sixteen count bits even when the count did not move,
+            // which is most of the calls. Reproduced so the arm is the old cost, not a half of it.
+            let count = self.read_count_spread();
+            self.set_count_spread(count);
         }
     }
 
@@ -964,9 +1076,37 @@ impl Table {
             let size = Self::level_to_page_size(level);
             size - (cursor.start().raw() as usize % size)
         };
+        // How far the cursor is from the end of *this table's* coverage, i.e. what to skip once
+        // nothing present remains ahead of it.
+        let to_table_end = |cursor: &MappingCursor, idx: usize| {
+            to_entry_end(cursor)
+                + (Table::PAGE_TABLE_ENTRIES - idx - 1) * Self::level_to_page_size(level)
+        };
         let start_index = Self::get_index(cursor.start(), level);
+        // Absent entries cost nothing to zero, so the walk should be proportional to what is
+        // resident rather than to the range asked for. `read_count` is exact -- `update_entry` and
+        // `populate` maintain it on every present/absent transition -- and neither `split_huge` nor
+        // `do_cow_copy` changes it, since both replace a present entry with a present one. So a
+        // budget taken once here stays exact for the whole loop.
+        //
+        // Always advance the cursor before returning: `Mapper::setup_zero_range` loops
+        // `while cursor.remaining() > 0`, so a skip that moves nothing spins forever.
+        // `to_entry_end` is at least one byte, so every skip below is nonzero.
+        let mut present = if ZERO_RANGE_SKIP_ABSENT {
+            self.read_count()
+        } else {
+            usize::MAX
+        };
+        if present == 0 {
+            *cursor = cursor.advance_until_empty(to_table_end(cursor, start_index));
+            return Ok(());
+        }
         for idx in start_index..Table::PAGE_TABLE_ENTRIES {
             if cursor.remaining() == 0 {
+                break;
+            }
+            if present == 0 {
+                *cursor = cursor.advance_until_empty(to_table_end(cursor, idx));
                 break;
             }
             let mut entry = self[idx];
@@ -982,6 +1122,7 @@ impl Table {
                 is_huge = entry.is_huge() && Self::can_map_at_level(level);
             }
             if entry.is_present() && (is_huge || level == Self::last_level()) {
+                present = present.saturating_sub(1);
                 let frame = get_frame(entry.addr(level));
                 let flags = entry.flags();
                 let mut new_entry = Entry::new_unused();
@@ -1007,6 +1148,7 @@ impl Table {
                 }
                 *cursor = cursor.advance_until_empty(to_entry_end(cursor));
             } else if entry.is_present() && level != Self::last_level() {
+                present = present.saturating_sub(1);
                 if self.next_table_frame(idx).is_some_and(|f| f.is_cow()) {
                     self.do_cow_copy(idx, level, consist, cursor.start(), false, fa)?;
                 }

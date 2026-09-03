@@ -8,9 +8,9 @@ use twizzler_abi::{
     kso::{KactionCmd, KactionValue},
     object::{ObjID, Protections},
     syscall::{
-        ClockFlags, ClockInfo, ClockKind, ClockSource, FemtoSeconds, GetRandomFlags, HandleType,
-        InfoKind, KernelConsoleSource, MapFlags, ReadClockListFlags, Syscall, SyscallStats,
-        TimeSpan,
+        ClockInfo, ClockKind, ClockSource, FemtoSeconds, GetRandomFlags, HandleType, InfoKind,
+        KernelConsoleSource, MapFlags, ReadClockListFlags, SysCtrlCmd, SysCtrlFlags, Syscall,
+        SyscallStats, TimeSpan,
     },
     trace::{
         SyscallEntryEvent, SyscallExitEvent, THREAD_SYSCALL_ENTRY, THREAD_SYSCALL_EXIT,
@@ -29,8 +29,11 @@ use self::{
 use crate::{
     clock::{fill_with_every_first, fill_with_first_kind, fill_with_kind},
     instant::Instant,
-    memory::VirtAddr,
-    processor::mp::{current_processor, with_each_active_processor},
+    memory::{VirtAddr, context::virtmem::with_each_context},
+    processor::{
+        mp::{current_processor, with_each_active_processor},
+        sched::{SchedFlags, schedule},
+    },
     random::getrandom,
     thread::current_thread_ref,
     time::TimeStatCollector,
@@ -234,6 +237,209 @@ fn type_console_read(
     }
 }
 
+/// What a debugger wants from a misbehaving kernel, in one call: who is running, what memory looks
+/// like, who is blocked and on what, and what the pager owes.
+///
+/// The cheap and lock-free things come first, because everything after them takes a lock that a
+/// wedged cpu may be holding -- the same ordering the bsp watchdog in `idle_main` uses, and for the
+/// same reason: a dump that hangs before printing is no dump.
+///
+/// The checks below are the ones `idle_main` gates behind `is_test_mode() || is_diag_mode()`. That
+/// gate is about cost -- each walks every thread or every inflight request under that structure's
+/// lock, on every idle scan -- and does not apply to a caller who asked for exactly this.
+fn debug_dump(verbose: bool) {
+    let thread = current_thread_ref();
+    emerglogln!(
+        "=== debug dump: cpu {} thread {} (verbose {}) ===",
+        current_processor().id,
+        thread.as_ref().map(|t| t.id()).unwrap_or(0),
+        verbose
+    );
+
+    // Lock-free counters first.
+    crate::thread::locktrack::diag::print_counters(true);
+    crate::processor::sched::schedmon_dump(0);
+    crate::processor::report_exited_backlog();
+
+    crate::memory::tracker::print_tracker_stats();
+    let (clean, dirty, empty) = crate::memory::framecache::depths();
+    logln!(
+        "[framecache] {} frames cached; magazines: clean {} dirty {} empty {}",
+        crate::memory::framecache::cached_frames(),
+        clean,
+        dirty,
+        empty
+    );
+
+    // Everything from here takes a lock.
+    crate::clock::print_info();
+    crate::thread::check_system_hang();
+    crate::thread::check_orphan_threads();
+    crate::thread::locktrack::check_timed_out_mutexes();
+    crate::pager::check_timed_out_requests();
+
+    if verbose {
+        crate::memory::pagetables::print_switch_counters();
+        crate::memory::pagetables::print_shootdown_counters();
+        crate::memory::context::virtmem::fault::print_fault_profile();
+        crate::interrupt::print_interrupt_profile();
+        crate::pager::print_pager_profile();
+        print_syscall_profile();
+        // Last, and only here: one block per object, which on a busy system is thousands.
+        crate::obj::print_all_objects();
+    }
+    emerglogln!("=== end debug dump ===");
+}
+
+/// Push every mapping that asked for an async-durable sync, plus everything already queued for the
+/// background sync thread, through to the pager on this thread.
+///
+/// `should_sync` is deliberately left set. It records that the mapping was registered with
+/// `SYNC_FLAG_ASYNC_DURABLE`, which is a property of the mapping and not a one-shot request:
+/// clearing it here would silently drop the sync its eventual unmap owes. Re-syncing a region that
+/// is already clean costs a dirty-list walk that finds nothing.
+fn sync_all(wait: bool, expired: &dyn Fn() -> bool) -> Result<u64> {
+    // Snapshotted before any syncing, rather than syncing inside the walk. `sync_dirty` blocks on
+    // the pager, and `with_each_context` holds an `Arc` to every context in the system for the
+    // length of its callback -- so syncing inside it would keep every dead compartment's address
+    // space alive for as long as the pager stalls.
+    let mut regions = alloc::vec::Vec::new();
+    with_each_context(|ctx| {
+        regions.extend(
+            ctx.mappings()
+                .into_iter()
+                .filter(|region| region.should_sync.load(Ordering::SeqCst)),
+        )
+    });
+
+    let mut synced = 0u64;
+    let mut timed_out = false;
+    for region in regions {
+        if expired() {
+            timed_out = true;
+            break;
+        }
+        match region.sync_dirty(wait) {
+            Ok(submitted) => synced += submitted as u64,
+            Err(e) => log::warn!(
+                "sysctrl: failed to sync object {}: {:?}",
+                region.object().id(),
+                e
+            ),
+        }
+    }
+
+    // Objects whose region is already gone: an unmap handed those to the background thread, which
+    // runs at BACKGROUND and may not have been scheduled since. Bounded internally, so it is not
+    // deadline-checked -- only skipped if the deadline has already passed.
+    if expired() {
+        timed_out = true;
+    } else {
+        synced += crate::pager::drain_background_sync(wait) as u64;
+    }
+
+    if timed_out {
+        log::warn!(
+            "sysctrl: SyncAll timed out after syncing {} regions",
+            synced
+        );
+        return Err(TwzError::TIMED_OUT);
+    }
+    Ok(synced)
+}
+
+/// Zero every free frame: the physical allocator's non-zeroed free lists, and the per-cpu frame
+/// cache's dirty magazines, which those lists never see.
+///
+/// Returns the bytes zeroed. Both halves have a `BACKGROUND` worker that already does this
+/// speculatively; the point of doing it here is that the worker is exactly what a busy machine
+/// starves, and the caller's priority is the caller's to spend.
+fn zero_all(wait: bool, expired: &dyn Fn() -> bool) -> Result<u64> {
+    // A machine that keeps freeing dirty frames never converges. This must still terminate for a
+    // caller that passed no timeout, so passes are capped as well.
+    const MAX_PASSES: usize = 4096;
+    let empty_target = crate::memory::frame::zero_all_passes_per_sweep();
+    let mut bytes = 0u64;
+    let mut empty = 0;
+    let mut passes = 0;
+    loop {
+        // The cache first: its frames are zeroed in place and never reach the allocator's free
+        // lists, so a sweep that drove only the allocator would leave them dirty.
+        let cache_worked = crate::memory::framecache::background_zero_one();
+        match crate::memory::frame::zero_all_pass() {
+            // Another cpu is inside a pass. Not progress, and not evidence there is none left.
+            None => empty = 0,
+            Some(0) => empty += 1,
+            Some(n) => {
+                bytes += n;
+                empty = 0;
+            }
+        }
+        if cache_worked {
+            empty = 0;
+        }
+        passes += 1;
+        if !wait || empty >= empty_target {
+            break;
+        }
+        if expired() || passes >= MAX_PASSES {
+            log::warn!("sysctrl: ZeroAll gave up after {} bytes", bytes);
+            return Err(TwzError::TIMED_OUT);
+        }
+        // A pass is up to 16 MiB of memset. Yield between them rather than hold a cpu for a whole
+        // sweep of free memory at whatever priority the caller happens to have.
+        schedule(SchedFlags::REINSERT | SchedFlags::YIELD | SchedFlags::PREEMPT);
+    }
+    Ok(bytes)
+}
+
+/// The kernel side of [`twizzler_abi::syscall::sys_ctrl`]: whole-system maintenance, run on the
+/// calling thread at the calling thread's priority.
+///
+/// That is what all three commands have in common. Each has a `BACKGROUND` counterpart -- the
+/// background sync thread, the zeroing worker -- which the workloads that generate the work are
+/// exactly the ones that starve, so a caller who needs it done has no way to ask except to do it
+/// itself.
+///
+/// `timeout`, when given, bounds `SyncAll` and `ZeroAll`: an operation still unfinished at the
+/// deadline returns `TIMED_OUT` having done as much as it could, and logs how much. `DebugDump`
+/// ignores it. `NO_WAIT` submits the work without blocking for its completion (`SyncAll` does not
+/// wait for pager acknowledgements, `ZeroAll` does a single pass); it is meaningless for
+/// `DebugDump`. `VERBOSE` widens what `DebugDump` prints.
+///
+/// `arg1`-`arg3` are unused by every command today.
+fn sys_sysctrl(
+    cmd: SysCtrlCmd,
+    timeout: Option<TimeSpan>,
+    flags: SysCtrlFlags,
+    _arg1: u64,
+    _arg2: u64,
+    _arg3: u64,
+) -> Result<u64> {
+    let start = Instant::now();
+    let deadline = timeout.map(core::time::Duration::from);
+    let expired = move || deadline.is_some_and(|d| Instant::now() - start >= d);
+    let wait = !flags.contains(SysCtrlFlags::NO_WAIT);
+    match cmd {
+        SysCtrlCmd::DebugDump => {
+            debug_dump(flags.contains(SysCtrlFlags::VERBOSE));
+            Ok(0)
+        }
+        SysCtrlCmd::SyncAll => sync_all(wait, &expired),
+        SysCtrlCmd::ZeroAll => zero_all(wait, &expired),
+    }
+}
+
+fn type_sysctrl(cmd: u64, to: u64, flags: u64, arg1: u64, arg2: u64, arg3: u64) -> Result<u64> {
+    let cmd = SysCtrlCmd::try_from(cmd)?;
+    let flags = SysCtrlFlags::from_bits_truncate(flags);
+    let timeout: Option<twizzler_abi::syscall::TimeSpan> = unsafe { create_user_nullable_ptr(to) }
+        .ok_or(ArgumentError::InvalidArgument)?
+        .map(|t| *t);
+
+    sys_sysctrl(cmd, timeout, flags, arg1, arg2, arg3)
+}
+
 #[inline]
 fn convert_result_to_codes<T, E, F, G>(result: core::result::Result<T, E>, f: F, g: G) -> (u64, u64)
 where
@@ -320,12 +526,13 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
                 crate::memory::context::virtmem::slotmemo::print();
                 sync::syncbatch::print();
                 sync::requeuebug::print();
+                crate::mutex::contend::print();
                 crate::obj::pagetables::invl_overflow::print();
                 crate::obj::pagetables::membership::print();
                 // Before anything else: the machine is about to stop, and a queued background
                 // sync that has not run is a guest's write discarded. The thread that would do it
                 // runs at BACKGROUND priority with no claim on the time before poweroff.
-                crate::pager::drain_background_sync();
+                crate::pager::drain_background_sync(false);
                 // Then tell the pager to write it all back. The drain only gets dirty pages as far
                 // as the store's in-memory cache, which is write-back: without this the bytes are
                 // complete in every in-memory sense and still absent from the disk.
@@ -346,6 +553,7 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
                 crate::obj::coldfieldstats::print();
                 crate::obj::reapstats::print();
                 object::copystats::print();
+                crate::memory::pagetables::table::ptcountdrift::print();
                 crate::memory::pagetables::zeroprobe::print();
                 crate::arch::debug_shutdown(context.arg1::<u64>() as u32);
             }
@@ -623,6 +831,20 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
             )
             .map(|r| r as u64);
             let (code, val) = convert_result_to_codes(res, zero_ok, one_err);
+            context.set_return_values(code, val);
+        }
+        Syscall::SysCtrl => {
+            let cmd = context.arg0();
+            let timeout = context.arg1();
+            let result = type_sysctrl(
+                cmd,
+                timeout,
+                context.arg2(),
+                context.arg3(),
+                context.arg4(),
+                context.arg5(),
+            );
+            let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
             context.set_return_values(code, val);
         }
         _ => {

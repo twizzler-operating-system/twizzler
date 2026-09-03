@@ -31,6 +31,11 @@ pub struct RunCli {
     pub sample: bool,
     #[arg(
         long,
+        help = "Sample every thread on the system, not just the target compartment's. Needed to see child compartments (each rustc a build spawns) and the servers they call."
+    )]
+    pub all_threads: bool,
+    #[arg(
+        long,
         short,
         help = "Stop tracing and report after this many seconds even if the target has not exited."
     )]
@@ -202,7 +207,10 @@ fn run_trace_program(cli: &Cli) -> miette::Result<TracingState> {
             flags: TraceFlags::empty(),
             enable_events: THREAD_SAMPLE,
             disable_events: 0,
-            sctx: Some(info.id),
+            // Arming a thread is not enough: the kernel drops any event whose sctx does not match
+            // the spec, so restricting it here would discard every sample from the child
+            // compartments --all-threads exists to see.
+            sctx: (!cli.prog.all_threads).then_some(info.id),
             mctx: None,
             thread: None,
             cpuid: None,

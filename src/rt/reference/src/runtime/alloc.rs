@@ -15,7 +15,8 @@ use twizzler_abi::{
 
 use super::{ReferenceRuntime, RuntimeState};
 
-mod ferroc;
+pub(crate) mod anon;
+pub(crate) mod ferroc;
 mod talc;
 
 pub use talc::{LocalAllocator, LOCAL_ALLOCATOR};
@@ -230,6 +231,11 @@ unsafe impl GlobalAlloc for ReferenceRuntime {
         }
 
         census::on_alloc(layout.size(), census::B_FERROC);
+        #[cfg(target_arch = "x86_64")]
+        if layout.size() >= crate::runtime::memsettrace::BIG {
+            crate::runtime::memsettrace::ZALLOC
+                .record(crate::runtime::memsettrace::return_address(), layout.size());
+        }
         print_comp_name(layout, false);
         //let start_time = Instant::now();
         let r = ferroc::TwzFerroc

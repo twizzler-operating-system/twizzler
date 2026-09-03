@@ -89,9 +89,12 @@ macro_rules! check_ffi_type {
     };
 }
 
-use twizzler_rt_abi::error::{ArgumentError, TwzError};
 // core.h
-use twizzler_rt_abi::{bindings::option_exit_code, error::RawTwzError};
+use twizzler_rt_abi::{
+    bindings::option_exit_code,
+    error::{ArgumentError, RawTwzError, TwzError},
+    object::ObjectCmd,
+};
 
 use crate::runtime::OUR_RUNTIME;
 
@@ -151,8 +154,9 @@ check_ffi_type!(twz_rt_runtime_entry, _, _, _);
 // alloc.h
 
 use twizzler_rt_abi::bindings::{
-    ZERO_MEMORY, alloc_flags, endpoint, fd_flags, fd_set, io_ctx, object_create, object_source,
-    object_tie, objid_result, open_kind, open_kind_OpenKind_Path, release_flags, twz_error,
+    ZERO_MEMORY, alloc_flags, endpoint, fd_flags, fd_set, io_ctx, object_cmd, object_create,
+    object_source, object_tie, objid_result, open_kind, open_kind_OpenKind_Path, release_flags,
+    twz_error,
 };
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_malloc(
@@ -764,6 +768,39 @@ pub unsafe extern "C-unwind" fn twz_rt_release_handle(
     OUR_RUNTIME.release_handle(handle, flags)
 }
 check_ffi_type!(twz_rt_release_handle, _, _);
+
+/// Object control. Only `Delete` is implemented: this runtime has no per-handle runtime info to
+/// mark, and `Sync`/`Update` exist for a mapping cache it does not keep.
+///
+/// It has to exist at all because mlibc's anonymous-mmap arena deletes its arena objects through
+/// this call, and `libc.a` is linked into the static collection -- `bootstrap` fails to link
+/// without it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_object_cmd(
+    handle: *mut object_handle,
+    cmd: object_cmd,
+    _arg: *mut ::core::ffi::c_void,
+) -> twz_error {
+    let Ok(cmd) = ObjectCmd::try_from(cmd) else {
+        return TwzError::INVALID_ARGUMENT.raw();
+    };
+    let id: ObjID = unsafe { (*handle).id }.into();
+    match cmd {
+        ObjectCmd::Delete => match twizzler_abi::syscall::sys_object_ctrl(
+            id,
+            twizzler_abi::syscall::ObjectControlCmd::Delete(
+                twizzler_abi::syscall::DeleteFlags::empty(),
+            ),
+            0,
+            0,
+        ) {
+            Ok(_) => 0,
+            Err(e) => e.raw(),
+        },
+        ObjectCmd::Sync | ObjectCmd::Update => TwzError::NOT_SUPPORTED.raw(),
+    }
+}
+check_ffi_type!(twz_rt_object_cmd, _, _, _);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn __twz_rt_map_two_objects(

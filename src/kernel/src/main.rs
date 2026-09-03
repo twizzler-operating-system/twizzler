@@ -159,6 +159,17 @@ pub fn is_diag_mode() -> bool {
 static KDIAG_PAGER: AtomicBool = AtomicBool::new(false);
 static KDIAG_INVLS: AtomicBool = AtomicBool::new(false);
 static KDIAG_WAKE: AtomicBool = AtomicBool::new(false);
+static KDIAG_FAULT: AtomicBool = AtomicBool::new(false);
+
+/// `--diag=fault`: the per-object page-fault census
+/// ([`crate::memory::context::virtmem::fault::census`]).
+///
+/// A runtime knob rather than a const so an A/B runs from one build and one tree state, and so a
+/// shared tree does not make every peer's boot pay for it. Off, the cost is one read-mostly atomic
+/// load per fault.
+pub fn kdiag_fault() -> bool {
+    KDIAG_FAULT.load(Ordering::SeqCst)
+}
 
 /// `--diag=pager`: kernel-side pager/large-page milestone reports (PAGERWAIT, LARGEPAGE, SPLITS).
 pub fn kdiag_pager() -> bool {
@@ -287,6 +298,9 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
                 }
                 if class == "wake" || class == "all" {
                     KDIAG_WAKE.store(true, Ordering::SeqCst);
+                }
+                if class == "fault" || class == "all" {
+                    KDIAG_FAULT.store(true, Ordering::SeqCst);
                 }
             }
         }
@@ -427,10 +441,13 @@ extern "C" fn boot_sequence() {
     crate::thread::exit(0);
 }
 
-/// A/B knob for the schedmon perturbation question: besides its 30s wake, schedmon's timeout
-/// entry keeps a wheel window occupied, so `hard_advance` signals the INTERRUPT-priority timeout
-/// thread roughly once per second for the whole boot -- a scheduling perturbation inside the very
-/// subsystem the release-smp1 wedge lives in. Arm B builds with this false.
+/// A/B knob for the schedmon perturbation question. It used to have a second cost besides its 30s
+/// wake: the timeout entry kept a wheel window occupied, and `hard_advance` could not tell an
+/// occupied window from a due one, so it signalled the INTERRUPT-priority timeout thread roughly
+/// twice a second for the whole boot -- a scheduling perturbation inside the very subsystem the
+/// release-smp1 wedge lives in. Entries further out than a wheel revolution are invisible to the
+/// tick path now (`TimeoutQueue::far_occupied`), so this is one wake per 30s again. Arm B builds
+/// with this false.
 const SCHEDMON_ENABLED: bool = true;
 
 /// Spawn the scheduler monitor: `schedmon_dump` every 30s from a REALTIME thread, so it keeps

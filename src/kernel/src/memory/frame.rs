@@ -380,14 +380,20 @@ impl AllocationRegion {
         None
     }
 
-    fn collect_zeroable(&mut self, frames: &mut heapless::Vec<FrameRef, 16>) {
+    /// Take free frames off this region's non-zeroed lists for the caller to zero.
+    ///
+    /// `all` drops the half-of-free ceiling below, which is a *background* policy: zeroing ahead of
+    /// demand is speculative work, so the background pass stops once half the free frames are
+    /// clean. An explicit [`zero_all_pass`] is not speculative -- the caller asked for every free
+    /// frame to be zeroed -- and stopping at half would mean it never converges.
+    fn collect_zeroable(&mut self, frames: &mut heapless::Vec<FrameRef, 16>, all: bool) {
         const MAX_BACKGROUND_ZERO_BYTES: usize = PHYS_LEVEL_LAYOUTS[1].size() * 2;
         let mut total_bytes = 0;
         for level in 0..2 {
             while total_bytes + PHYS_LEVEL_LAYOUTS[level].size() <= MAX_BACKGROUND_ZERO_BYTES
                 && !frames.is_full()
                 && self.levels[level].free > 0
-                && self.levels[level].free_zeroed < self.levels[level].free / 2
+                && (all || self.levels[level].free_zeroed < self.levels[level].free / 2)
             {
                 if let Some(frame) = self.levels[level].allocate_zeroable() {
                     total_bytes += frame.size();
@@ -827,8 +833,59 @@ impl Frame {
     }
 
     pub fn set_pt(&self, is_pt: bool) -> bool {
+        // Every table frame is initialized through here, so this is where a count left over from a
+        // previous life gets dropped. A frame can be freed with a nonzero count -- tearing an
+        // object's tables down unmaps rather than decrementing entry by entry -- and reused as
+        // anything, so the count is only meaningful from this point forward.
+        if is_pt {
+            self.info.fetch_and(!PT_COUNT_MASK, Ordering::SeqCst);
+        }
         self.set_flags(PhysicalFrameFlags::IS_PT, is_pt)
             .contains(PhysicalFrameFlags::IS_PT)
+    }
+
+    /// Present entries in the page table this frame holds.
+    ///
+    /// Lived in the `AVAIL_1` bit of entries 0..16 of the table itself, which made a read sixteen
+    /// entry loads and a write sixteen read-modify-writes -- on *every* entry update, including
+    /// the ones that left the count alone -- all landing on the two cache lines at the head of the
+    /// table that every concurrent updater of that table shares. On aarch64 there was no stored
+    /// count at all: `set_count` was a no-op and a read scanned all 512 entries.
+    ///
+    /// Here it is one load and one atomic add, it costs nothing when the count does not change,
+    /// and it stops the population count from being spread across the very entries a lock-free
+    /// update would want to CAS.
+    pub fn pt_count(&self) -> usize {
+        ((self.info.load(Ordering::SeqCst) & PT_COUNT_MASK) >> PT_COUNT_SHIFT) as usize
+    }
+
+    pub fn set_pt_count(&self, count: usize) {
+        debug_assert!(count <= 512);
+        let val = ((count as u64) << PT_COUNT_SHIFT) & PT_COUNT_MASK;
+        let mut cur = self.info.load(Ordering::SeqCst);
+        loop {
+            match self.info.compare_exchange(
+                cur,
+                (cur & !PT_COUNT_MASK) | val,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return,
+                Err(c) => cur = c,
+            }
+        }
+    }
+
+    /// Move the count by one. The field is wide enough that a full table cannot carry out of it,
+    /// and callers only ever step by one, so this needs no compare-exchange loop.
+    pub fn adjust_pt_count(&self, up: bool) {
+        if up {
+            debug_assert!(self.pt_count() < 512);
+            self.info.fetch_add(1 << PT_COUNT_SHIFT, Ordering::SeqCst);
+        } else {
+            debug_assert!(self.pt_count() > 0);
+            self.info.fetch_sub(1 << PT_COUNT_SHIFT, Ordering::SeqCst);
+        }
     }
 
     pub fn is_cow(&self) -> bool {
@@ -1053,6 +1110,12 @@ impl Frame {
         new_frame.inc_refcount();
         if self.is_pt() {
             new_frame.set_pt(true);
+            // The population count used to live *inside* the table page -- one bit per entry in the
+            // `AVAIL_1` flag of entries 0..16 -- so the `copy_contents_from` above carried it for
+            // free. It lives in `info` now, which a page copy does not touch, and `set_pt` has just
+            // cleared it. Nothing else duplicates a page-table page, so this is the one site that
+            // has to move it across.
+            new_frame.set_pt_count(self.pt_count());
         }
 
         Some(new_frame)
@@ -1457,6 +1520,14 @@ const FREE_POISON: bool = false;
 const POISON_BIT: u64 = 1 << 16;
 /// See [Frame::mark_pooled].
 const POOLED_BIT: u64 = 1 << 17;
+
+/// Number of present entries in the page table this frame holds. See [Frame::pt_count].
+///
+/// `info`'s layout is flags in 0..8, level in 8..16, the two bits above, refcount in 32..64; this
+/// takes ten of the fourteen bits left between. Ten is exactly enough for a full 512-entry table,
+/// so [Frame::adjust_pt_count]'s `fetch_add` can never carry out of the field.
+const PT_COUNT_SHIFT: u64 = 18;
+const PT_COUNT_MASK: u64 = 0x3ff << PT_COUNT_SHIFT;
 const POISON_PATTERN: u64 = 0xF4EE_F4EE_F4EE_F4EE;
 
 fn poison_on_free(frame: FrameRef) {
@@ -1622,10 +1693,38 @@ pub fn background_zero_iter() -> bool {
     if needs_reschedule(false) || is_low_mem() {
         return true;
     }
+    // `None` (another thread mid-pass) reads as "nothing for me to do" here, which is what it is:
+    // the other thread is making the progress this one would have.
+    zero_pass(false).unwrap_or(0) > 0
+}
+
+/// One pass of [`zero_pass`] over *every* free frame, ignoring the background pass's
+/// half-of-free ceiling and its reschedule/low-memory bail-outs.
+///
+/// Runs on the calling thread at the calling thread's priority: this backs
+/// [`twizzler_abi::syscall::SysCtrlCmd::ZeroAll`], whose whole point is not to wait behind a
+/// `BACKGROUND` worker. `None` means another cpu is inside a pass right now; the caller should
+/// yield and retry rather than conclude there is no work left.
+pub fn zero_all_pass() -> Option<u64> {
+    zero_pass(true)
+}
+
+/// Passes of [`zero_all_pass`] that together visit every region once.
+///
+/// A pass starts where the last one stopped and covers at most [`MAX_BACKGROUND_ZERO_ITER`]
+/// regions, so a single empty pass does not mean the machine is clean -- it means those four
+/// regions were. This is how many consecutive empty passes do mean it.
+pub fn zero_all_passes_per_sweep() -> usize {
+    let n = PFA.wait().lock().regions.len();
+    n.div_ceil(MAX_BACKGROUND_ZERO_ITER).max(1)
+}
+
+/// Returns the bytes zeroed, or `None` if another thread holds the pass.
+fn zero_pass(all: bool) -> Option<u64> {
     let status = BACKGROUND_ZERO_INDEX.fetch_or(1, Ordering::Acquire);
     if status & 1 == 1 {
         // another thread is already doing this
-        return false;
+        return None;
     }
     const MAX_FRAMES_PER_REG: usize = 16;
     let pfa = PFA.wait().lock();
@@ -1639,14 +1738,18 @@ pub fn background_zero_iter() -> bool {
 
     let idx = status >> 1;
     for i in 0..region_count {
-        if frames_per_region.is_full() || needs_reschedule(false) {
+        // The reschedule check is the background pass's alone. A `ZeroAll` caller yields between
+        // passes, and letting a pending reschedule cut a pass short here would make it visit
+        // fewer regions than [`zero_all_passes_per_sweep`] promises -- which is what its caller
+        // counts consecutive empty passes against to decide it is done.
+        if frames_per_region.is_full() || (!all && needs_reschedule(false)) {
             break;
         }
         let mut pfa = PFA.wait().lock();
         let reg_idx = (idx + i) % pfa.regions.len();
         let reg = &mut pfa.regions[reg_idx];
         let mut frames_this_reg = heapless::Vec::new();
-        reg.collect_zeroable(&mut frames_this_reg);
+        reg.collect_zeroable(&mut frames_this_reg, all);
         BACKGROUND_ZERO_INDEX.fetch_add(2, Ordering::Relaxed);
         if !frames_this_reg.is_empty() {
             frames_per_region.push((reg_idx, frames_this_reg)).unwrap();
@@ -1678,7 +1781,7 @@ pub fn background_zero_iter() -> bool {
         crate::memory::tracker::signal_waiters();
     }
 
-    total_bytes > 0
+    Some(total_bytes as u64)
 }
 
 #[cfg(test)]

@@ -18,6 +18,8 @@ mod thread_sync;
 mod time;
 mod trace;
 
+use core::time::Duration;
+
 use crate::arch::syscall::raw_syscall;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(C)]
@@ -66,9 +68,12 @@ pub enum Syscall {
     MapCtrl,
     /// Manage tracing
     Ktrace,
+    /// Enumerate kernel-known objects, threads, or mapped slots.
     Enumerate,
     /// Copy ranges into, or zero ranges within, an object that already exists.
     ObjectCopy,
+    /// Issue kernel commands
+    SysCtrl,
     NumSyscalls,
 }
 
@@ -206,4 +211,79 @@ pub fn sys_enumerate(
     ];
     let (code, val) = unsafe { raw_syscall(Syscall::Enumerate, &args) };
     convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v as usize, twzerr)
+}
+
+/// Whole-system maintenance operations for [sys_ctrl]. Each runs on the calling thread, at the
+/// calling thread's priority.
+pub enum SysCtrlCmd {
+    /// Print kernel debugging state to the kernel console. Returns 0.
+    DebugDump,
+    /// Sync every mapping registered with `SYNC_FLAG_ASYNC_DURABLE`, along with any syncs already
+    /// queued for the kernel's background sync thread. Returns the number of objects synced.
+    SyncAll,
+    /// Zero every free physical frame. Returns the number of bytes zeroed.
+    ZeroAll,
+}
+
+impl TryFrom<u64> for SysCtrlCmd {
+    type Error = TwzError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(SysCtrlCmd::DebugDump),
+            1 => Ok(SysCtrlCmd::SyncAll),
+            2 => Ok(SysCtrlCmd::ZeroAll),
+            _ => Err(TwzError::INVALID_ARGUMENT),
+        }
+    }
+}
+
+impl From<SysCtrlCmd> for u64 {
+    fn from(x: SysCtrlCmd) -> Self {
+        match x {
+            SysCtrlCmd::DebugDump => 0,
+            SysCtrlCmd::SyncAll => 1,
+            SysCtrlCmd::ZeroAll => 2,
+        }
+    }
+}
+
+bitflags::bitflags! {
+    /// Flags for [sys_sysctrl].
+    #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct SysCtrlFlags: u64 {
+        /// If set, the kernel submits the requested work but does not block until it completes:
+        /// `SyncAll` does not wait for the pager to acknowledge, and `ZeroAll` makes a single pass
+        /// rather than sweeping to completion. Only meaningful for `SyncAll` and `ZeroAll`.
+        const NO_WAIT = 1 << 0;
+        /// If set, `DebugDump` prints more, including per-object state.
+        const VERBOSE = 1 << 1;
+    }
+}
+
+/// Perform a whole-system maintenance operation; see [SysCtrlCmd] for the commands and their
+/// return values.
+///
+/// `timeout`, when given, bounds `SyncAll` and `ZeroAll`: an operation still unfinished at the
+/// deadline returns [TwzError::TIMED_OUT] having done as much as it could. `DebugDump` ignores it.
+/// `arg1`-`arg3` are unused today.
+pub fn sys_ctrl(
+    cmd: SysCtrlCmd,
+    timeout: Option<Duration>,
+    flags: SysCtrlFlags,
+    arg1: u64,
+    arg2: u64,
+    arg3: u64,
+) -> Result<u64, TwzError> {
+    let ts = timeout.map(|t| TimeSpan::from(t));
+    let args = [
+        cmd.into(),
+        &ts as *const Option<TimeSpan> as u64,
+        flags.bits(),
+        arg1,
+        arg2,
+        arg3,
+    ];
+    let (code, val) = unsafe { raw_syscall(Syscall::SysCtrl, &args) };
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, v| v, twzerr)
 }

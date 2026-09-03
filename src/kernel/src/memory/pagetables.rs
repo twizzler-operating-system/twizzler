@@ -7,7 +7,7 @@ mod mapper;
 mod phys_provider;
 mod reader;
 mod settings;
-mod table;
+pub mod table;
 pub mod zeroprobe;
 
 pub use consistency::{

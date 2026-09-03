@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fmt::Debug,
     sync::{
         Condvar, Mutex,
@@ -17,12 +18,16 @@ use twizzler::{
 };
 use twizzler_abi::{
     syscall::{
-        ObjectCreate, PERTHREAD_TRACE_GEN_SAMPLE, ThreadSync, ThreadSyncFlags, ThreadSyncOp,
-        ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake, TraceSpec, sys_ktrace,
-        sys_thread_change_state, sys_thread_self_id, sys_thread_set_trace_events, sys_thread_sync,
+        EnumerateKind, ObjectCreate, PERTHREAD_TRACE_GEN_SAMPLE, ThreadSctxIds, ThreadSync,
+        ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
+        TraceSpec, sys_enumerate, sys_ktrace, sys_object_read_map, sys_thread_change_state,
+        sys_thread_read_sctx_ids, sys_thread_self_id, sys_thread_set_trace_events, sys_thread_sync,
     },
     thread::ExecutionState,
-    trace::{TraceBase, TraceData, TraceEntryFlags, TraceEntryHead},
+    trace::{
+        THREAD_SAMPLE, ThreadSamplingEvent, TraceBase, TraceData, TraceEntryFlags, TraceEntryHead,
+        TraceKind,
+    },
 };
 
 use crate::Cli;
@@ -55,6 +60,14 @@ pub struct TracingState {
     /// the run silently yields whatever now sits at that offset. `objid` pins the exact object the
     /// library was loaded from, which a path does not.
     pub load_map: Vec<LoadedLib>,
+    /// Load maps for every compartment a sample was seen from, keyed by security context.
+    pub comp_maps: Vec<CompMap>,
+    /// slot -> object mapped there, resolved *while the run is live*.
+    ///
+    /// The slot table is global (one vm context, many security contexts), so the tracer's own
+    /// context resolves any address -- but only while the object is still mapped. Every rustc a
+    /// build spawns has exited by report time, which is why resolving late yields nothing.
+    pub slot_map: BTreeMap<usize, ObjID>,
 }
 
 pub struct LoadedLib {
@@ -62,6 +75,21 @@ pub struct LoadedLib {
     pub start: usize,
     pub len: usize,
     pub objid: ObjID,
+}
+
+/// One compartment's identity and load map, snapshotted while it is alive.
+///
+/// Needed per-compartment, not once: slots are per-context, so the same pc means different code
+/// in two compartments, and a child (each rustc invocation) is gone by the time the report runs.
+pub struct CompMap {
+    pub sctx: ObjID,
+    pub name: String,
+    pub libs: Vec<LoadedLib>,
+    /// Held for the life of the trace. A compartment is torn down only when its use count hits
+    /// zero *and* it has exited (`CompartmentMgr::dec_use_count`), so keeping the handle pins it
+    /// and its object mappings. Without this every rustc a build spawns is reaped before the
+    /// report runs, unmapping the slots its samples point at.
+    pub _keepalive: CompartmentHandle,
 }
 
 impl Debug for TraceSource {
@@ -134,6 +162,8 @@ impl TracingState {
             nr_wakes: 0,
             collector_id: 0.into(),
             load_map: Vec::new(),
+            comp_maps: Vec::new(),
+            slot_map: BTreeMap::new(),
         })
     }
 
@@ -391,6 +421,119 @@ fn collector(tracer: &Tracer) {
     tracer.state.lock().unwrap().nr_wakes = nr_wakes;
 }
 
+/// Arm sampling on every thread that should be sampled, and snapshot the load map of any
+/// compartment newly seen.
+///
+/// With `--all-threads` this is every thread on the system: a build spends nearly all its time in
+/// child compartments (each `rustc`) and in the servers those children call, none of which the
+/// traced compartment's own thread list can reach.
+fn arm(cli: &Cli, comp: &CompartmentHandle, tracer: &Tracer, seen: &mut Vec<ObjID>) {
+    if !cli.prog.all_threads {
+        for thread in comp.threads() {
+            let _ = sys_thread_set_trace_events(thread.repr_id, PERTHREAD_TRACE_GEN_SAMPLE);
+        }
+        return;
+    }
+    let mut buf = [ObjID::default(); 128];
+    let mut offset = 0;
+    loop {
+        let Ok(count) = sys_enumerate(EnumerateKind::Threads, &mut buf, offset) else {
+            break;
+        };
+        if count == 0 {
+            break;
+        }
+        for id in &buf[0..count] {
+            let _ = sys_thread_set_trace_events(*id, PERTHREAD_TRACE_GEN_SAMPLE);
+            let mut ids = ThreadSctxIds::default();
+            if sys_thread_read_sctx_ids(*id, &mut ids).is_err() {
+                continue;
+            }
+            for sctx in [ids.home, ids.active] {
+                if sctx.raw() != 0 && !seen.contains(&sctx) {
+                    seen.push(sctx);
+                }
+            }
+        }
+        offset += count;
+    }
+    // Re-snapshot every tick rather than once per compartment. A compartment first seen while the
+    // monitor is still loading it yields a partial map, and a short-lived one (each rustc) is never
+    // seen again -- which left every pc in a build unresolvable against a map missing its slots.
+    for sctx in seen.iter() {
+        snapshot_comp(*sctx, tracer);
+    }
+}
+
+/// Record `sctx -> (name, load map)`, keeping the fullest map ever seen for that compartment.
+///
+/// Must happen while the compartment is alive: by report time every child has exited and its
+/// libraries can no longer be located. Keeping the fullest map (rather than the first) is what
+/// makes a short-lived compartment symbolizable -- the first sighting usually catches it before
+/// the monitor has finished loading its libraries.
+fn snapshot_comp(sctx: ObjID, tracer: &Tracer) {
+    let Ok(handle) = CompartmentHandle::lookup_id(sctx) else {
+        return;
+    };
+    let Ok(info) = handle.info() else { return };
+    let name = info.name.to_string();
+    let libs: Vec<_> = handle
+        .libs()
+        .map(|l| {
+            let i = l.info();
+            LoadedLib {
+                name: i.name.clone(),
+                start: i.start as usize,
+                len: i.len,
+                objid: i.objid,
+            }
+        })
+        .collect();
+    let mut state = tracer.state.lock().unwrap();
+    match state.comp_maps.iter_mut().find(|c| c.sctx == sctx) {
+        Some(existing) => {
+            if libs.len() > existing.libs.len() {
+                existing.libs = libs;
+                existing.name = name;
+            }
+        }
+        None => state.comp_maps.push(CompMap {
+            sctx,
+            name,
+            libs,
+            _keepalive: handle,
+        }),
+    }
+}
+
+/// Resolve the slot of every sample seen so far to the object mapped there, while it still is.
+fn resolve_slots(tracer: &Tracer) {
+    let mut state = tracer.state.lock().unwrap();
+    let mut want: Vec<usize> = Vec::new();
+    for (head, data) in state.data() {
+        if head.kind != TraceKind::Thread || head.event & THREAD_SAMPLE == 0 {
+            continue;
+        }
+        let Some(d) = data.and_then(|d| d.try_cast::<ThreadSamplingEvent>(THREAD_SAMPLE)) else {
+            continue;
+        };
+        // Not just the code slot: `di` is where a `rep stos` leaf is writing, and naming that
+        // object is the whole point of capturing it. Slots must be resolved while the run is
+        // live -- by report time every rustc has exited and its slots resolve to nothing.
+        for addr in [d.data.ip, d.data.sp, d.data.bp, d.data.di] {
+            let slot = (addr >> 30) as usize;
+            if slot != 0 && !state.slot_map.contains_key(&slot) && !want.contains(&slot) {
+                want.push(slot);
+            }
+        }
+    }
+    for slot in want {
+        if let Ok(mi) = sys_object_read_map(None, slot) {
+            state.slot_map.insert(slot, mi.id);
+        }
+    }
+}
+
 pub fn start(
     cli: &Cli,
     comp: CompartmentHandle,
@@ -440,6 +583,7 @@ pub fn start(
                 sys_thread_set_trace_events(id, PERTHREAD_TRACE_GEN_SAMPLE).into_diagnostic()?;
             }
         }
+        let mut seen_sctx: Vec<ObjID> = Vec::new();
         tracer.set_state(State::Running);
 
         // With a timeout, stop collecting and report even if the target never exits -- the whole
@@ -449,23 +593,21 @@ pub fn start(
             .timeout
             .map(|secs| start + std::time::Duration::from_secs(secs));
         let mut flags = comp.info().unwrap().flags;
+        // Sampling needs a tick even without a timeout: it does not inherit across spawns, so
+        // threads created after startup -- codegen workers, and every child compartment a build
+        // spawns -- would otherwise never be armed.
+        let poll = cli.prog.sample || deadline.is_some();
         while !flags.contains(CompartmentFlags::EXITED) {
-            if let Some(deadline) = deadline {
-                if Instant::now() >= deadline {
+            if poll {
+                if deadline.is_some_and(|d| Instant::now() >= d) {
                     tracing::info!("timeout reached with target still running; reporting anyway");
                     break;
                 }
                 // `comp.wait` has no timeout of its own; poll on a coarse tick instead.
-                std::thread::sleep(std::time::Duration::from_millis(500));
-                // Per-thread sampling does not inherit across spawns, so threads created after
-                // startup (codegen workers, exactly the interesting ones in a wedge) would never
-                // be sampled. Re-apply each tick; re-arming an already-sampling thread is
-                // harmless.
+                std::thread::sleep(std::time::Duration::from_millis(100));
                 if cli.prog.sample {
-                    for thread in comp.threads() {
-                        let _ =
-                            sys_thread_set_trace_events(thread.repr_id, PERTHREAD_TRACE_GEN_SAMPLE);
-                    }
+                    arm(cli, &comp, &tracer, &mut seen_sctx);
+                    resolve_slots(&tracer);
                 }
                 flags = comp.info().unwrap().flags;
             } else {

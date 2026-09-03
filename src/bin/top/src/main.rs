@@ -8,7 +8,7 @@ use crossterm::{
     ExecutableCommand, QueueableCommand,
     cursor::{Hide, MoveTo, Show},
     event::{self, Event, KeyCode, KeyEventKind},
-    style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
+    style::{Attribute, Color, Print, SetAttribute, SetForegroundColor},
     terminal::{
         Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
         enable_raw_mode, size,
@@ -175,12 +175,13 @@ fn main() {
     out.execute(EnterAlternateScreen).unwrap();
     out.execute(Hide).unwrap();
 
+    let mut screen = Screen::new();
     tracker.sample();
-    tracker.render(&mut out).unwrap();
+    tracker.render(&mut screen, &mut out).unwrap();
 
-    while !wait_for_input(REFRESH, &mut tracker, &mut out) {
+    while !wait_for_input(REFRESH, &mut tracker, &mut screen, &mut out) {
         tracker.sample();
-        tracker.render(&mut out).unwrap();
+        tracker.render(&mut screen, &mut out).unwrap();
     }
 
     let _ = out.execute(Show);
@@ -190,7 +191,12 @@ fn main() {
 
 /// Waits out the refresh interval, returning true if the user asked to quit. A mode change is
 /// redrawn immediately rather than at the next sample, so the display tracks the keypress.
-fn wait_for_input(timeout: Duration, tracker: &mut ThreadTracker, out: &mut impl Write) -> bool {
+fn wait_for_input(
+    timeout: Duration,
+    tracker: &mut ThreadTracker,
+    screen: &mut Screen,
+    out: &mut impl Write,
+) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     loop {
         let now = std::time::Instant::now();
@@ -206,19 +212,19 @@ fn wait_for_input(timeout: Duration, tracker: &mut ThreadTracker, out: &mut impl
                     KeyCode::Char('q') | KeyCode::Esc => return true,
                     KeyCode::Char('t') => {
                         tracker.view = tracker.view.next();
-                        tracker.render(out).unwrap();
+                        tracker.render(screen, out).unwrap();
                     }
                     KeyCode::Char('i') => {
                         tracker.show_ids = !tracker.show_ids;
-                        tracker.render(out).unwrap();
+                        tracker.render(screen, out).unwrap();
                     }
                     KeyCode::Char('s') => {
                         tracker.sort = tracker.sort.next();
-                        tracker.render(out).unwrap();
+                        tracker.render(screen, out).unwrap();
                     }
                     KeyCode::Char('r') => {
                         tracker.rev = !tracker.rev;
-                        tracker.render(out).unwrap();
+                        tracker.render(screen, out).unwrap();
                     }
                     _ => {}
                 }
@@ -1059,7 +1065,7 @@ impl ThreadTracker {
         out.flush()
     }
 
-    fn render(&self, out: &mut impl Write) -> std::io::Result<()> {
+    fn render(&self, screen: &mut Screen, out: &mut impl Write) -> std::io::Result<()> {
         let (cols, rows) = size().unwrap_or((80, 24));
         let self_id = self.self_id;
         // Everything but NAME is fixed width; NAME takes what is left. Thread rows are indented
@@ -1089,38 +1095,41 @@ impl ThreadTracker {
             *rows_by_state.entry(state_str(thread)).or_default() += 1;
         }
 
-        out.queue(Clear(ClearType::All))?;
-        out.queue(MoveTo(0, 0))?;
+        screen.begin(cols as usize, rows as usize);
+        screen.at(0, 0);
 
-        out.queue(SetAttribute(Attribute::Bold))?;
-        out.queue(SetForegroundColor(Color::Cyan))?;
-        out.queue(Print("twiztop"))?;
-        out.queue(ResetColor)?;
-        out.queue(Print(self.summary()))?;
+        screen.bold();
+        screen.fg(Color::Cyan);
+        screen.put("twiztop");
+        // The whole pen, not just the colour. The command stream this replaced used `ResetColor`
+        // here, which leaves the attribute set -- so the bold above ran on through the summary and
+        // the three lines below it, until the header row's reset. That was never intended.
+        screen.pen_reset();
+        screen.put(self.summary());
 
-        out.queue(MoveTo(0, 1))?;
+        screen.at(0, 1);
         let mut first = true;
         for (state, count) in &rows_by_state {
             if !first {
-                out.queue(Print("  "))?;
+                screen.put("  ");
             }
             first = false;
-            out.queue(SetForegroundColor(state_color(state)))?;
-            out.queue(Print(format!("{}: {}", state, count)))?;
-            out.queue(ResetColor)?;
+            screen.fg(state_color(state));
+            screen.put(format!("{}: {}", state, count));
+            screen.fg_reset();
         }
 
         let (kernel_line, pager_line) = self.sys_lines();
-        out.queue(MoveTo(0, 2))?;
-        out.queue(SetForegroundColor(Color::DarkGrey))?;
-        out.queue(Print(&kernel_line))?;
-        out.queue(MoveTo(0, 3))?;
-        out.queue(Print(&pager_line))?;
-        out.queue(ResetColor)?;
+        screen.at(0, 2);
+        screen.fg(Color::DarkGrey);
+        screen.put(&kernel_line);
+        screen.at(0, 3);
+        screen.put(&pager_line);
+        screen.fg_reset();
 
-        out.queue(MoveTo(0, 4))?;
-        out.queue(SetAttribute(Attribute::Reverse))?;
-        out.queue(Print(pad(
+        screen.at(0, 4);
+        screen.reverse();
+        screen.put(pad(
             &format!(
                 "  {}{:<w$}  {:<9}  {:>6}{}  {:>6}  {:>6}  {:>6}  {:>6}  {:>8}  {}",
                 id_hdr,
@@ -1141,8 +1150,8 @@ impl ThreadTracker {
                 w = name_w
             ),
             cols as usize,
-        )))?;
-        out.queue(SetAttribute(Attribute::Reset))?;
+        ));
+        screen.pen_reset();
 
         let body_start: u16 = 5;
         let max_rows = rows.saturating_sub(body_start + 1) as usize;
@@ -1156,7 +1165,7 @@ impl ThreadTracker {
             if row + if show_rows { 2 } else { 1 } > max_rows {
                 break;
             }
-            out.queue(MoveTo(0, body_start + row as u16))?;
+            screen.at(0, body_start + row as u16);
             // The label spans the ID and NAME columns, so the numeric columns below line up
             // with the thread rows rather than sitting wherever the label happened to end.
             let label_w = if self.show_ids {
@@ -1164,22 +1173,22 @@ impl ThreadTracker {
             } else {
                 2 + name_w
             };
-            out.queue(SetAttribute(Attribute::Bold))?;
-            out.queue(SetForegroundColor(Color::Magenta))?;
-            out.queue(Print(format!("{:<w$.w$}", group.label, w = label_w)))?;
-            out.queue(ResetColor)?;
-            out.queue(SetAttribute(Attribute::Reset))?;
-            out.queue(Print("  "))?;
+            screen.bold();
+            screen.fg(Color::Magenta);
+            screen.put(format!("{:<w$.w$}", group.label, w = label_w));
+            screen.fg_reset();
+            screen.pen_reset();
+            screen.put("  ");
             // Running count in the STATE column: the one per-compartment fact the rows below
             // can no longer supply once they are hidden.
             let running = group.running();
-            out.queue(SetForegroundColor(if running > 0 {
+            screen.fg(if running > 0 {
                 Color::Green
             } else {
                 Color::DarkGrey
-            }))?;
-            out.queue(Print(format!("{:<9.9}", format!("{} run", running))))?;
-            out.queue(ResetColor)?;
+            });
+            screen.put(format!("{:<9.9}", format!("{} run", running)));
+            screen.fg_reset();
 
             let group_fracs: Vec<f64> = if split_cpu {
                 vec![
@@ -1191,10 +1200,10 @@ impl ThreadTracker {
                 vec![group.cpu(self.elapsed)]
             };
             for frac in group_fracs {
-                out.queue(Print("  "))?;
-                out.queue(SetForegroundColor(pct_color(frac)))?;
-                out.queue(Print(format!("{:>5.1}%", frac * 100.0)))?;
-                out.queue(ResetColor)?;
+                screen.put("  ");
+                screen.fg(pct_color(frac));
+                screen.put(format!("{:>5.1}%", frac * 100.0));
+                screen.fg_reset();
             }
             for rate in [
                 group.faults(self.secs),
@@ -1202,22 +1211,19 @@ impl ThreadTracker {
                 group.syscalls(self.secs),
                 group.wakes(self.secs),
             ] {
-                out.queue(Print("  "))?;
-                out.queue(SetForegroundColor(rate_color(rate)))?;
-                out.queue(Print(format!("{:>6}", self.rate_str(rate))))?;
-                out.queue(ResetColor)?;
+                screen.put("  ");
+                screen.fg(rate_color(rate));
+                screen.put(format!("{:>6}", self.rate_str(rate)));
+                screen.fg_reset();
             }
-            out.queue(Print(format!(
-                "  {:>8}  ",
-                self.time_str_ticks(group.cpu_ticks())
-            )))?;
-            out.queue(SetForegroundColor(if group.cross > 0 {
+            screen.put(format!("  {:>8}  ", self.time_str_ticks(group.cpu_ticks())));
+            screen.fg(if group.cross > 0 {
                 Color::Yellow
             } else {
                 Color::DarkGrey
-            }))?;
-            out.queue(Print(group.tail()))?;
-            out.queue(ResetColor)?;
+            });
+            screen.put(group.tail());
+            screen.fg_reset();
             row += 1;
 
             if !show_rows {
@@ -1228,13 +1234,13 @@ impl ThreadTracker {
                 if row >= max_rows {
                     break;
                 }
-                out.queue(MoveTo(0, body_start + row as u16))?;
+                screen.at(0, body_start + row as u16);
                 row += 1;
 
                 if thread.id == self_id {
-                    out.queue(SetAttribute(Attribute::Bold))?;
+                    screen.bold();
                 }
-                out.queue(Print(format!(
+                screen.put(format!(
                     "  {}{:<w$.w$}  ",
                     if self.show_ids {
                         format!("{:<16.16}  ", format!("{:x}", thread.id))
@@ -1243,10 +1249,10 @@ impl ThreadTracker {
                     },
                     display_name(thread),
                     w = name_w
-                )))?;
-                out.queue(SetForegroundColor(state_color(state_str(thread))))?;
-                out.queue(Print(format!("{:<9.9}", state_str(thread))))?;
-                out.queue(ResetColor)?;
+                ));
+                screen.fg(state_color(state_str(thread)));
+                screen.put(format!("{:<9.9}", state_str(thread)));
+                screen.fg_reset();
 
                 let fracs: Vec<f64> = if split_cpu {
                     vec![
@@ -1258,10 +1264,10 @@ impl ThreadTracker {
                     vec![thread.cpu(self.elapsed)]
                 };
                 for frac in fracs {
-                    out.queue(Print("  "))?;
-                    out.queue(SetForegroundColor(pct_color(frac)))?;
-                    out.queue(Print(format!("{:>5.1}%", frac * 100.0)))?;
-                    out.queue(ResetColor)?;
+                    screen.put("  ");
+                    screen.fg(pct_color(frac));
+                    screen.put(format!("{:>5.1}%", frac * 100.0));
+                    screen.fg_reset();
                 }
                 for rate in [
                     thread.faults(self.secs),
@@ -1269,33 +1275,33 @@ impl ThreadTracker {
                     thread.syscalls(self.secs),
                     thread.wakes(self.secs),
                 ] {
-                    out.queue(Print("  "))?;
-                    out.queue(SetForegroundColor(rate_color(rate)))?;
-                    out.queue(Print(format!("{:>6}", self.rate_str(rate))))?;
-                    out.queue(ResetColor)?;
+                    screen.put("  ");
+                    screen.fg(rate_color(rate));
+                    screen.put(format!("{:>6}", self.rate_str(rate)));
+                    screen.fg_reset();
                 }
-                out.queue(Print(format!("  {:>8}  ", self.time_str(thread))))?;
+                screen.put(format!("  {:>8}  ", self.time_str(thread)));
                 if thread.is_cross() {
-                    out.queue(SetForegroundColor(Color::Yellow))?;
-                    out.queue(Print(self.away_label(thread)))?;
-                    out.queue(ResetColor)?;
+                    screen.fg(Color::Yellow);
+                    screen.put(self.away_label(thread));
+                    screen.fg_reset();
                 }
-                out.queue(SetAttribute(Attribute::Reset))?;
+                screen.pen_reset();
             }
         }
 
-        out.queue(MoveTo(0, rows.saturating_sub(1)))?;
-        out.queue(SetForegroundColor(Color::DarkGrey))?;
-        out.queue(Print(format!(
+        screen.at(0, rows.saturating_sub(1));
+        screen.fg(Color::DarkGrey);
+        screen.put(format!(
             "q/Esc: quit  |  t: {}  |  s: sort by {} ({})  |  r: reverse  |  i: {} ids  |  grouped by home compartment",
             self.view.label(),
             self.sort.label(),
             self.sort_dir(),
             if self.show_ids { "hide" } else { "show" },
-        )))?;
-        out.queue(ResetColor)?;
+        ));
+        screen.fg_reset();
 
-        out.flush()
+        screen.flush(out)
     }
 }
 
@@ -1408,4 +1414,194 @@ fn pad(s: &str, width: usize) -> String {
         s.push_str(&" ".repeat(width - s.len()));
     }
     s
+}
+
+/// One character cell, and the pen it was drawn with.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Cell {
+    ch: char,
+    pen: Pen,
+}
+
+impl Cell {
+    const BLANK: Cell = Cell {
+        ch: ' ',
+        pen: Pen::PLAIN,
+    };
+}
+
+/// The drawing attributes a cell carries. Deliberately only what this display uses: crossterm's
+/// `ResetColor` clears `fg`, and `SetAttribute(Attribute::Reset)` clears the lot, which is how the
+/// render code below already brackets its colours.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Pen {
+    fg: Option<Color>,
+    bold: bool,
+    reverse: bool,
+}
+
+impl Pen {
+    const PLAIN: Pen = Pen {
+        fg: None,
+        bold: false,
+        reverse: false,
+    };
+}
+
+/// A double-buffered character grid: `render` draws into it, and [`Screen::flush`] emits only the
+/// cells that differ from the frame before.
+///
+/// This display used to `Clear(ClearType::All)` and repaint every row every second. On a serial
+/// console every byte of that costs a port write in the kernel, which under virtualization is a vm
+/// exit apiece -- a full colour repaint of a large window runs to tens of KB a second and showed up
+/// as ~3% of a cpu, charged to init's `pty-console` thread rather than to `top`, which is what made
+/// it hard to attribute. Most of a frame does not change between refreshes: names, ids and
+/// compartments are static, and on a quiet system most rows are identical down to the byte. Cell
+/// granularity rather than line granularity matters for the same reason -- a row whose CPU% moved
+/// is otherwise re-sent in full for the sake of four digits.
+struct Screen {
+    cols: usize,
+    rows: usize,
+    cur: Vec<Cell>,
+    prev: Vec<Cell>,
+    x: usize,
+    y: usize,
+    pen: Pen,
+    /// Forces a full repaint: the first frame, and any resize.
+    dirty_all: bool,
+}
+
+impl Screen {
+    fn new() -> Self {
+        Self {
+            cols: 0,
+            rows: 0,
+            cur: Vec::new(),
+            prev: Vec::new(),
+            x: 0,
+            y: 0,
+            pen: Pen::PLAIN,
+            dirty_all: true,
+        }
+    }
+
+    /// Start a frame. The back buffer is blanked rather than cleared on screen, so a cell that
+    /// held text last frame and holds nothing now is diffed to a space -- which is what replaces
+    /// the old `Clear(ClearType::All)`.
+    fn begin(&mut self, cols: usize, rows: usize) {
+        if cols != self.cols || rows != self.rows {
+            self.cols = cols;
+            self.rows = rows;
+            self.cur = vec![Cell::BLANK; cols * rows];
+            self.prev = vec![Cell::BLANK; cols * rows];
+            self.dirty_all = true;
+        } else {
+            self.cur.fill(Cell::BLANK);
+        }
+        self.x = 0;
+        self.y = 0;
+        self.pen = Pen::PLAIN;
+    }
+
+    fn at(&mut self, x: u16, y: u16) {
+        self.x = x as usize;
+        self.y = y as usize;
+    }
+
+    fn fg(&mut self, color: Color) {
+        self.pen.fg = Some(color);
+    }
+
+    fn fg_reset(&mut self) {
+        self.pen.fg = None;
+    }
+
+    fn bold(&mut self) {
+        self.pen.bold = true;
+    }
+
+    fn reverse(&mut self) {
+        self.pen.reverse = true;
+    }
+
+    fn pen_reset(&mut self) {
+        self.pen = Pen::PLAIN;
+    }
+
+    /// Write `s` at the cursor, clipped to the row. Clipping here is what lets the callers keep
+    /// formatting to a width and not care whether the terminal is narrower.
+    fn put(&mut self, s: impl AsRef<str>) {
+        if self.y >= self.rows {
+            return;
+        }
+        let base = self.y * self.cols;
+        for ch in s.as_ref().chars() {
+            if self.x >= self.cols {
+                break;
+            }
+            self.cur[base + self.x] = Cell { ch, pen: self.pen };
+            self.x += 1;
+        }
+    }
+
+    /// Emit the difference between this frame and the last, then make it the last.
+    fn flush(&mut self, out: &mut impl Write) -> std::io::Result<()> {
+        if self.dirty_all {
+            out.queue(Clear(ClearType::All))?;
+        }
+        // Carried across runs, not just within one: consecutive changed runs usually share a pen,
+        // and re-stating it would cost more than the characters between them.
+        let mut emitted: Option<Pen> = None;
+        let mut buf = String::new();
+        for y in 0..self.rows {
+            let base = y * self.cols;
+            let mut x = 0;
+            while x < self.cols {
+                if !self.dirty_all && self.cur[base + x] == self.prev[base + x] {
+                    x += 1;
+                    continue;
+                }
+                out.queue(MoveTo(x as u16, y as u16))?;
+                while x < self.cols && (self.dirty_all || self.cur[base + x] != self.prev[base + x])
+                {
+                    let cell = self.cur[base + x];
+                    if emitted != Some(cell.pen) {
+                        if !buf.is_empty() {
+                            out.queue(Print(&buf))?;
+                            buf.clear();
+                        }
+                        Self::emit_pen(out, cell.pen)?;
+                        emitted = Some(cell.pen);
+                    }
+                    buf.push(cell.ch);
+                    x += 1;
+                }
+                if !buf.is_empty() {
+                    out.queue(Print(&buf))?;
+                    buf.clear();
+                }
+            }
+        }
+        out.queue(SetAttribute(Attribute::Reset))?;
+        core::mem::swap(&mut self.cur, &mut self.prev);
+        self.dirty_all = false;
+        out.flush()
+    }
+
+    /// Reset and re-apply, rather than computing a minimal transition from the pen before it: four
+    /// bytes for the common case of returning to plain, and no way to get out of step with the
+    /// terminal's actual state.
+    fn emit_pen(out: &mut impl Write, pen: Pen) -> std::io::Result<()> {
+        out.queue(SetAttribute(Attribute::Reset))?;
+        if pen.bold {
+            out.queue(SetAttribute(Attribute::Bold))?;
+        }
+        if pen.reverse {
+            out.queue(SetAttribute(Attribute::Reverse))?;
+        }
+        if let Some(color) = pen.fg {
+            out.queue(SetForegroundColor(color))?;
+        }
+        Ok(())
+    }
 }

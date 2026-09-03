@@ -359,11 +359,32 @@ pub struct ThreadSamplingEvent {
     pub state: ExecutionState,
     /// Frame pointer at sampling time, or 0 if it could not be read.
     ///
-    /// The kernel records it but does **not** dereference it: walking a frame chain from an
-    /// interrupt would mean the kernel following an arbitrary user pointer with no fault-fixup
-    /// path. Twizzler is a single address space, so the tracer walks the chain in userspace
-    /// instead, where a bad pointer is an ordinary userspace fault rather than a kernel one.
+    /// Recorded but not dereferenced: walking the chain from an interrupt would mean the kernel
+    /// following an arbitrary user pointer with no fault-fixup path. A tracer cannot walk it
+    /// post-hoc either -- the address resolves fine (one vm context is shared across security
+    /// contexts) but the stack word is long overwritten by the time a report runs.
     pub bp: u64,
+    /// Stack pointer at sampling time, or 0 if it could not be read.
+    ///
+    /// Do **not** dereference this from the sampling path. Reading `[sp]` there halted the
+    /// processor: a sample can fire while the thread is already inside the page-fault handler
+    /// (`page_fault_to_region` -> `ensure_in_core` -> `precharge_nowait`), and the read then takes
+    /// a *nested* fault that is unrecoverable. The tick path must not touch user memory at all.
+    ///
+    /// The frame pointer alone cannot name the caller of a *frameless* leaf like `memset`, which
+    /// establishes no frame, so `bp` there still belongs to the calling function and `[bp+8]`
+    /// names its caller's caller. Such a leaf also never moves `rsp`, so `[sp]` is its return
+    /// address for the whole call -- which is exactly the direct caller.
+    pub sp: u64,
+    /// Scratch registers captured from the interrupt frame: x86_64 `(rdi, rcx)`, aarch64
+    /// `(x0, x2)`. No memory is touched to collect these, which is the point -- they are the only
+    /// call-context a sample can carry safely.
+    ///
+    /// For a sample inside `rep stos`, `di` is the *current* destination (its slot names the
+    /// object being written) and `cx` the qwords still to go, so `cx * 8` is a lower bound on the
+    /// size of that individual memset.
+    pub di: u64,
+    pub cx: u64,
 }
 
 /// Event data for memory mapping operations.

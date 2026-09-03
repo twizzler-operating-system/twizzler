@@ -14,8 +14,9 @@ use std::{
     collections::BTreeMap,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Mutex,
+        Mutex, OnceLock,
     },
+    thread::Thread,
     time::{Duration, Instant},
 };
 
@@ -28,6 +29,21 @@ const STUCK_AFTER: Duration = Duration::from_millis(1500);
 /// Re-report a still-stuck item on this interval, rather than per sample.
 const REPEAT_EVERY: Duration = Duration::from_secs(15);
 const SAMPLE_EVERY: Duration = Duration::from_millis(250);
+/// How long the registry must stay empty before the sampler stops sampling and parks until work
+/// arrives.
+///
+/// There is nothing to watch while nothing is in flight, and sampling anyway cost four wakeups a
+/// second for the life of the boot -- on an idle system that was one of the largest remaining
+/// consumers of the kernel's timeout wheel. Several sample rounds rather than one, so a workload
+/// that briefly drains the registry does not pay a park/unpark pair per request.
+const IDLE_AFTER: Duration = Duration::from_secs(5);
+
+/// The sampler, for [`begin`] to wake when it parks out.
+///
+/// `unpark` on a thread that is not parked is a single atomic swap -- the futex wake happens only
+/// for a thread actually blocked -- so this stays off the request path's cost even though it runs
+/// for every work item.
+static SAMPLER: OnceLock<Thread> = OnceLock::new();
 /// Cap on lines per burst. Prefetch can leave dozens of page-data tasks in flight, and a report
 /// that drowns the transcript is the failure mode this diagnostic is supposed to avoid.
 const MAX_REPORTED: usize = 16;
@@ -208,6 +224,9 @@ pub fn begin(owner: &'static str, qid: u32, req: RequestFromKernel) -> Work {
             },
         );
     });
+    if let Some(sampler) = SAMPLER.get() {
+        sampler.unpark();
+    }
     Work { id }
 }
 
@@ -248,10 +267,21 @@ pub(crate) fn diag_enabled() -> bool {
 }
 
 fn sampler_main() {
+    let _ = SAMPLER.set(std::thread::current());
     let mut last_diag = Instant::now();
     let mut last_phase = Instant::now();
+    let mut last_work = Instant::now();
     loop {
-        std::thread::sleep(SAMPLE_EVERY);
+        // Park rather than sample once nothing has been in flight for a while: `begin` unparks,
+        // and an unpark that lands before the park leaves a token, so no work can register
+        // unwatched. `diag_enabled` keeps the cadence regardless -- the NVMEQ and PHASETICK
+        // heartbeats below are the whole point of that mode, and a parked sampler emits neither.
+        if !diag_enabled() && last_work.elapsed() >= IDLE_AFTER {
+            std::thread::park();
+            last_work = Instant::now();
+        } else {
+            std::thread::sleep(SAMPLE_EVERY);
+        }
         let now = Instant::now();
         // Heartbeats are opt-in (`--diag=pager`); the stall-triggered dumps below stay
         // unconditional. Sweeps that need the healthy-boot control arm the class explicitly.
@@ -272,8 +302,15 @@ fn sampler_main() {
         // try_lock, not lock: if some future change ever holds the registry longer, the sampler
         // skips a round rather than joining the pile-up it is supposed to describe.
         let Ok(mut active) = ACTIVE.try_lock() else {
+            // Contention *is* activity, so it counts as work for the idle check below: parking
+            // because the one round that would have observed the registry could not read it is
+            // exactly backwards.
+            last_work = now;
             continue;
         };
+        if !active.is_empty() {
+            last_work = now;
+        }
 
         let due = active.values().any(|entry| {
             now.duration_since(entry.start) >= STUCK_AFTER

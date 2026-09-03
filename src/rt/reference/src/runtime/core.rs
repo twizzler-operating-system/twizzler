@@ -154,6 +154,8 @@ impl ReferenceRuntime {
                 // Same reason: rustc exits this way, so a post_main_hook-only report measures
                 // cargo and never the process the profile is actually about.
                 crate::runtime::file::namestats::report();
+                #[cfg(target_arch = "x86_64")]
+                crate::runtime::memsettrace::report();
             } else if code != 0 && !self.state().contains(RuntimeState::IS_MONITOR) {
                 // `twz_rt_exit` is overloaded: both thread trampolines (std's `thread_start`,
                 // mlibc's `sys_thread_exit`) end a finished thread through here with code 0, and

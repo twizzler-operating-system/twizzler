@@ -74,13 +74,13 @@ impl Table {
     /// this function may choose to do something clever, like store the count in the available bits.
     /// But it could also make this function a no-op, and make [Table::read_count] just count
     /// the entries.
-    pub fn set_count(&mut self, _count: usize) {
+    pub(crate) fn set_count_spread(&mut self, _count: usize) {
         // for now let's make this a no-op
         // the pt entries on arm does have some spare bits
     }
 
     /// Read the current count of used entries.
-    pub fn read_count(&self) -> usize {
+    pub(crate) fn read_count_spread(&self) -> usize {
         let mut count = 0;
         for entry in self.entries {
             if entry.is_present() {

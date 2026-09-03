@@ -24,3 +24,13 @@ pub fn phys_to_virt(pa: PhysAddr) -> VirtAddr {
     let raw: u64 = pa.into();
     VirtAddr::new(raw + unsafe { PHYS_MEM_OFFSET }).unwrap()
 }
+
+/// Inverse of [`phys_to_virt`] for addresses inside the identity map.
+///
+/// `None` for anything outside it, which is how a caller distinguishes a kernel-heap or
+/// device-mapped address from a physical frame reached through the map.
+pub fn virt_to_phys(va: VirtAddr) -> Option<PhysAddr> {
+    let raw: u64 = va.raw();
+    let off = unsafe { PHYS_MEM_OFFSET };
+    PhysAddr::new(raw.checked_sub(off)?).ok()
+}

@@ -20,7 +20,7 @@ use twizzler_rt_abi::{
 
 use super::{
     PageFaultFlags, Slot,
-    fault::{FaultClass, FaultStage, record_class, record_stage, stage_start},
+    fault::{FaultClass, FaultStage, census, record_class, record_stage, stage_start},
 };
 use crate::{
     arch::VirtAddr,
@@ -504,6 +504,7 @@ impl MapRegion {
             );
         }
 
+        let mut mapped = false;
         if all_were_present && !did_cow {
             log::trace!(
                 "fault: all pages were present in object {} page {} (addr {:?}) (flags = {:?})",
@@ -525,7 +526,7 @@ impl MapRegion {
             // TODO: is this always user?
             let settings = MappingSettings::new(prot, self.cache_type, MappingFlags::USER);
             let t = stage_start();
-            let mapped = map_ctx.ensure_object_mapped(
+            mapped = map_ctx.ensure_object_mapped(
                 sctxid,
                 // `obj_page_tree` is this region's stable clone when it has one, and a clone
                 // takes no count against the object; see `VirtContext::map_object`.
@@ -538,6 +539,23 @@ impl MapRegion {
             if mapped {
                 record_class(FaultClass::Mapped);
             }
+        }
+
+        if census::enabled() {
+            // Evaluated in the order a fault resolves, so each fault lands in exactly one bucket
+            // and the columns sum to the total.
+            let kind = if used_pager {
+                census::Kind::Pager
+            } else if did_cow {
+                census::Kind::Cow
+            } else if needs_fill && !all_were_present {
+                census::Kind::Fill
+            } else if mapped {
+                census::Kind::MapOnly
+            } else {
+                census::Kind::Present
+            };
+            census::record(self.object().id(), kind);
         }
 
         self.trace_fault(addr, ip, cause, pfflags, used_pager, false, start_time);
@@ -555,15 +573,52 @@ impl MapRegion {
         }
     }
 
+    /// Take this region's dirty pages and hand them to the pager, returning whether anything was
+    /// submitted.
+    ///
+    /// The page tables consulted are the region's own when it is STABLE and the object's
+    /// otherwise, which is the distinction that makes a whole-system sweep ([`SysCtrlCmd::SyncAll`]
+    /// in `syscall::sys_sysctrl`) need this rather than the object-keyed background path: a STABLE
+    /// mapping's dirty bits live in its private COW clone and nothing keyed by object can see them.
+    ///
+    /// `wait` blocks until the pager acknowledges instead of submitting and returning.
+    pub fn sync_dirty(&self, wait: bool) -> Result<bool, TwzError> {
+        let mut pt = if let Some(stable) = self.stable.as_ref() {
+            PtGuard::new(stable)
+        } else {
+            self.object().lock_page_tables()
+        };
+        let dirty_pages = pt.get_dirty_and_reset()?;
+        log::trace!(
+            "sync region {:?} with dirty pages {:?}",
+            self.range,
+            dirty_pages
+        );
+        // Before the submit, not after: `sync_region` can block on the pager.
+        drop(pt);
+        if self.object().use_pager() && !dirty_pages.is_empty() {
+            crate::pager::sync_region(self, dirty_pages, None, 0, wait);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     pub fn ctrl(&self, cmd: MapControlCmd, _opts: u64) -> Result<u64, TwzError> {
         match cmd {
             MapControlCmd::Sync(sync_info_ptr) => {
+                if sync_info_ptr.is_null() {
+                    self.sync_dirty(false)?;
+                    return Ok(0);
+                }
                 let mut pt = if let Some(stable) = self.stable.as_ref() {
                     PtGuard::new(stable)
                 } else {
                     self.object().lock_page_tables()
                 };
-                if sync_info_ptr.is_null() {
+                let sync_info = unsafe { sync_info_ptr.read() };
+                let version = sync_info.release_compare;
+
+                if sync_info.flags & SYNC_FLAG_DURABLE != 0 {
                     let dirty_pages = pt.get_dirty_and_reset()?;
                     log::trace!(
                         "sync region {:?} with dirty pages {:?}",
@@ -572,43 +627,27 @@ impl MapRegion {
                     );
                     drop(pt);
                     if self.object().use_pager() && !dirty_pages.is_empty() {
-                        crate::pager::sync_region(self, dirty_pages, None, 0, false);
-                    }
-                } else {
-                    let sync_info = unsafe { sync_info_ptr.read() };
-                    let version = sync_info.release_compare;
-
-                    if sync_info.flags & SYNC_FLAG_DURABLE != 0 {
-                        let dirty_pages = pt.get_dirty_and_reset()?;
-                        log::trace!(
-                            "sync region {:?} with dirty pages {:?}",
-                            self.range,
-                            dirty_pages
+                        crate::pager::sync_region(
+                            self,
+                            dirty_pages,
+                            Some(sync_info),
+                            version,
+                            sync_info.flags & SYNC_FLAG_ASYNC_DURABLE != 0,
                         );
-                        drop(pt);
-                        if self.object().use_pager() && !dirty_pages.is_empty() {
-                            crate::pager::sync_region(
-                                self,
-                                dirty_pages,
-                                Some(sync_info),
-                                version,
-                                sync_info.flags & SYNC_FLAG_ASYNC_DURABLE != 0,
-                            );
-                        }
                     }
+                }
 
-                    if sync_info.flags & SYNC_FLAG_ASYNC_DURABLE != 0 {
-                        if sync_info.flags & SYNC_FLAG_DURABLE == 0 {
-                            self.should_sync.store(true, Ordering::SeqCst);
-                        }
-                        if !sync_info.release_ptr.is_null() {
-                            unsafe { sync_info.try_release() }?;
-                            let wake = ThreadSyncWake::new(
-                                ThreadSyncReference::Virtual(sync_info.release_ptr.cast()),
-                                usize::MAX,
-                            );
-                            wakeup(&wake)?;
-                        }
+                if sync_info.flags & SYNC_FLAG_ASYNC_DURABLE != 0 {
+                    if sync_info.flags & SYNC_FLAG_DURABLE == 0 {
+                        self.should_sync.store(true, Ordering::SeqCst);
+                    }
+                    if !sync_info.release_ptr.is_null() {
+                        unsafe { sync_info.try_release() }?;
+                        let wake = ThreadSyncWake::new(
+                            ThreadSyncReference::Virtual(sync_info.release_ptr.cast()),
+                            usize::MAX,
+                        );
+                        wakeup(&wake)?;
                     }
                 }
 

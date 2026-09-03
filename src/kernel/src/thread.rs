@@ -1115,10 +1115,15 @@ impl Thread {
         if expire.is_some_and(|ex| current_ticks >= ex) {
             *expire = Some(current_ticks + SAMPLE_PERIOD_TICKS);
             if TRACE_MGR.any_enabled(TraceKind::Thread, twizzler_abi::trace::THREAD_SAMPLE) {
+                let sp_val = self.read_sp();
+                let (di, cx) = self.read_di_cx();
                 let data = ThreadSamplingEvent {
                     ip: self.read_ip(),
                     state: self.get_state(),
                     bp: self.read_bp(),
+                    sp: sp_val,
+                    di,
+                    cx,
                 };
                 let entry = new_trace_entry(
                     TraceKind::Thread,

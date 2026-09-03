@@ -7,6 +7,8 @@ mod core;
 mod debug;
 mod exec;
 mod file;
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod memsettrace;
 mod object;
 mod process;
 mod slot;

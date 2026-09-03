@@ -266,7 +266,149 @@ pub fn stage_snapshot() -> [(usize, u64); NR_STAGES] {
     out
 }
 
+/// Per-object page-fault census: which objects the faults are going to, and what kind.
+///
+/// Deliberately not part of [`FAULT_PROFILE`]. That one reads the clock a dozen times per fault and
+/// takes a lock for each span, which is enough to wedge a build workload; this is one hashed slot
+/// lookup and a pair of relaxed `fetch_add`s, so it can stay on for a whole `cargo build`.
+///
+/// One call per fault, at the end of `MapRegion::handle_fault`, where every classifier the fault
+/// produced is already known -- rather than at the sites that produce them, which would cost one
+/// table lookup each.
+pub mod census {
+    use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    use twizzler_abi::object::ObjID;
+
+    /// Armed by `--kernel-arg=--diag=fault`; see [`crate::kdiag_fault`].
+    pub fn enabled() -> bool {
+        crate::kdiag_fault()
+    }
+
+    /// Distinct objects tracked.
+    ///
+    /// Slots are claimed first-come and never released, so this is not a top-N: at 512 a guest
+    /// `cargo build` put 159,859 of 175,695 faults into `OVERFLOW`, and the slots that *were* held
+    /// belonged to whatever faulted during boot rather than to the workload. The per-kind totals
+    /// below are what survive that -- they are global and cannot overflow -- so the class split is
+    /// always complete even when the per-object listing is not.
+    const CAP: usize = 4096;
+
+    #[derive(Clone, Copy)]
+    #[repr(usize)]
+    pub enum Kind {
+        /// Absent page filled from nothing: no pager, no COW. The zero-fill path.
+        Fill = 0,
+        /// The fill reached the pager.
+        Pager,
+        /// Copied on write.
+        Cow,
+        /// Nothing was filled; the fault installed the object-table entry into the address space.
+        MapOnly,
+        /// Nothing was filled and nothing was installed -- a permission fault, or a refault.
+        Present,
+    }
+    pub const NR_KINDS: usize = Kind::Present as usize + 1;
+    pub const KIND_NAMES: [&str; NR_KINDS] = ["fill", "pager", "cow", "map", "present"];
+
+    /// Slot key: the low half of the object id, claimed by CAS. `HI` is stored after the claim and
+    /// is always written with the same value by the same object, so a reader cannot observe a
+    /// mismatched pair -- only, briefly, a zero high half.
+    static LO: [AtomicU64; CAP] = [const { AtomicU64::new(0) }; CAP];
+    static HI: [AtomicU64; CAP] = [const { AtomicU64::new(0) }; CAP];
+    static N: [[AtomicU64; NR_KINDS]; CAP] =
+        [const { [const { AtomicU64::new(0) }; NR_KINDS] }; CAP];
+    static OVERFLOW: AtomicU64 = AtomicU64::new(0);
+    static TOTAL: AtomicU64 = AtomicU64::new(0);
+    /// Per-kind totals over every fault, whether or not its object found a slot.
+    static KIND_TOTAL: [AtomicU64; NR_KINDS] = [const { AtomicU64::new(0) }; NR_KINDS];
+
+    pub fn record(id: ObjID, kind: Kind) {
+        TOTAL.fetch_add(1, Relaxed);
+        KIND_TOTAL[kind as usize].fetch_add(1, Relaxed);
+        let raw = id.raw();
+        let lo = raw as u64;
+        let hi = (raw >> 64) as u64;
+        // An id of 0 cannot be distinguished from an unclaimed slot; nothing faults against it.
+        if lo == 0 {
+            OVERFLOW.fetch_add(1, Relaxed);
+            return;
+        }
+        let home = ((lo ^ hi) as usize >> 4) % CAP;
+        let mut i = home;
+        for _ in 0..CAP {
+            match LO[i].compare_exchange(0, lo, Relaxed, Relaxed) {
+                Ok(_) => {
+                    HI[i].store(hi, Relaxed);
+                    break;
+                }
+                Err(cur) if cur == lo && HI[i].load(Relaxed) == hi => break,
+                Err(_) => i = (i + 1) % CAP,
+            }
+        }
+        if LO[i].load(Relaxed) != lo {
+            OVERFLOW.fetch_add(1, Relaxed);
+            return;
+        }
+        N[i][kind as usize].fetch_add(1, Relaxed);
+    }
+
+    /// Sorted by total, descending -- an unsorted dump reads as a ranking to anyone who truncates
+    /// it, which is how a flat counter once got reported as a hundredfold change.
+    pub fn print() {
+        if TOTAL.load(Relaxed) == 0 {
+            return;
+        }
+        let total_of = |i: usize| N[i].iter().map(|c| c.load(Relaxed)).sum::<u64>();
+        let mut order: [u16; CAP] = core::array::from_fn(|i| i as u16);
+        for a in 0..CAP {
+            for b in (a + 1)..CAP {
+                if total_of(order[b] as usize) > total_of(order[a] as usize) {
+                    order.swap(a, b);
+                }
+            }
+        }
+        logln!(
+            "== fault census: {} faults, {} in objects that found no slot ==",
+            TOTAL.load(Relaxed),
+            OVERFLOW.load(Relaxed),
+        );
+        for (i, name) in KIND_NAMES.iter().enumerate() {
+            logln!("  {:>8}: {}", name, KIND_TOTAL[i].load(Relaxed));
+        }
+        logln!(
+            "  {:>10}  {:>34}  {}",
+            "TOTAL",
+            "OBJECT",
+            KIND_NAMES.join(" ")
+        );
+        for &i in order.iter() {
+            let i = i as usize;
+            let lo = LO[i].load(Relaxed);
+            if lo == 0 {
+                continue;
+            }
+            let total = total_of(i);
+            if total == 0 {
+                continue;
+            }
+            let id = ObjID::new(((HI[i].load(Relaxed) as u128) << 64) | lo as u128);
+            logln!(
+                "  {:>10}  {:>34}  {} {} {} {} {}",
+                total,
+                id,
+                N[i][0].load(Relaxed),
+                N[i][1].load(Relaxed),
+                N[i][2].load(Relaxed),
+                N[i][3].load(Relaxed),
+                N[i][4].load(Relaxed),
+            );
+        }
+    }
+}
+
 pub fn print_fault_profile() {
+    census::print();
     if !FAULT_PROFILE {
         return;
     }

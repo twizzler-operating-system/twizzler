@@ -55,6 +55,34 @@ pub extern "C-unwind" fn __twz_rt_diag_decommit_stats(out: *mut u64) {
     }
 }
 
+/// Zero `len` bytes at `ptr` by asking the kernel to remap the range as zero, rather than storing
+/// the bytes.
+///
+/// Returns false if the range could not be resolved to a heap object, in which case the caller
+/// still owes the zeroing -- unlike `decommit_range`, where doing nothing is a valid outcome.
+///
+/// `ptr` must be page-aligned and `len` a whole number of pages, both because `ObjectSource`
+/// works in pages and because a partial page would silently zero a neighbour's bytes.
+pub(crate) unsafe fn zero_range(ptr: *mut u8, len: usize) -> bool {
+    let Some(id) = LOCAL_ALLOCATOR.get_id_from_ptr(ptr) else {
+        return false;
+    };
+    let zero = ObjectSource::new_zero((ptr as usize % MAX_SIZE) as u64, len);
+    // End-to-end, to compare against the kernel's own `zero_range` breakdown: the difference is
+    // everything `sys_object_copy` does around the page-table work.
+    let t = std::time::Instant::now();
+    let ok = sys_object_copy(id, &[zero.into()]).is_ok();
+    ZR_NS.fetch_add(
+        t.elapsed().as_nanos() as u64,
+        core::sync::atomic::Ordering::Relaxed,
+    );
+    ZR_CALLS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    ok
+}
+
+pub static ZR_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub static ZR_CALLS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 unsafe fn decommit_range(ptr: *mut u8, len: usize) {
     if len == 0 {
         return;
