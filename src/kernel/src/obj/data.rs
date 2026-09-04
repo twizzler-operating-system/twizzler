@@ -53,6 +53,14 @@ enum ZeroOrFrame {
 /// 2 MiB alignment is load-bearing in `pager_compl_handle_page_data`.
 pub(crate) const TRY_LARGE_ANON_PAGES: bool = false;
 
+/// Let [`Object::zero_range`]'s partial head/tail page leave an absent page absent, instead of
+/// faulting it in through `set_bytes`/`POPULATE` only to memset it to zero.
+///
+/// Absent means zero on every path that reaches there -- `zero_range` sends a pager-backed object
+/// to `set_bytes` wholesale before it splits the range, and for the rest `ensure_in_core` fills an
+/// absent page with a `ZEROED` frame -- so the allocate, map and memset buy nothing.
+pub(crate) const ZERO_PARTIAL_SKIP_ABSENT: bool = true;
+
 /// Install an anonymous fault-around run in **one** descent of the object page table.
 ///
 /// The fill loop below calls `map_page` once per page, and `map_page`'s cost is per *call*, not
@@ -1432,6 +1440,35 @@ impl Object {
         self.cow_copy(dst, src_offset, dst_offset, len)
     }
 
+    /// Zero part of one page, without faulting the page in first.
+    ///
+    /// [`Self::set_bytes`] goes through `with_frame(POPULATE)`, so a page the object does not hold
+    /// gets a frame allocated, mapped and memset -- to make it read as the zeroes it already reads
+    /// as. Absent means zero on every path that reaches here: [`Self::zero_range`] sends a
+    /// pager-backed object to `set_bytes` wholesale before it ever splits the range, and for the
+    /// rest `ensure_in_core` fills an absent page with a `ZEROED` frame. It is the same invariant
+    /// `setup_zero_range` relies on when it zeroes a whole page by dropping its frame.
+    ///
+    /// `WRITE` is still passed, so a present COW page is broken rather than written through.
+    ///
+    /// Off, this is `set_bytes` exactly as before, so it is an A/B axis rather than a code path
+    /// that has to be removed.
+    fn zero_partial_page(self: &ObjectRef, offset: usize, len: usize) -> Result<(), TwzError> {
+        if !ZERO_PARTIAL_SKIP_ABSENT {
+            return self.set_bytes(offset, len, 0);
+        }
+        self.do_with_frame(offset, FindFrameFlags::WRITE, |frame_offset, frame| {
+            let Some(frame) = frame else {
+                return;
+            };
+            let po = offset - frame_offset;
+            let len = core::cmp::min(len, frame.size() - po);
+            unsafe {
+                core::ptr::write_bytes(frame.virtaddr().as_mut_ptr::<u8>().byte_add(po), 0, len);
+            }
+        })
+    }
+
     pub fn zero_range(self: &ObjectRef, offset: usize, len: usize) -> Result<(), TwzError> {
         log::trace!(
             "zero_range: offset {:x} len {:x} in {}",
@@ -1449,14 +1486,14 @@ impl Object {
         let pre_zero = offset % PHYS_LEVEL_LAYOUTS[0].size();
         if pre_zero != 0 {
             let pre_len = core::cmp::min(len, PHYS_LEVEL_LAYOUTS[0].size() - pre_zero);
-            self.set_bytes(offset, pre_len, 0)?;
+            self.zero_partial_page(offset, pre_len)?;
             return self.zero_range(offset + pre_len, len - pre_len);
         }
 
         let post_zero = len % PHYS_LEVEL_LAYOUTS[0].size();
         if post_zero != 0 {
             let post_len = post_zero;
-            self.set_bytes(offset + len - post_len, post_len, 0)?;
+            self.zero_partial_page(offset + len - post_len, post_len)?;
             return self.zero_range(offset, len - post_len);
         }
 

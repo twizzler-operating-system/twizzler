@@ -1222,6 +1222,21 @@ pub fn try_alloc_frame(flags: FrameAllocFlags, layout: Layout) -> Option<FrameRe
         .try_alloc_frame(flags, layout)
 }
 
+/// A frame that is already zero, or `None` -- never a dirty frame plus a memset.
+///
+/// Served only from the frame cache's clean side. The physical allocator is deliberately not
+/// consulted on a miss: reaching it means its lock and its dirty fallback, which is the work this
+/// exists to avoid. A caller that gets `None` is expected to have a cheaper alternative, not to
+/// try harder.
+pub fn try_alloc_prezeroed_frame(layout: Layout) -> Option<FrameRef> {
+    if layout != PHYS_LEVEL_LAYOUTS[0] {
+        return None;
+    }
+    let frame = framecache::alloc_one_clean()?;
+    // `needs_zeroing: false` is the point: the cache only reports a frame clean when it is.
+    Some(finish_cached_alloc(frame, FrameAllocFlags::ZEROED, false))
+}
+
 /// Bulk counterpart of [`try_alloc_frame`]; see [`MemoryTracker::try_alloc_frames`].
 pub fn try_alloc_frames(
     flags: FrameAllocFlags,

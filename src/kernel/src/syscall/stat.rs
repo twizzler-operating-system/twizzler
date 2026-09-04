@@ -93,6 +93,9 @@ pub fn write_sys_info_values(ptr: *mut u8, kind: InfoKind) -> Result<()> {
                 stats.wakeups += p.stats.wakeups.load(Ordering::Relaxed);
                 stats.steals += p.stats.steals.load(Ordering::Relaxed);
             });
+            // Global, not per-cpu: charged at the wake site rather than to a cpu, so it is read
+            // once outside the fold above.
+            stats.thread_wakes = crate::processor::sched::wakesrc::total();
             stats.interrupts = crate::interrupt::taken();
             let pager = crate::pager::pager_totals();
             stats.pager_requests = pager.requests;

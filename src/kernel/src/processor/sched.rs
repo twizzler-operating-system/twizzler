@@ -372,7 +372,22 @@ fn schedule_thread_on_cpu(
     } else {
         match cur.as_ref() {
             Some(cur) if cur.is_idle_thread() => wakestats::WAKE_LOCAL_IDLE,
-            Some(cur) if woken_priority > cur.effective_priority() => wakestats::WAKE_LOCAL_MARKED,
+            Some(cur) if woken_priority > cur.effective_priority() => {
+                // A thread holding a mutex is in a critical section that some waiter -- possibly
+                // the one being woken -- is queued behind, so stopping it there trades a short
+                // hold for a scheduling round trip plus a wake for everyone waiting. Deferred only
+                // within a class: a higher *class* preempts a holder as it always did, so realtime
+                // is never held off by a user thread.
+                if crate::mutex::MUTEX_HOLDER_PRIORITY
+                    && cur.get_mutex_count() > 0
+                    && woken_priority.class <= cur.effective_priority().class
+                {
+                    wakestats::holder_spared();
+                    wakestats::WAKE_LOCAL_LOST
+                } else {
+                    wakestats::WAKE_LOCAL_MARKED
+                }
+            }
             Some(_) => wakestats::WAKE_LOCAL_LOST,
             None => 0,
         }
@@ -860,6 +875,7 @@ pub fn schedule_thread(thread: ThreadRef) {
     // After the idle check: an idle thread is not woken in any sense a reader cares about, and
     // counting it would put a wake on every cpu every time one went idle and came back.
     thread.stats.wakes.fetch_add(1, Ordering::Relaxed);
+    wakesrc::note(core::panic::Location::caller());
     // `ProcessorStats::wakeups` was declared and read (`InfoKind::KernelStats`, the mutex-stall
     // dump) but never incremented, so it reported zero for every boot. Charged to the waker's
     // cpu, which is the cpu doing the work.
@@ -1242,6 +1258,145 @@ pub fn schedule_maybe_rebalance(dt: Nanoseconds) {
 /// A stall is several ticks, and one tick would bound the wait if the priority test passed at the
 /// tick -- so `lost_priority` being the bulk of `local` says the pager's `User + 48` boost is not
 /// producing what `pager-srv/src/threads.rs` assumes, and the problem was never preemption.
+/// Wakes attributed to the call site that asked for them.
+///
+/// `KernelStats::thread_wakes` says how many wakes a workload costs; this says who asked. The
+/// site is exact and needs no context tracking: `schedule_thread` is already `#[track_caller]`,
+/// so `Location::caller()` names the caller directly.
+///
+/// An earlier version of this tagged the cpu with the syscall or interrupt vector in flight and
+/// read that tag here. It was wrong: `post_interrupt` runs `schedule_maybe_preempt`, which can
+/// switch threads *inside* the handler, leaving the incoming thread to run with the cpu still
+/// tagged as the interrupt. It charged 56% of all wakes to the reschedule IPI -- a handler that
+/// only sets a flag and wakes nothing.
+/// Every kernel thread, with what it has cost.
+///
+/// The sampling profiler groups its kernel-thread samples into one `<kernel thread, no entry
+/// frame>` bucket -- 25% of kernel time in the profile that prompted this -- and names the rows it
+/// can from a note on the control object. Two of the four could not be named that way, so the
+/// largest single bucket had two unidentified occupants. The kernel can read the same notes
+/// (`get_notes().summarize`) and already accounts per-thread time, so it can answer directly
+/// rather than leaving the question to a join the tracer cannot make.
+pub fn print_kernel_threads() {
+    // Two passes, and the split is load-bearing: `with_all_threads` holds a spinlock, and
+    // `VNotes::summarize` takes a *sleeping* mutex to read the name note. Doing the lookup inside
+    // the closure panics outright ("cannot lock mutex in critical context"). So the locked pass
+    // collects ids and counters only, and the names are resolved after it has been dropped.
+    let mut rows: alloc::vec::Vec<(u64, u64, u64, u64, u64, u64, twizzler_abi::object::ObjID)> =
+        alloc::vec::Vec::new();
+    with_all_threads(|threads| {
+        for thread in threads.iter() {
+            // A kernel thread belongs to no compartment. Idle threads are excluded: they are
+            // per-cpu by construction and their time is the machine being idle, not a cost.
+            if thread.home_sctx_id().raw() != 0 || thread.is_idle_thread() {
+                continue;
+            }
+            rows.push((
+                thread.stats.sys.load(Ordering::Relaxed),
+                thread.stats.user.load(Ordering::Relaxed),
+                thread.stats.idle.load(Ordering::Relaxed),
+                thread.stats.wakes.load(Ordering::Relaxed),
+                thread.stats.syscalls.load(Ordering::Relaxed),
+                thread.id(),
+                thread.objid(),
+            ));
+        }
+    });
+    rows.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    logln!("== kernel threads (statticks), by sys ==");
+    for (sys, user, idle, wakes, syscalls, id, objid) in rows {
+        let mut namebuf = [0u8; 24];
+        let namelen = match crate::obj::lookup_object(objid, crate::obj::LookupFlags::empty()) {
+            crate::obj::LookupResult::Found(obj) => obj.get_notes().summarize(&mut namebuf),
+            _ => 0,
+        };
+        let name = core::str::from_utf8(&namebuf[..namelen]).unwrap_or("?");
+        logln!(
+            "==   {:<20} id {:<5} sys {:>8} user {:>8} idle {:>10} wakes {:>8} syscalls {:>7}",
+            if name.is_empty() { "<unnamed>" } else { name },
+            id,
+            sys,
+            user,
+            idle,
+            wakes,
+            syscalls,
+        );
+    }
+}
+
+pub mod wakesrc {
+    use core::{
+        panic::Location,
+        sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    };
+
+    /// One slot per distinct call site. `schedule_thread` has a handful; the last slot collects
+    /// any overflow so a new caller shows up as "other" rather than going uncounted.
+    const NR: usize = 16;
+
+    #[allow(clippy::declare_interior_mutable_const)]
+    const ZERO_U: AtomicUsize = AtomicUsize::new(0);
+    #[allow(clippy::declare_interior_mutable_const)]
+    const ZERO: AtomicU64 = AtomicU64::new(0);
+    /// The `&'static Location` itself, as a pointer, is the key: two call sites never share one.
+    static SITES: [AtomicUsize; NR] = [ZERO_U; NR];
+    static COUNTS: [AtomicU64; NR] = [ZERO; NR];
+
+    pub fn note(loc: &'static Location<'static>) {
+        let key = loc as *const _ as *const u8 as usize;
+        for i in 0..NR - 1 {
+            let cur = SITES[i].load(Ordering::Relaxed);
+            if cur == key {
+                COUNTS[i].fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+            if cur == 0
+                && SITES[i]
+                    .compare_exchange(0, key, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+            {
+                COUNTS[i].fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        }
+        COUNTS[NR - 1].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Threads made runnable, summed over every site. Unlike `ProcessorStats::wakeups` this is
+    /// only that: `schedule_resched` charges reschedule requests to `wakeups` as well, so the two
+    /// differ by roughly the preempt count.
+    pub fn total() -> u64 {
+        COUNTS.iter().map(|c| c.load(Ordering::Relaxed)).sum()
+    }
+
+    pub fn print() {
+        let total = total();
+        if total == 0 {
+            return;
+        }
+        logln!("== wakes by call site ({} total) ==", total);
+        for i in 0..NR {
+            let n = COUNTS[i].load(Ordering::Relaxed);
+            if n == 0 {
+                continue;
+            }
+            let pct = n as f64 * 100.0 / total as f64;
+            let key = SITES[i].load(Ordering::Relaxed);
+            if i == NR - 1 || key == 0 {
+                logln!("==   {:<34} {:>9}  {:>5.1}%", "(other)", n, pct);
+            } else {
+                // Safety: only ever written from `note`, with a `&'static Location`.
+                let loc: &'static Location<'static> =
+                    unsafe { &*(key as *const Location<'static>) };
+                let mut buf = alloc::string::String::new();
+                use core::fmt::Write;
+                let _ = write!(&mut buf, "{}:{}", loc.file(), loc.line());
+                logln!("==   {:<34} {:>9}  {:>5.1}%", buf, n, pct);
+            }
+        }
+    }
+}
+
 pub mod wakestats {
     use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -1277,6 +1432,17 @@ pub mod wakestats {
         if signalled {
             REMOTE_SIGNALLED.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    /// Preempts declined because the target held a mutex and the waker was the same class.
+    static HOLDER_SPARED: AtomicU64 = AtomicU64::new(0);
+
+    pub fn holder_spared() {
+        HOLDER_SPARED.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn holder_spared_count() -> u64 {
+        HOLDER_SPARED.load(Ordering::Relaxed)
     }
 
     pub fn preempt(taken: bool) {
@@ -1365,6 +1531,10 @@ pub mod wakestats {
     }
 
     pub fn print() {
+        logln!(
+            "== preempts declined for a mutex holder (same class): {} ==",
+            HOLDER_SPARED.load(Ordering::Relaxed)
+        );
         let local = LOCAL.load(Ordering::Relaxed);
         if local == 0 && REMOTE.load(Ordering::Relaxed) == 0 {
             return;

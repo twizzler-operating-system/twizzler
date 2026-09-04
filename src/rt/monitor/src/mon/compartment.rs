@@ -144,6 +144,11 @@ impl CompartmentMgr {
         self.instances.get(&id).ok_or(TwzError::INVALID_ARGUMENT)
     }
 
+    /// The instance ID of every compartment currently known, in no particular order.
+    pub fn instance_ids(&self) -> Vec<ObjID> {
+        self.instances.keys().copied().collect()
+    }
+
     /// Get a [RunComp] by name.
     pub fn _get_name(&self, name: &str) -> Result<&RunComp, TwzError> {
         let id = self.names.get(name).ok_or(TwzError::INVALID_ARGUMENT)?;

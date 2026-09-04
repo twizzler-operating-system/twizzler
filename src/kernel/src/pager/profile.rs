@@ -589,6 +589,19 @@ pub fn print_pager_profile() {
         p.narrowed_pages.load(Ordering::Relaxed),
     );
 
+    if let Some(rs) = super::queues::completion_recv_stats() {
+        // `parks` is what the spin was supposed to avoid and `spins` is what it cost trying: a
+        // parks-to-recvs ratio near one means the producer answers one request at a time and the
+        // spin can only ever be paid, never won, which is what the budget adapts away from.
+        logln!(
+            "  completion queue: {} receives, {} parked ({} spin iterations spent, budget now {})",
+            rs.recvs,
+            rs.parks,
+            rs.spins,
+            rs.budget,
+        );
+    }
+
     let mgr_n = p.mgr_lock_count.load(Ordering::Relaxed).max(1);
     let idmap_n = p.idmap_lock_count.load(Ordering::Relaxed).max(1);
     logln!(

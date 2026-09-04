@@ -1639,6 +1639,7 @@ name = "ctl"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "monitor-api",
  "twizzler-abi",
  "twizzler-rt-abi",
 ]

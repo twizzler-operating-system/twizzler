@@ -234,12 +234,26 @@ fn release_pager_frame(frame: FrameRef) {
     }
 }
 
+/// What a completion still owes the inflight manager once its pages are installed.
+///
+/// Returned rather than done in place so that one manager hold covers both this and the DONE
+/// removal below it. Splitting them took the shard mutex twice per completion in the common case,
+/// and -- because `remove_request` signals too -- signalled the request's waiters twice.
+enum ComplPost {
+    /// Page-data arrived: charge `count` pages against what the request asked for.
+    PageData { count: usize },
+    /// The request is answered outright, by an object-info reply or by the pager giving up.
+    Ready,
+    /// Nothing to do under the lock.
+    Nothing,
+}
+
 fn pager_compl_handle_page_data(
     request: &SentRequestInfo,
     obj_range: ObjectRange,
     phys_range: PhysRange,
     flags: PageFlags,
-) {
+) -> ComplPost {
     let handle_start = Instant::now();
     let pcount = phys_range.page_count();
     log::debug!(
@@ -395,7 +409,6 @@ fn pager_compl_handle_page_data(
     super::profile::PAGER_PROFILE.completion(max, installed, dup, dup_large, merged);
     super::profile::PAGER_PROFILE.installed_ns((Instant::now() - handle_start).as_nanos() as u64);
 
-    let mut mgr = super::lock_inflight_for(&request.reqkind);
     if dup_large > 0 {
         // Only the large-page case, which is at most a line or two a boot -- logging every
         // completion hid it (see the note in `get_pages_and_wait`). The counters carry everything
@@ -411,21 +424,10 @@ fn pager_compl_handle_page_data(
             dup,
             dup_large,
             request.reqkind,
-            mgr.page_data_ranges(id),
+            super::lock_inflight_for(&request.reqkind).page_data_ranges(id),
         );
     }
-    mgr.with_request(&request.reqkind, |req| {
-        req.mark_first_completion();
-        if req.finished_pages(count) {
-            req.mark_done();
-        }
-        // Signal on every batch, not only on the last one. A thread blocked here generally needs a
-        // small part of what it is waiting for -- the fault path widens a one-page touch to a whole
-        // large-page region -- so waking it now lets it re-check its own pages and go, with the
-        // rest of the transfer landing behind it. A waiter whose pages have not arrived re-parks,
-        // which costs it one pass round `get_pages_and_wait`'s loop.
-        req.signal();
-    });
+    ComplPost::PageData { count }
 }
 
 /// Take physical pages the pager filled with `obj`'s meta page and install them.
@@ -528,7 +530,7 @@ fn synthesize_meta_page(obj: &ObjectRef, info: &ObjectInfo) {
     obj.add_frame(PageNumber::meta_page(), frame);
 }
 
-fn pager_compl_handle_object_info(id: ObjID, info: ObjectInfo, rk: &ReqKind) {
+fn pager_compl_handle_object_info(id: ObjID, info: ObjectInfo, rk: &ReqKind) -> ComplPost {
     let handle_start = Instant::now();
     let obj = Arc::new(Object::new(id, info.lifetime, &[]));
     // What the store holds right now -- and only when the pager says so. `size` defaults to zero,
@@ -584,20 +586,27 @@ fn pager_compl_handle_object_info(id: ObjID, info: ObjectInfo, rk: &ReqKind) {
     // After `request_ready`, so the stamp is the moment the waiter became runnable rather than the
     // moment the completion arrived: what the split is for is separating this whole segment from
     // the wait for a cpu that follows it.
+    //
+    // Kept here rather than deferred to the caller's single manager hold, unlike the other two
+    // arms: the stamp's whole meaning is "the waiter is runnable now", so it has to be read on the
+    // near side of the removal that may follow, not after it.
     let now = Instant::now();
     super::profile::lookupstats::info_ready(
         now.into_time_span().as_nanos() as u64,
         (now - handle_start).as_nanos() as u64,
     );
+    ComplPost::Nothing
 }
 
-fn pager_compl_handle_error(request: RequestFromKernel, err: TwzError, rk: &ReqKind) {
+fn pager_compl_handle_error(request: RequestFromKernel, err: TwzError) -> ComplPost {
     log::debug!("pager returned error: {} for {:?}", err, request);
     match err {
         TwzError::Object(ObjectError::NoSuchObject) => {
             if let KernelCommand::ObjectInfoReq(obj_id) = request.cmd() {
                 crate::obj::no_exist(obj_id);
-                super::lock_inflight_for(rk).request_ready(rk);
+                ComplPost::Ready
+            } else {
+                ComplPost::Nothing
             }
         }
         _ => {
@@ -610,7 +619,7 @@ fn pager_compl_handle_error(request: RequestFromKernel, err: TwzError, rk: &ReqK
             if let KernelCommand::ObjectCreate(obj_id, ..) = request.cmd() {
                 super::record_create_error(obj_id, err);
             }
-            super::lock_inflight_for(rk).request_ready(rk);
+            ComplPost::Ready
         }
     }
 }
@@ -645,22 +654,33 @@ pub(super) fn pager_compl_handler_main() {
             elapsed = 0;
         }
 
+        // A completion carrying DONE retires the entry, so take it out on the way in rather than
+        // copying it and coming back for it: the clone this replaces bumped and dropped an
+        // `ObjectRef` refcount purely to hand it to a `remove` a few microseconds later, and cost
+        // a second acquisition of this spinlock to do so. The id stays reserved until
+        // `release_simple` below, so nothing can reuse the slot in between.
+        let done = completion.1.flags().contains(KernelCompletionFlags::DONE);
         let idmap_start = Instant::now();
-        let idmap = sender.idmap.lock();
+        let mut idmap = sender.idmap.lock();
         super::profile::PAGER_PROFILE.idmap_lock((Instant::now() - idmap_start).as_nanos() as u64);
-        let Some(request) = idmap.get(&completion.0).cloned() else {
-            drop(idmap);
-            logln!("warn -- received completion for unknown request");
-            continue;
+        let entry = if done {
+            idmap.remove(&completion.0)
+        } else {
+            idmap.get(&completion.0).cloned()
         };
         // Immediately, as the temporary this used to be did. Everything below takes the
         // inflight-manager mutex, and the submit path takes this spinlock while holding nothing --
-        // holding it across that would invert the order.
+        // holding it across that would invert the order. Dropping the entry itself is also deferred
+        // past here: it owns an `ObjectRef`, and dropping the last one runs `Object::drop`.
         drop(idmap);
+        let Some(request) = entry else {
+            logln!("warn -- received completion for unknown request");
+            continue;
+        };
         assert!(!current_thread.is_critical());
         log::trace!("got completion for {:?}: {:?}", request.req, completion.1);
 
-        match completion.1.data() {
+        let post = match completion.1.data() {
             twizzler_abi::pager::KernelCompletionData::PageDataCompletion(
                 _,
                 obj_range,
@@ -671,29 +691,70 @@ pub(super) fn pager_compl_handler_main() {
                 pager_compl_handle_object_info(id, info, &request.reqkind)
             }
             twizzler_abi::pager::KernelCompletionData::Error(err) => {
-                pager_compl_handle_error(request.req, err.error(), &request.reqkind)
+                pager_compl_handle_error(request.req, err.error())
             }
-            _ => {}
+            _ => ComplPost::Nothing,
         };
         assert!(!current_thread.is_critical());
 
-        if completion.1.flags().contains(KernelCompletionFlags::DONE) {
+        // A fenced evict is acknowledged but not retired here; everything else that says DONE is.
+        let remove = done
+            && match request.req.cmd() {
+                KernelCommand::ObjectEvict(evict) => evict.flags.contains(ObjectEvictFlags::FENCE),
+                _ => true,
+            };
+        // One hold covers the per-completion bookkeeping and the retirement, where it used to take
+        // the shard mutex once for each. It is also the lock that serializes a waiter's
+        // `setup_wait` against the `signal` below it, so widening the hold can only make
+        // that stricter.
+        if remove || !matches!(post, ComplPost::Nothing) {
             let mut mgr = super::lock_inflight_for(&request.reqkind);
-            if let KernelCommand::ObjectEvict(evict) = request.req.cmd() {
-                if evict.flags.contains(ObjectEvictFlags::FENCE) {
-                    mgr.remove_request(&request.reqkind);
+            match post {
+                ComplPost::PageData { count } => {
+                    mgr.with_request(&request.reqkind, |req| {
+                        req.mark_first_completion();
+                        if req.finished_pages(count) {
+                            req.mark_done();
+                        }
+                        // Signal on every batch, not only on the last one. A thread blocked here
+                        // generally needs a small part of what it is waiting for -- the fault path
+                        // widens a one-page touch to a whole large-page region -- so waking it now
+                        // lets it re-check its own pages and go, with the rest of the transfer
+                        // landing behind it. A waiter whose pages have not arrived re-parks, which
+                        // costs it one pass round `get_pages_and_wait`'s loop.
+                        //
+                        // Skipped when the retirement below is about to do it: `remove_request`
+                        // signals as well, and two signals for one completion woke the same waiters
+                        // twice.
+                        if !remove {
+                            req.signal();
+                        }
+                    });
                 }
-            } else {
+                // Kept unconditional even when the retirement below repeats it. `remove_request`
+                // reads `was_done()` *before* its own `mark_done`, so an answered request that
+                // skipped this would be recorded as completed by the DONE flag alone -- silently
+                // moving the `fulfillment` split rather than making it cheaper. The duplicate
+                // signal is a drained waiter list and a `requeue_all` that returns on its empty
+                // check.
+                ComplPost::Ready => {
+                    mgr.request_ready(&request.reqkind);
+                }
+                ComplPost::Nothing => {}
+            }
+            if remove {
                 mgr.remove_request(&request.reqkind);
             }
-            // Bound, not discarded in the statement: the entry owns an `ObjectRef`, and dropping
-            // the last one runs `Object::drop`. That is deferred now (`pager::queue_del_object`),
-            // but running any object destructor under this spinlock is still the wrong shape.
-            let removed = sender.idmap.lock().remove(&completion.0);
-            drop(removed);
+        }
+        if done {
             sender.ids.release_simple(SimpleId::from(completion.0));
         }
     }
+}
+
+/// Receive-side counters for the queue the completion thread blocks on.
+pub(super) fn completion_recv_stats() -> Option<crate::queue::QueueRecvStats> {
+    SENDER.poll().map(|s| s.queue.completion_recv_stats())
 }
 
 pub fn submit_pager_request(mut req: RequestFromKernel, obj: Option<&ObjectRef>, reqkind: ReqKind) {

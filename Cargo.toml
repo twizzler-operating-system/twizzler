@@ -141,6 +141,8 @@ test-programs = [
 # `/ext/sysroot/pkg`, so the entry below is `/pkg/twizzler/scripts/ctlsweep.sh` in the guest.
 disk-files = [
     { from = "src/bin/ctl/scripts/ctlsweep.sh", to = "/sysroot/pkg/twizzler/scripts/ctlsweep.sh" },
+    { from = "src/bin/ctl/scripts/synctest.sh", to = "/sysroot/pkg/twizzler/scripts/synctest.sh" },
+    { from = "src/bin/ctl/scripts/shuttest.sh", to = "/sysroot/pkg/twizzler/scripts/shuttest.sh" },
 ]
 initrd = [
     "crate:bootstrap",

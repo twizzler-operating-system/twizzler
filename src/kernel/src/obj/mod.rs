@@ -1067,6 +1067,7 @@ pub fn start_reaper_thread() {
             // empty. `Object::drop` outruns `request_reap` ~2.8:1, so absolute grave priority
             // starves the object queue. The batch this replaced could not starve: it worked from
             // a snapshot of both.
+            reap_adjust_priority(q.depth);
             let grave = q.graves.pop_front();
             let obj = q.objs.pop_front();
             if grave.is_some() || obj.is_some() {
@@ -1114,7 +1115,11 @@ pub fn start_reaper_thread() {
         queue: crate::spinlock::Spinlock::new(ReapQueue::new()),
     });
     crate::thread::entry::start_new_kernel(
-        crate::thread::priority::Priority::USER,
+        // BACKGROUND, not USER: reaping is cleanup behind whoever is doing the real work, and at
+        // USER it competed with the compiler in the same class -- 109 statticks a build, more than
+        // the background zeroer spends. `reap_adjust_priority` lifts it out of BACKGROUND only
+        // when the queue is deep enough that starving it would cost more than running it.
+        crate::thread::priority::Priority::BACKGROUND,
         reaper_entry,
         0,
         "obj-reaper",
@@ -1206,6 +1211,10 @@ pub fn poke_reaper() {
 pub mod reapstats {
     use core::sync::atomic::{AtomicU64, Ordering};
 
+    /// Times the reaper crossed into the boosted priority (see `REAP_BOOST_DEPTH`). Against
+    /// `BATCHES` it says whether the backlog ever actually gets deep, which is the thing that
+    /// decides if the boost earns its place.
+    pub static BOOSTS: AtomicU64 = AtomicU64::new(0);
     pub static SIGNALS_SENT: AtomicU64 = AtomicU64::new(0);
     pub static SIGNALS_SUPPRESSED: AtomicU64 = AtomicU64::new(0);
     /// Wakes, i.e. times the thread left its untimed park.
@@ -1347,6 +1356,59 @@ pub const REAP_BATCH_MAX: usize = 64;
 /// yields, that was 1,762 signals for 178 wakes (11% suppressed); on smp4 the reaper clears it
 /// from another cpu and the same boot suppressed 75%. The batches were ~11 objects either way, so
 /// the draining was always batched -- it was only the signalling that was not.
+/// Backlog at which the reaper stops being a background citizen.
+///
+/// Well above [`REAP_BATCH_MAX`] (64), which is merely "enough has piled up to wake early". This
+/// is the different question of whether the queue is growing faster than a `BACKGROUND` thread is
+/// being scheduled to drain it -- which is the only condition that justifies competing with the
+/// work that is producing it. A queued object holds frames, so a backlog this deep is memory the
+/// system cannot reuse.
+const REAP_BOOST_DEPTH: usize = 512;
+
+/// Backlog at which it goes back to `BACKGROUND`. Deliberately far below [`REAP_BOOST_DEPTH`]:
+/// dropping back at the same mark would flap between classes on every entry drained across the
+/// boundary, and each crossing is a run-queue re-file, not a free store.
+const REAP_UNBOOST_DEPTH: usize = 128;
+
+/// Whether the reaper is currently lifted out of `BACKGROUND`.
+static REAP_BOOSTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Run the reaper at `BACKGROUND` until its backlog says it cannot afford to.
+///
+/// At `BACKGROUND` it runs only when nothing else wants the cpu, which is what cleanup should do
+/// and what it was not doing. The hazard that buys is starvation: under sustained load the queue
+/// grows, and every entry on it is frames not returned. So the boost is the release valve, and it
+/// crosses into `User` rather than nudging within a class -- there is no point being the highest
+/// `BACKGROUND` thread when every `User` thread still outranks the whole class.
+///
+/// `set_priority`, not `donate_priority`: this is the thread's own base priority tracking its own
+/// workload, not an inversion resolved for someone else. Donation would also be wrong on the way
+/// down, where `remove_donated_priority` would discard a genuine waiter's donation.
+fn reap_adjust_priority(depth: usize) {
+    use crate::thread::priority::Priority;
+    let Some(cur) = crate::thread::current_thread_ref() else {
+        return;
+    };
+    let boosted = REAP_BOOSTED.load(Ordering::Relaxed);
+    let want = if boosted {
+        depth > REAP_UNBOOST_DEPTH
+    } else {
+        depth >= REAP_BOOST_DEPTH
+    };
+    if want == boosted {
+        return;
+    }
+    REAP_BOOSTED.store(want, Ordering::Relaxed);
+    if want {
+        reapstats::BOOSTS.fetch_add(1, Ordering::Relaxed);
+    }
+    cur.set_priority(if want {
+        Priority::USER
+    } else {
+        Priority::BACKGROUND
+    });
+}
+
 fn should_signal_reaper(parked: bool, depth: usize) -> bool {
     let signal = if OBJ_REAP_BATCH_WAKE {
         parked || depth >= REAP_BATCH_MAX

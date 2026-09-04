@@ -86,11 +86,11 @@ use core::{cell::UnsafeCell, fmt::Display, marker::PhantomData, ptr::addr_of_mut
 use loom::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 #[cfg(not(loom))]
-const SPIN_ATTEMPTS: usize = 1000;
+pub const SPIN_ATTEMPTS: usize = 1000;
 // Loom treats every spin iteration as a scheduling point; 1000 of them is an unexplorable state
 // space, and the interesting transitions are all past the spin phase anyway.
 #[cfg(loom)]
-const SPIN_ATTEMPTS: usize = 1;
+pub const SPIN_ATTEMPTS: usize = 1;
 
 /// Compensates for loom modelling `SeqCst` as AcqRel, restoring the total order only at an explicit
 /// fence. Each call site below sits on a store-buffer boundary — one side stores its waiting
@@ -519,11 +519,12 @@ impl RawQueueHdr {
     #[inline]
     fn get_next_ready<W: Fn(&AtomicU64, u64), T>(
         &self,
+        spin_attempts: usize,
         wait: W,
         flags: ReceiveFlags,
         raw_buf: *mut QueueEntry<T>,
-    ) -> Result<u64, QueueError> {
-        let mut attempts = SPIN_ATTEMPTS;
+    ) -> Result<(u64, usize), QueueError> {
+        let mut attempts = spin_attempts;
         let t = loop {
             let t = self.tail.load(Ordering::SeqCst) & 0x7fffffff;
             let b = self.bell.load(Ordering::SeqCst);
@@ -554,7 +555,7 @@ impl RawQueueHdr {
         if attempts == 0 {
             self.consumer_set_waiting(false);
         }
-        Ok(t)
+        Ok((t, spin_attempts - attempts))
     }
 
     /// Arm a sleep on `bell` for a caller that will not block inside the queue.
@@ -800,13 +801,33 @@ impl<T: Copy> RawQueue<T> {
         ring: R,
         flags: ReceiveFlags,
     ) -> Result<QueueEntry<T>, QueueError> {
-        let t = self
+        self.receive_spin(SPIN_ATTEMPTS, wait, ring, flags)
+            .map(|(item, _)| item)
+    }
+
+    /// [`RawQueue::receive`] with an explicit spin budget, also reporting how much of it was spent.
+    ///
+    /// [SPIN_ATTEMPTS] is sized for a consumer whose producer is generally running, where paying a
+    /// spin to dodge a park is a good trade. A consumer whose producer answers one request at a
+    /// time gets the opposite deal: the queue is empty every time it comes back, the whole budget
+    /// is spent, and it parks anyway -- so the spin buys nothing and costs its full length on every
+    /// drain. The spend is reported rather than merely bounded because the two cases are only
+    /// distinguishable at runtime: a budget consumed in full and followed by a park is the failing
+    /// one, and a caller that can see that can size itself to it.
+    pub fn receive_spin<W: Fn(&AtomicU64, u64), R: Fn(&AtomicU64)>(
+        &self,
+        spin_attempts: usize,
+        wait: W,
+        ring: R,
+        flags: ReceiveFlags,
+    ) -> Result<(QueueEntry<T>, usize), QueueError> {
+        let (t, spun) = self
             .hdr()
-            .get_next_ready(wait, flags, unsafe { *self.buf.get() })?;
+            .get_next_ready(spin_attempts, wait, flags, unsafe { *self.buf.get() })?;
         let buf_item = self.get_buf(t as usize);
         let item = unsafe { buf_item.read() };
         self.hdr().advance_tail(ring);
-        Ok(item)
+        Ok((item, spun))
     }
 
     pub fn has_pending(&self) -> bool {

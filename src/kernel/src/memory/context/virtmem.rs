@@ -10,7 +10,7 @@ use core::{
     mem::size_of,
     ops::Range,
     ptr::NonNull,
-    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
 use intrusive_collections::{KeyAdapter, RBTree, RBTreeAtomicLink, intrusive_adapter};
@@ -1961,6 +1961,9 @@ impl UserContext for VirtContext {
             default_prot,
             should_sync: AtomicBool::new(false),
             removed: AtomicBool::new(false),
+            fa_window: AtomicU32::new(region::ANON_FAULT_AROUND as u32),
+            fa_streams: core::array::from_fn(|_| AtomicU64::new(u64::MAX)),
+            fa_slot: AtomicU32::new(0),
         };
 
         mapprofile::record(mapprofile::Stage::Region, t_region);
@@ -2404,6 +2407,9 @@ impl KernelMemoryContext for VirtContext {
             default_prot,
             should_sync: AtomicBool::new(false),
             removed: AtomicBool::new(false),
+            fa_window: AtomicU32::new(region::ANON_FAULT_AROUND as u32),
+            fa_streams: core::array::from_fn(|_| AtomicU64::new(u64::MAX)),
+            fa_slot: AtomicU32::new(0),
         };
         // Slots come off a free list that is only pushed to once an unmap has fully finished (see
         // `KernelObjectVirtHandle::drop`), so this cannot collide with a teardown in progress.

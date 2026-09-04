@@ -39,6 +39,7 @@ pub(crate) mod compartment;
 pub mod library;
 pub(crate) mod space;
 pub mod stat;
+pub mod state;
 pub(crate) mod thread;
 
 /// Take the calling thread's happylock key, failing instead of panicking if it already holds one.
@@ -576,7 +577,7 @@ impl Monitor {
 
     /// Write bytes to this per-compartment thread's simple buffer.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
-    pub fn _write_thread_simple_buffer(
+    pub fn write_thread_simple_buffer(
         &self,
         sctx: ObjID,
         thread: ObjID,
@@ -600,6 +601,22 @@ impl Monitor {
         let pt = self.per_thread(sctx, thread)?;
         let bytes = pt.lock().unwrap().read_bytes(len);
         Ok(bytes)
+    }
+
+    /// Write every known compartment's instance ID into the caller's simple buffer, returning
+    /// how many were written.
+    ///
+    /// The ids are collected before the buffer is touched: writing reaches `per_thread`, which
+    /// takes `comp_mgr` again.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
+    pub fn compartment_ids(&self, caller: ObjID, thread: ObjID) -> Result<usize, TwzError> {
+        let ids = {
+            let cmp = crate::lockdiag::watched(self.comp_mgr.read(reentrant_key()?));
+            cmp.instance_ids()
+        };
+        let bytes: Vec<u8> = ids.iter().flat_map(|id| id.raw().to_ne_bytes()).collect();
+        let n = self.write_thread_simple_buffer(caller, thread, &bytes)?;
+        Ok(n / size_of::<ObjID>())
     }
 
     /// Read the name of a compartment.

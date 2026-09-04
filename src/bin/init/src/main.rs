@@ -4,7 +4,9 @@ use std::{
     time::Instant,
 };
 
-use monitor_api::{CompartmentFlags, CompartmentHandle, CompartmentLoader, NewCompartmentFlags};
+use monitor_api::{
+    CompartmentFlags, CompartmentHandle, CompartmentLoader, MonitorState, NewCompartmentFlags,
+};
 use secgate::TwzError;
 use tracing::{info, warn};
 use twizzler::{error::RawTwzError, object::RawObject};
@@ -12,8 +14,8 @@ use twizzler_abi::{
     object::ObjID,
     pager::{CompletionToKernel, CompletionToPager, RequestFromKernel, RequestFromPager},
     syscall::{
-        sys_new_handle, KernelConsoleReadFlags, KernelConsoleWriteFlags, NewHandleFlags,
-        ObjectCreate,
+        sys_ctrl, sys_new_handle, KernelConsoleReadFlags, KernelConsoleWriteFlags, NewHandleFlags,
+        ObjectCreate, SysCtrlCmd, SysCtrlFlags,
     },
 };
 use twizzler_io::pty::DEFAULT_TERMIOS;
@@ -23,7 +25,7 @@ use twizzler_queue::Queue;
 /// and will report every subsequent resize unprompted. Until then we fall back to polling it.
 static INBAND_RESIZE: AtomicBool = AtomicBool::new(false);
 
-fn initialize_pager() -> ObjID {
+fn initialize_pager() -> (ObjID, ObjID) {
     info!("starting pager");
     const DEFAULT_PAGER_QUEUE_LEN: usize = 1024;
     let queue_obj = unsafe {
@@ -83,11 +85,14 @@ fn initialize_pager() -> ObjID {
             .unwrap()
     };
     let bootstrap_id = pager_start(queue.handle().id(), queue2.handle().id()).unwrap();
+    // The handle is still leaked deliberately -- the shutdown path runs through the pager -- but
+    // its instance is recorded so the shutdown does not signal it.
+    let instance = pager_comp.info().map(|i| i.id).unwrap_or_default();
     std::mem::forget(pager_comp);
-    bootstrap_id
+    (instance, bootstrap_id)
 }
 
-fn initialize_namer(bootstrap: ObjID) -> ObjID {
+fn initialize_namer(bootstrap: ObjID) -> (CompartmentHandle, ObjID) {
     info!("starting namer");
     let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "libnaming_srv.so")
         .expect("failed to find object");
@@ -112,11 +117,10 @@ fn initialize_namer(bootstrap: ObjID) -> ObjID {
     };
     let root_id = namer_start(bootstrap);
     tracing::info!("naming ready");
-    std::mem::forget(nmcomp);
-    root_id.ok().expect("failed to start namer")
+    (nmcomp, root_id.ok().expect("failed to start namer"))
 }
 
-fn initialize_devmgr() {
+fn initialize_devmgr() -> ObjID {
     info!("starting device manager");
     let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "libdevmgr_srv.so")
         .expect("failed to find object");
@@ -137,10 +141,12 @@ fn initialize_devmgr() {
     let devmgr_start = unsafe { devcomp.dynamic_gate::<(), ()>("devmgr_start").unwrap() };
     devmgr_start().unwrap();
     tracing::info!("device manager ready");
+    let instance = devcomp.info().map(|i| i.id).unwrap_or_default();
     std::mem::forget(devcomp);
+    instance
 }
 
-fn initialize_cache() {
+fn initialize_cache() -> CompartmentHandle {
     info!("starting cache service");
     let id = twizzler_rt_abi::fd::twz_rt_resolve_name(
         Default::default(),
@@ -161,10 +167,10 @@ fn initialize_cache() {
         flags = comp.wait(flags);
     }
     tracing::info!("cache manager ready");
-    std::mem::forget(comp);
+    comp
 }
 
-fn initialize_display() {
+fn initialize_display() -> CompartmentHandle {
     info!("starting display manager");
     let id = twizzler_rt_abi::fd::twz_rt_resolve_name(
         Default::default(),
@@ -190,10 +196,10 @@ fn initialize_display() {
     };
     let _ = start_display();
     tracing::info!("display manager ready");
-    std::mem::forget(comp);
+    comp
 }
 
-fn initialize_network() {
+fn initialize_network() -> CompartmentHandle {
     info!("starting network manager");
     let id = twizzler_rt_abi::fd::twz_rt_resolve_name(
         Default::default(),
@@ -218,10 +224,10 @@ fn initialize_network() {
             .unwrap()
     };
     let _ = start_net();
-    std::mem::forget(comp);
+    comp
 }
 
-fn initialize_sshd() {
+fn initialize_sshd() -> CompartmentHandle {
     info!("starting ssh server");
     let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), "/pkg/twizzler/bin/sshd")
         .expect("failed to find object");
@@ -234,7 +240,7 @@ fn initialize_sshd() {
     while !flags.contains(CompartmentFlags::READY) {
         flags = comp.wait(flags);
     }
-    std::mem::forget(comp);
+    comp
 }
 
 /// Map every `.so` directly in `dir` to its ObjID, for dynlink to resolve `DT_NEEDED` entries by
@@ -272,6 +278,17 @@ fn main() {
     .unwrap();
 
     let start_time = Instant::now();
+
+    // Published before anything is started, so a compartment that comes up early can tell "init
+    // is working on it" from "no init at all".
+    let _ = monitor_api::monitor_state_or(MonitorState::RUNNING)
+        .inspect_err(|e| warn!("failed to publish monitor state: {}", e));
+
+    // The handles for every server started below. Init used to `mem::forget` each one, so the
+    // monitor kept a use count nothing would ever release; they are held here for the lifetime of
+    // the system instead and dropped on the way down. Devmgr and the pager are deliberately still
+    // forgotten: the shutdown path itself runs through the pager.
+    let mut comps: Vec<CompartmentHandle> = Vec::new();
 
     // The first bare word names the autostart program; everything after it is that program's
     // arguments. Forwarding them is what lets a workload be aimed at something smaller than its
@@ -325,13 +342,14 @@ fn main() {
     while !flags.contains(CompartmentFlags::READY) {
         flags = lbcomp.wait(flags);
     }
-    std::mem::forget(lbcomp);
+    comps.push(lbcomp);
 
-    initialize_devmgr();
+    let devmgr_id = initialize_devmgr();
 
-    let bootstrap_id = initialize_pager();
+    let (pager_id, bootstrap_id) = initialize_pager();
 
-    let _root_id = initialize_namer(bootstrap_id);
+    let (nmcomp, _root_id) = initialize_namer(bootstrap_id);
+    comps.push(nmcomp);
 
     // `/initrd` first: it holds everything shipped in the boot image, so the common case still
     // hits on the first entry. The `/pkg/*/bin` directories are what make a bare command name
@@ -399,16 +417,16 @@ fn main() {
 
     std::fs::create_dir_all("/tmp").unwrap();
 
-    initialize_cache();
-    initialize_network();
-    initialize_display();
+    comps.push(initialize_cache());
+    comps.push(initialize_network());
+    comps.push(initialize_display());
 
     std::env::set_var(
         "PS1",
         "\\[\x1b[1;32m\\]root\x1b[1;35m@twizzler\\[\x1b[0m\\] \\[\x1b[1;34m\\][\\w]\\[\x1b[0m\\]# ",
     );
 
-    initialize_sshd();
+    comps.push(initialize_sshd());
 
     if start_unittest {
         std::env::set_var("TWZ_TEST_MODE", "1");
@@ -596,15 +614,92 @@ fn main() {
         (end_time - start_time).as_secs_f32()
     );
 
-    if let Some(autostart) = autostart {
-        run_autostart(&autostart, &autostart_args);
-    }
+    // Everything init starts is started, so the system is up as far as anyone else can tell.
+    let _ = monitor_api::monitor_state_or(MonitorState::UP)
+        .inspect_err(|e| warn!("failed to publish monitor state: {}", e));
+
+    // The shell (and the autostart program before it) gets a thread of its own, because the main
+    // thread does not come back from the state watch below.
+    let pty_id = pty.id();
+    std::thread::Builder::new()
+        .name("shell".into())
+        .spawn(move || {
+            if let Some(autostart) = autostart {
+                run_autostart(&autostart, &autostart_args);
+            }
+            loop {
+                if run_brush(pty_id).is_err() {
+                    warn!("failed to start brush");
+                    run_shell(pty_id).expect("failed to start any shell");
+                }
+                // A shell that exits during shutdown is the shutdown, not a crash: stop
+                // respawning and stay quiet, since the console is going away anyway.
+                if monitor_api::monitor_state()
+                    .unwrap_or(MonitorState::empty())
+                    .contains(MonitorState::SHUTDOWN)
+                {
+                    return;
+                }
+                println!("shell exited -- restarting shell");
+            }
+        })
+        .expect("failed to spawn the shell thread");
+
+    watch_monitor_state(comps, [devmgr_id, pager_id]);
+}
+
+/// Watch the global monitor state and take the machine down when someone asks for it.
+///
+/// `sys_ctrl(Shutdown)` rather than `sys_debug_shutdown`: it drains the background sync queue and
+/// flushes the pager's backing store on the way out, which the debug path does not.
+fn watch_monitor_state(mut comps: Vec<CompartmentHandle>, forgotten: [ObjID; 2]) -> ! {
+    let mut state = monitor_api::monitor_state().unwrap_or(MonitorState::empty());
     loop {
-        if run_brush(pty.id()).is_err() {
-            warn!("failed to start brush");
-            run_shell(pty.id()).expect("failed to start any shell");
+        if state.contains(MonitorState::SHUTDOWN) {
+            info!("shutdown requested");
+            // Everything init did not start -- the shell, whatever it launched -- goes first, so
+            // that what it was writing is on the far side of the sync below rather than still in
+            // a mapping when the servers underneath it start going away.
+            stop_other_compartments(&comps, &forgotten);
+            // Ahead of the signals: `should_sync` is a property of a *mapping*, so a compartment
+            // that exits takes its async-durable registrations with it and there is nothing left
+            // for the kernel's region walk to find. Bounded, because a wedged pager would
+            // otherwise hold the machine up indefinitely at the one point it is trying to leave.
+            match sys_ctrl(
+                SysCtrlCmd::SyncAll,
+                Some(std::time::Duration::from_secs(15)),
+                SysCtrlFlags::empty(),
+                0,
+                0,
+                0,
+            ) {
+                Ok(n) => info!("synced {} objects", n),
+                Err(e) => warn!("sync-all failed: {}", e),
+            }
+            stop_compartments("server", &comps);
+            // Reverse start order: a server is dropped before the ones it was started on top of.
+            while let Some(comp) = comps.pop() {
+                drop(comp);
+            }
+            // After the drops rather than before them: what the exiting compartments left behind
+            // only becomes reapable once the last handle to each is gone, and the shutdown's own
+            // sync runs better against a system that is not still holding them.
+            match sys_ctrl(SysCtrlCmd::ReapAll, None, SysCtrlFlags::empty(), 0, 0, 0) {
+                Ok(n) => info!("reaped {} objects and threads", n),
+                Err(e) => warn!("reap-all failed: {}", e),
+            }
+            let _ = sys_ctrl(SysCtrlCmd::Shutdown, None, SysCtrlFlags::empty(), 0, 0, 0);
+            warn!("shutdown returned -- the machine is still up");
         }
-        println!("shell exited -- restarting shell");
+        match monitor_api::monitor_state_wait(state) {
+            Ok(new) => state = new,
+            Err(e) => {
+                // Nothing to retry against: without the gate there is no state to read either, so
+                // pace the loop rather than spinning on a wait that is not working.
+                warn!("failed to wait for monitor state: {}", e);
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        }
     }
 }
 
@@ -723,6 +818,101 @@ fn run_autostart(autostart: &str, autostart_args: &[String]) {
     } else {
         exit_code.min(127) as u32
     });
+}
+
+/// Signal the compartments init did not start, by the same escalation as [`stop_compartments`].
+///
+/// The exclusions are init's own servers (`own`, stopped later, after the sync), the two whose
+/// handles are deliberately leaked (`forgotten` -- devmgr and the pager, which the shutdown path
+/// itself runs through), init, and the monitor.
+fn stop_other_compartments(own: &[CompartmentHandle], forgotten: &[ObjID]) {
+    let mut skip: Vec<ObjID> = own
+        .iter()
+        .filter_map(|c| c.info().ok().map(|i| i.id))
+        .collect();
+    skip.extend_from_slice(forgotten);
+    skip.push(monitor_api::MONITOR_INSTANCE_ID);
+    if let Ok(me) = CompartmentHandle::current().info() {
+        skip.push(me.id);
+    }
+
+    let ids = match monitor_api::compartment_ids() {
+        Ok(ids) => ids,
+        Err(e) => {
+            warn!("failed to enumerate compartments: {}", e);
+            return;
+        }
+    };
+    let others: Vec<CompartmentHandle> = ids
+        .into_iter()
+        .filter(|id| !skip.contains(id))
+        .filter_map(|id| CompartmentHandle::lookup_id(id).ok())
+        .collect();
+    stop_compartments("other", &others);
+}
+
+/// Ask every binary compartment to stop, escalating to SIGKILL for whatever is still there.
+///
+/// Library compartments are skipped: a signal is delivered to a compartment's *main thread*, and
+/// a compartment loaded as a library has none -- the servers run on whatever thread called into
+/// them.
+fn stop_compartments(what: &str, comps: &[CompartmentHandle]) {
+    // Reverse start order, matching the drop below it.
+    let bins: Vec<&CompartmentHandle> = comps
+        .iter()
+        .rev()
+        .filter(|c| {
+            c.info()
+                .is_ok_and(|i| i.flags.contains(CompartmentFlags::IS_BINARY))
+        })
+        .collect();
+
+    if bins.is_empty() {
+        return;
+    }
+    info!("stopping {} {} compartment(s)", bins.len(), what);
+    for (sig, name) in [(libc::SIGTERM, "SIGTERM"), (libc::SIGKILL, "SIGKILL")] {
+        // Signal everything still up before waiting on any of it, so the second compartment's
+        // second starts when the first's does rather than after it.
+        let mut pending = Vec::new();
+        for comp in &bins {
+            if has_exited(comp) {
+                continue;
+            }
+            match comp.signal(sig as u64) {
+                Ok(()) => pending.push(*comp),
+                Err(e) => warn!("failed to send {}: {}", name, e),
+            }
+        }
+        for comp in pending {
+            if !wait_for_exit(comp, std::time::Duration::from_secs(1)) {
+                warn!("compartment still up 1s after {}", name);
+            }
+        }
+    }
+}
+
+/// Whether `comp` has exited, counting "the monitor no longer knows about it" as exited.
+fn has_exited(comp: &CompartmentHandle) -> bool {
+    comp.info()
+        .map_or(true, |i| i.flags.contains(CompartmentFlags::EXITED))
+}
+
+/// Poll `comp` for up to `timeout`, reporting whether it exited in time.
+///
+/// Polled rather than waited on: `CompartmentHandle::wait` has no deadline, and a compartment
+/// that ignores the signal would park shutdown forever.
+fn wait_for_exit(comp: &CompartmentHandle, timeout: std::time::Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if has_exited(comp) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 /// Take the guest down. Every exit from `run_autostart` goes through here, including the two

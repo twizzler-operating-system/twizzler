@@ -304,13 +304,19 @@ fn sync_all(wait: bool, expired: &dyn Fn() -> bool) -> Result<u64> {
     // length of its callback -- so syncing inside it would keep every dead compartment's address
     // space alive for as long as the pager stalls.
     let mut regions = alloc::vec::Vec::new();
+    let mut n_ctx = 0u64;
+    let mut n_mappings = 0u64;
     with_each_context(|ctx| {
+        n_ctx += 1;
+        let mappings = ctx.mappings();
+        n_mappings += mappings.len() as u64;
         regions.extend(
-            ctx.mappings()
+            mappings
                 .into_iter()
                 .filter(|region| region.should_sync.load(Ordering::SeqCst)),
         )
     });
+    let n_marked = regions.len() as u64;
 
     let mut synced = 0u64;
     let mut timed_out = false;
@@ -332,11 +338,26 @@ fn sync_all(wait: bool, expired: &dyn Fn() -> bool) -> Result<u64> {
     // Objects whose region is already gone: an unmap handed those to the background thread, which
     // runs at BACKGROUND and may not have been scheduled since. Bounded internally, so it is not
     // deadline-checked -- only skipped if the deadline has already passed.
+    let from_regions = synced;
     if expired() {
         timed_out = true;
     } else {
         synced += crate::pager::drain_background_sync(wait) as u64;
     }
+
+    // One line, on a syscall nobody calls in a loop, and it is the difference between the two
+    // ways of reading a zero: no mapping was marked for an async-durable sync at all, or one was
+    // and had nothing dirty left to write. A bare count cannot say which, and every SyncAll
+    // measurement so far has had to guess.
+    logln!(
+        "[sysctrl] SyncAll: {} contexts, {} mappings, {} marked, {} submitted, {} from the \
+         background queue",
+        n_ctx,
+        n_mappings,
+        n_marked,
+        from_regions,
+        synced - from_regions
+    );
 
     if timed_out {
         log::warn!(
@@ -591,6 +612,7 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
                 sync::syncbatch::print();
                 sync::requeuebug::print();
                 crate::mutex::contend::print();
+                crate::mutex::spinstats::print();
                 crate::obj::pagetables::invl_overflow::print();
                 crate::obj::pagetables::membership::print();
                 // Before anything else: the machine is about to stop, and a queued background
@@ -608,6 +630,8 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
                 crate::interrupt::print_interrupt_profile();
                 crate::pager::print_pager_profile();
                 crate::processor::sched::wakestats::print();
+                crate::processor::sched::wakesrc::print();
+                crate::processor::sched::print_kernel_threads();
                 crate::memory::context::virtmem::mapprofile::print();
                 crate::memory::context::virtmem::unmapprofile::print();
                 crate::memory::context::virtmem::heapprofile::print();

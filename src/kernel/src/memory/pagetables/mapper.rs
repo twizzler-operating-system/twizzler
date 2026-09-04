@@ -425,13 +425,17 @@ impl Mapper {
         self.generation += 1;
         self.take_pages(consist);
         let root = self.root_mut();
+        // Shared across the whole descent: the clean-frame supply the swap draws on is per-cpu and
+        // global, not per-table, so one miss answers for the rest of the range. See
+        // `Table::setup_zero_range`.
+        let mut swap_dry = false;
         while cursor.remaining() > 0 {
             log::trace!(
                 "top level setup_zero_range: cursor {:?}, start_level {}",
                 cursor,
                 start_level
             );
-            root.setup_zero_range(consist, &mut cursor, start_level, fa)?;
+            root.setup_zero_range(consist, &mut cursor, start_level, fa, &mut swap_dry)?;
         }
         consist.flush_cache();
         Ok(())

@@ -1719,6 +1719,73 @@ pub fn zero_all_passes_per_sweep() -> usize {
     n.div_ceil(MAX_BACKGROUND_ZERO_ITER).max(1)
 }
 
+/// Yields until the allocator lock reads free, then takes it.
+///
+/// The background pass runs at `BACKGROUND` and takes the global `PFA` lock twice per region --
+/// once to collect zeroable frames, once to give them back. Taking a ticket there puts the lowest
+/// priority thread in the system in the queue for the lock every allocation needs, ahead of
+/// whoever asks next. `LockGuard<PhysicalFrameAllocator>::drop` was the 4th-hottest kernel pc in a
+/// build profile (3.53% of kernel time), which is what that queueing looks like.
+///
+/// Advisory and bounded: `is_locked` can be stale, and a caller that loses the race simply takes
+/// the ticket it would have taken anyway. The bound matters because a permanently busy allocator
+/// must not stop the zeroer entirely -- after it, this commits.
+///
+/// `all` (the `ZeroAll` path) skips this: that runs on the caller's thread at the caller's
+/// priority precisely so it does not wait behind background work, and yielding there would hand
+/// its slot away.
+const PFA_POLITE_YIELDS: usize = 8;
+
+fn lock_pfa_politely(all: bool) -> crate::spinlock::LockGuard<'static, PhysicalFrameAllocator> {
+    if !all {
+        for _ in 0..PFA_POLITE_YIELDS {
+            if !PFA.wait().is_locked() {
+                break;
+            }
+            politestats::yielded();
+            crate::processor::sched::schedule(
+                crate::processor::sched::SchedFlags::REINSERT
+                    | crate::processor::sched::SchedFlags::YIELD,
+            );
+        }
+    }
+    PFA.wait().lock()
+}
+
+/// How often the polite acquire above found the allocator busy and stood aside. Against the pass
+/// count it says whether the politeness is doing anything; if `yields` is ~0 the lock was never
+/// contended when the zeroer wanted it and this can go.
+pub mod politestats {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static YIELDS: AtomicU64 = AtomicU64::new(0);
+    static PASSES: AtomicU64 = AtomicU64::new(0);
+
+    pub fn yielded() {
+        YIELDS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn pass() {
+        PASSES.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn print() {
+        let (y, p) = (
+            YIELDS.load(Ordering::Relaxed),
+            PASSES.load(Ordering::Relaxed),
+        );
+        if y + p == 0 {
+            return;
+        }
+        logln!(
+            "== background zeroer: {} passes, {} polite yields ({} per pass) ==",
+            p,
+            y,
+            y / p.max(1)
+        );
+    }
+}
+
 /// Returns the bytes zeroed, or `None` if another thread holds the pass.
 fn zero_pass(all: bool) -> Option<u64> {
     let status = BACKGROUND_ZERO_INDEX.fetch_or(1, Ordering::Acquire);
@@ -1745,7 +1812,7 @@ fn zero_pass(all: bool) -> Option<u64> {
         if frames_per_region.is_full() || (!all && needs_reschedule(false)) {
             break;
         }
-        let mut pfa = PFA.wait().lock();
+        let mut pfa = lock_pfa_politely(all);
         let reg_idx = (idx + i) % pfa.regions.len();
         let reg = &mut pfa.regions[reg_idx];
         let mut frames_this_reg = heapless::Vec::new();
@@ -1756,6 +1823,7 @@ fn zero_pass(all: bool) -> Option<u64> {
         }
     }
     BACKGROUND_ZERO_INDEX.fetch_and(!1, Ordering::Release);
+    politestats::pass();
     let mut total_bytes = 0;
     assert!(crate::interrupt::get());
     for (_r, frames) in &frames_per_region {
@@ -1769,7 +1837,7 @@ fn zero_pass(all: bool) -> Option<u64> {
     }
 
     for (reg_idx, frames) in frames_per_region {
-        let mut pfa = PFA.wait().lock();
+        let mut pfa = lock_pfa_politely(all);
         let reg = &mut pfa.regions[reg_idx];
         for frame in frames {
             reg.free(frame);

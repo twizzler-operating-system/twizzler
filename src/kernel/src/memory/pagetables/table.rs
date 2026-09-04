@@ -9,7 +9,7 @@ use crate::{
     memory::{
         frame::{Frame, FrameRef, PHYS_LEVEL_LAYOUTS, PhysicalFrameFlags, get_frame, split_frame},
         pagetables::{Mapper, MappingFlags, zeroprobe},
-        tracker::{FrameAllocFlags, FrameAllocator, try_alloc_frame},
+        tracker::{FrameAllocFlags, FrameAllocator, try_alloc_frame, try_alloc_prezeroed_frame},
     },
 };
 
@@ -40,7 +40,18 @@ const ZERO_RANGE_SKIP_ABSENT: bool = true;
 /// Allocation is `try_alloc_frame` without `WAIT_OK`, under the object's page-table lock: a dry
 /// pool must fall back rather than block, which is why the result is an `Option` the caller
 /// handles rather than a precharge the caller must get right.
-const ZERO_RANGE_SWAP_ZEROED: bool = false;
+const ZERO_RANGE_SWAP_ZEROED: bool = true;
+
+/// Skip a whole run of absent entries in one cursor step, instead of one entry at a time.
+///
+/// [`ZERO_RANGE_SKIP_ABSENT`] only skips a table that holds nothing at all, which a 1 MiB range
+/// inside one 2 MiB leaf table never qualifies for: it visits ~258 slots to clear the ~21 that are
+/// resident, paying a modulo, a canonicality-checked `VirtAddr::offset` and a bounds test for each
+/// absent one. This makes the leaf walk proportional to what the object actually holds.
+///
+/// Off reproduces the one-entry-at-a-time walk exactly (`run` is 1 and the advance collapses to
+/// `to_entry_end`), so this is an A/B axis rather than a code path that has to be removed.
+const ZERO_RANGE_SKIP_ABSENT_RUNS: bool = true;
 
 /// Pages zeroed by swapping a fresh frame in, against those that fell back to drop-and-refault.
 pub mod zeroswap {
@@ -1116,6 +1127,7 @@ impl Table {
         cursor: &mut MappingCursor,
         level: usize,
         fa: &mut FrameAllocator,
+        swap_dry: &mut bool,
     ) -> Result<(), TwzError> {
         // How far the cursor is from the end of the entry it currently sits in.
         // `advance_until_empty` steps by exactly its argument, so handing it the level's page size
@@ -1149,7 +1161,8 @@ impl Table {
             *cursor = cursor.advance_until_empty(to_table_end(cursor, start_index));
             return Ok(());
         }
-        for idx in start_index..Table::PAGE_TABLE_ENTRIES {
+        let mut idx = start_index;
+        while idx < Table::PAGE_TABLE_ENTRIES {
             if cursor.remaining() == 0 {
                 break;
             }
@@ -1173,12 +1186,17 @@ impl Table {
                 present = present.saturating_sub(1);
                 let frame = get_frame(entry.addr(level));
                 let flags = entry.flags();
+                // `swap_dry`: once one attempt has come back empty, stop asking for the rest
+                // of the range. Nothing refills the clean side while this walk runs -- the frames
+                // it drops are dirty and go back deferred, after the walk -- so the remaining ~20
+                // asks a 1 MiB range makes would each pay a probe to be told the same thing.
                 if ZERO_RANGE_SWAP_ZEROED
+                    && !*swap_dry
                     && !flags.contains(EntryFlags::WIRED)
                     && flags.contains(EntryFlags::WRITE)
                     && frame.is_some_and(|f| !f.is_cow())
                 {
-                    match try_alloc_frame(FrameAllocFlags::ZEROED, PHYS_LEVEL_LAYOUTS[level]) {
+                    match try_alloc_prezeroed_frame(PHYS_LEVEL_LAYOUTS[level]) {
                         Some(new_frame) => {
                             assert!(!new_frame.is_pt());
                             // Same convention as `Table::map`'s leaf install.
@@ -1190,9 +1208,22 @@ impl Table {
                             }
                             zeroswap::record(true);
                             *cursor = cursor.advance_until_empty(to_entry_end(cursor));
+                            // `idx` explicitly, because this `continue` no longer gets it for
+                            // free: the entry loop was a `for` when this arm was written. Without
+                            // it the swap re-reads the slot it just filled -- present, writable,
+                            // not COW -- and swaps it again, spending a `present` credit and
+                            // advancing the *cursor* each pass while `idx` stands still, so
+                            // `update_entry` starts invalidating an address that belongs to a
+                            // different slot and the walk quits at `present == 0` with the tail of
+                            // the range never zeroed. That is the 4 KiB of 0xff at the level-1
+                            // boundary `obj::tests::zero_ranges_and_check` caught.
+                            idx += 1;
                             continue;
                         }
-                        None => zeroswap::record(false),
+                        None => {
+                            *swap_dry = true;
+                            zeroswap::record(false)
+                        }
                     }
                 }
                 let mut new_entry = Entry::new_unused();
@@ -1228,10 +1259,46 @@ impl Table {
                 // range spanning two level-1 regions zeroed only the first, and the caller got no
                 // error -- which is what `zero_range` shipped to userspace as "this range is now
                 // zero". Every entry-consuming arm advances for itself instead.
-                next_table.setup_zero_range(consist, cursor, Self::next_level(level), fa)?;
+                next_table.setup_zero_range(
+                    consist,
+                    cursor,
+                    Self::next_level(level),
+                    fa,
+                    swap_dry,
+                )?;
             } else {
-                *cursor = cursor.advance_until_empty(to_entry_end(cursor));
+                // Absent, and so is whatever run of entries follows it -- skip them together. A
+                // 1 MiB range is ~258 leaf entries of which ~21 are resident, and stepping the
+                // cursor per absent entry paid a modulo, a canonicality-checked `VirtAddr::offset`
+                // and a bounds test each time to move over memory the object does not hold. This
+                // is what makes the walk proportional to what is *resident* at leaf granularity;
+                // `present`'s whole-table skip above only fires when a table holds nothing at all.
+                //
+                // Bounded by this table and by what the cursor still covers, so the
+                // "every entry-consuming arm advances for itself" contract is unchanged.
+                let size = Self::level_to_page_size(level);
+                let first = to_entry_end(cursor);
+                let mut run = 1;
+                if ZERO_RANGE_SKIP_ABSENT_RUNS {
+                    // Bounded by this table and by what the cursor still covers, so the run never
+                    // reaches an entry the caller did not ask about.
+                    let max_run = if cursor.remaining() <= first {
+                        1
+                    } else {
+                        1 + (cursor.remaining() - first).div_ceil(size)
+                    };
+                    while run < max_run
+                        && idx + run < Table::PAGE_TABLE_ENTRIES
+                        && !self[idx + run].is_present()
+                    {
+                        run += 1;
+                    }
+                }
+                *cursor = cursor.advance_until_empty(first + (run - 1) * size);
+                idx += run;
+                continue;
             }
+            idx += 1;
         }
         Ok(())
     }

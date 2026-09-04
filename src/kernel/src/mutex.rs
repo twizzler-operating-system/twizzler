@@ -463,28 +463,45 @@ impl<T> Mutex<T> {
         // nothing beyond "not free right now"; the loop below sorts out why.
         if let Some(ct) = current_thread {
             let ptr = Arc::as_ptr(ct) as usize;
-            if self
-                .state
-                .compare_exchange(0, ptr, Ordering::Acquire, Ordering::Relaxed)
-                .is_ok()
-            {
-                // After the CAS, not before: the stamp is owned along with the lock. A converter
-                // can read the previous acquisition's stamp in the window before this store
-                // lands; diagnostic-only.
-                self.stamp_locked_at(caller);
-                if timing {
-                    add_lock_time_sample(Instant::now() - start_time);
+            let mut spins = 0u32;
+            loop {
+                if self
+                    .state
+                    .compare_exchange(0, ptr, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    // After the CAS, not before: the stamp is owned along with the lock. A
+                    // converter can read the previous acquisition's stamp in the window before
+                    // this store lands; diagnostic-only.
+                    self.stamp_locked_at(caller);
+                    if timing {
+                        add_lock_time_sample(Instant::now() - start_time);
+                    }
+                    if spins != 0 {
+                        spinstats::won(spins);
+                    }
+                    let tracker_index = with_lock_tracker(|lt| lt.record_mutex_lock());
+                    return LockGuard {
+                        lock: self,
+                        prev_donated_priority: current_donated_priority,
+                        start_time,
+                        timed: timing,
+                        tracker_index,
+                        charged,
+                    };
                 }
-                let tracker_index = with_lock_tracker(|lt| lt.record_mutex_lock());
-                return LockGuard {
-                    lock: self,
-                    prev_donated_priority: current_donated_priority,
-                    start_time,
-                    timed: timing,
-                    tracker_index,
-                    charged,
-                };
+                if spins >= MUTEX_SPIN_LIMIT {
+                    break;
+                }
+                // Read-only until it looks free. Retrying the CAS against a held lock bounces the
+                // line between every waiter and the owner, which slows down the one thread whose
+                // progress ends the wait.
+                while spins < MUTEX_SPIN_LIMIT && self.state.load(Ordering::Relaxed) != 0 {
+                    spins += 1;
+                    core::hint::spin_loop();
+                }
             }
+            spinstats::lost();
             // Inside the `if let`, not below it: an acquisition with no current thread never
             // attempts the CAS, so counting it there scored every pre-threading acquisition as
             // contended. That is ~10k initrd `add_frame` calls per boot, which is how a
@@ -677,8 +694,25 @@ impl<T> Mutex<T> {
                         queue.pri = queue.queue.iter().map(|t| t.effective_priority()).max();
                         if let Some(ref owner) = queue.owner {
                             if let Some(ref pri) = queue.pri {
-                                if pri > &owner.effective_priority() {
+                                let owner_pri = owner.effective_priority();
+                                if pri > &owner_pri {
                                     owner.donate_priority(pri.clone());
+                                } else if MUTEX_HOLDER_PRIORITY
+                                    && pri.class == owner_pri.class
+                                    && owner_pri.value + 1 < crate::thread::priority::MAX_PRIORITY
+                                {
+                                    // Same-class contention, which is all of it for the pager and
+                                    // page-table locks: an equal-priority waiter cannot lift the
+                                    // owner by inheritance, and `donate_priority` re-files only
+                                    // when the donated value exceeds the owner's -- so the old
+                                    // `>` arm stored nothing and the owner kept being preempted by
+                                    // its peers while holding the lock. One step inside the
+                                    // owner's own class, so no class boundary is crossed and the
+                                    // release path restores it as before.
+                                    owner.donate_priority(Priority {
+                                        class: owner_pri.class,
+                                        value: owner_pri.value + 1,
+                                    });
                                 }
                             }
                         }
@@ -1231,6 +1265,61 @@ mod test {
 /// Only the slow path touches this, so an uncontended lock pays nothing. Keyed on the address of
 /// the `&'static Location` -- unique per call site, and printable at the end without storing a
 /// string.
+/// Iterations to spin before parking on a contended mutex.
+///
+/// Without this every lost CAS became a park plus a wake plus two context switches: half of all
+/// thread wakes during an on-target cargo build were kernel mutex handoffs (37,997 of 74,902),
+/// matching the contended-acquisition count essentially exactly. Linux's mutex spins while the
+/// owner is on-cpu and usually never sleeps, which is why the same build there costs a fifth of
+/// the wakes.
+///
+/// A blind bound rather than Linux's "spin while the owner is running": reading the owner means
+/// dereferencing the `Arc` pointer in `state`, which the owner may drop as it releases. The bound
+/// is what keeps a descheduled owner from turning this into a spinlock. Zero disables the spin,
+/// restoring the old behaviour for an A/B against one tree.
+const MUTEX_SPIN_LIMIT: u32 = 200;
+
+/// A/B for the two priority changes that go with the spin: boosting a same-class owner when a
+/// waiter gives up spinning and parks (`mutex.rs`), and declining to preempt a mutex holder for a
+/// same-class waker (`sched.rs`). One switch for both, since they address the same case from the
+/// two ends and measuring them apart says little.
+pub const MUTEX_HOLDER_PRIORITY: bool = true;
+
+/// Outcome of the spin above: `won` after spinning, against `lost` (spun out and parked). The
+/// ratio is what says whether the budget is right -- all-lost means it is wasted work, all-won
+/// means it could be shorter.
+pub mod spinstats {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static WON: AtomicU64 = AtomicU64::new(0);
+    static WON_SPINS: AtomicU64 = AtomicU64::new(0);
+    static LOST: AtomicU64 = AtomicU64::new(0);
+
+    pub fn won(spins: u32) {
+        WON.fetch_add(1, Ordering::Relaxed);
+        WON_SPINS.fetch_add(spins as u64, Ordering::Relaxed);
+    }
+
+    pub fn lost() {
+        LOST.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn print() {
+        let (won, lost) = (WON.load(Ordering::Relaxed), LOST.load(Ordering::Relaxed));
+        if won + lost == 0 {
+            return;
+        }
+        logln!(
+            "== mutex spin (limit {}): {} won after spinning ({} mean spins), {} parked, {}% avoided ==",
+            super::MUTEX_SPIN_LIMIT,
+            won,
+            WON_SPINS.load(Ordering::Relaxed) / won.max(1),
+            lost,
+            won * 100 / (won + lost),
+        );
+    }
+}
+
 pub mod contend {
     use core::{
         panic::Location,

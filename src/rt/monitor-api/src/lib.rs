@@ -215,6 +215,20 @@ pub fn monitor_rt_post_signal(
 ) -> Result<(), TwzError> {
 }
 
+/// Write the instance ID of every compartment the monitor knows about into the caller's
+/// per-thread simple buffer, returning how many were written. See [`compartment_ids`].
+#[secgate::gatecall]
+pub fn monitor_rt_get_compartment_ids() -> Result<usize, TwzError> {}
+
+#[secgate::gatecall]
+pub fn monitor_rt_get_state() -> Result<u64, TwzError> {}
+
+#[secgate::gatecall]
+pub fn monitor_rt_or_state(bits: u64) -> Result<u64, TwzError> {}
+
+#[secgate::gatecall]
+pub fn monitor_rt_wait_state(cur: u64) -> Result<u64, TwzError> {}
+
 #[secgate::gatecall]
 pub fn monitor_rt_libname_map(namelen: usize, id: ObjID) -> Result<(), TwzError> {}
 
@@ -1000,6 +1014,61 @@ bitflags::bitflags! {
         /// Compartment thread has exited.
         const EXITED = 0x20;
     }
+}
+
+bitflags::bitflags! {
+    /// Global system state, shared by every compartment. Read with [`monitor_state`], set with
+    /// [`monitor_state_or`], and watched with [`monitor_state_wait`].
+    #[derive(Clone, Debug, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
+    pub struct MonitorState : u64 {
+        /// The system is running a single user session.
+        const SINGLE_USER = 0x1;
+        /// Init has finished starting the system servers.
+        const RUNNING = 0x2;
+        /// Something the system needs failed to start, or died.
+        const DEGRADED = 0x4;
+        /// The system is up: all services started and usable.
+        const UP = 0x8;
+        /// A shutdown has been requested. Init acts on this.
+        const SHUTDOWN = 0x10;
+    }
+}
+
+/// Snapshot the instance IDs of every compartment the monitor currently knows about.
+///
+/// A snapshot, not an iterator: the set changes as compartments start and exit, and an
+/// index-based `nth` walk over it would skip or repeat entries when it did.
+pub fn compartment_ids() -> Result<Vec<ObjID>, TwzError> {
+    const ID_LEN: usize = size_of::<u128>();
+    let count = monitor_rt_get_compartment_ids()?;
+    let bytes = lazy_sb::read_bytes_from_sb(count * ID_LEN);
+    Ok(bytes
+        .chunks_exact(ID_LEN)
+        .map(|c| ObjID::new(u128::from_ne_bytes(c.try_into().unwrap())))
+        .collect())
+}
+
+/// Read the global monitor state.
+///
+/// Bits this build does not know about are retained, not dropped: the monitor compares the whole
+/// word, so a truncated value handed back to [`monitor_state_wait`] would never match and the wait
+/// would return immediately, forever.
+pub fn monitor_state() -> Result<MonitorState, TwzError> {
+    Ok(MonitorState::from_bits_retain(monitor_rt_get_state()?))
+}
+
+/// Or `bits` into the global monitor state, returning the new state.
+pub fn monitor_state_or(bits: MonitorState) -> Result<MonitorState, TwzError> {
+    Ok(MonitorState::from_bits_retain(monitor_rt_or_state(
+        bits.bits(),
+    )?))
+}
+
+/// Block until the global monitor state differs from `cur`, then return it.
+pub fn monitor_state_wait(cur: MonitorState) -> Result<MonitorState, TwzError> {
+    Ok(MonitorState::from_bits_retain(monitor_rt_wait_state(
+        cur.bits(),
+    )?))
 }
 
 /// Contains raw mapping addresses, for use when translating to object handles for the runtime.

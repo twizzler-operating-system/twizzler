@@ -623,6 +623,53 @@ pub fn alloc_many(
 /// The fallback is what makes the clean/dirty split a *preference* rather than a partition: a
 /// zeroed request served off the dirty side pays a memset, which is the old pool's behaviour and
 /// therefore the floor, never a regression.
+/// Take a frame that is *already* zero, or nothing.
+///
+/// [`alloc_one`] with [`Want::Zeroed`] falls back to the dirty magazine and hands the memset back
+/// to the caller. This never does. It exists for a caller whose alternative to a clean frame is
+/// cheaper than zeroing one -- `setup_zero_range`, which can leave the page absent and let it
+/// zero-fill on fault instead of installing anything.
+pub fn alloc_one_clean() -> Option<FrameRef> {
+    if !ENABLED || !ready() || !tls_ready() {
+        return None;
+    }
+    if let Some(frame) = with_cache(take_clean) {
+        stat::LOCAL_HIT.fetch_add(1, Ordering::Relaxed);
+        CACHED_FRAMES.fetch_sub(1, Ordering::Relaxed);
+        return Some(frame);
+    }
+    // A miss must not reach the depot. `refill(Want::Zeroed)` pops a *dirty* magazine when there
+    // is no clean one -- which this caller can never use. It installs it, the retry below still
+    // finds nothing, and the cpu's own full dirty magazine is then displaced back, so one failed
+    // call costs *two* depot acquisitions and three interrupts-off regions to change nothing.
+    //
+    // The miss is the common case here, not the rare one: supply is the binding constraint --
+    // `setup_zero_range` asks for a clean frame per resident page it clears and the background
+    // zeroer produces a small fraction of that -- so nearly every call takes this path.
+    // `CLEAN_MAGS` answers exactly this question without the lock, which is what it exists for
+    // (the free path already reads it that way), and losing a race against a concurrent
+    // `push_clean` costs one opportunistic swap the caller is built to do without.
+    if CLEAN_MAGS.load(Ordering::Relaxed) == 0 || !refill(Want::Zeroed) {
+        stat::MISS.fetch_add(1, Ordering::Relaxed);
+        return None;
+    }
+    match with_cache(take_clean) {
+        Some(frame) => {
+            stat::DEPOT_HIT.fetch_add(1, Ordering::Relaxed);
+            CACHED_FRAMES.fetch_sub(1, Ordering::Relaxed);
+            Some(frame)
+        }
+        None => {
+            stat::MISS.fetch_add(1, Ordering::Relaxed);
+            None
+        }
+    }
+}
+
+fn take_clean(c: &mut Cache) -> Option<FrameRef> {
+    c.clean.as_deref_mut().and_then(|mag| mag.pop())
+}
+
 fn take_local(c: &mut Cache, want: Want) -> Option<(FrameRef, bool)> {
     let (first, second) = match want {
         Want::Zeroed => (&mut c.clean, &mut c.dirty),

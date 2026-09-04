@@ -605,9 +605,15 @@ fn wait_for_page_requests(
                 // that would measure nothing -- and the pager sends one completion per contiguous
                 // run, so a whole transfer can arrive as a single batch, in which case waking on
                 // it saves nothing at all. This is the difference between the two.
-                early = lock_inflight_for(target.rk())
-                    .with_request(target.rk(), |r| !r.done())
-                    .unwrap_or(false);
+                // Behind the diag gate: `early` feeds one counter whose print is itself gated
+                // on `--diag=pager`, and taking the inflight mutex for it put a contended
+                // acquisition -- hence a park and a wake -- on the exit path of every wait. That
+                // lock was the single largest source of mutex wakes in a build (24,898 contended
+                // acquisitions against ~2,400 pager requests).
+                early = crate::kdiag_pager()
+                    && lock_inflight_for(target.rk())
+                        .with_request(target.rk(), |r| !r.done())
+                        .unwrap_or(false);
                 break;
             }
             let mut mgr = lock_inflight_for(target.rk());

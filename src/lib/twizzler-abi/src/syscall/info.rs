@@ -270,8 +270,13 @@ pub struct KernelStats {
     pub ctx_switches: u64,
     /// Involuntary preemptions, a subset of `ctx_switches`.
     pub preempts: u64,
-    /// Threads made runnable.
+    /// Threads made runnable -- plus, on the current kernel, reschedule requests:
+    /// `schedule_resched` charges those here too, so this exceeds the wake count by roughly
+    /// `preempts`. Use [`KernelStats::thread_wakes`] for wakes alone.
     pub wakeups: u64,
+    /// Threads made runnable, and nothing else. The direct analogue of Linux's schedstat
+    /// `ttwu_count`, counted at `schedule_thread`.
+    pub thread_wakes: u64,
     /// Threads pulled off another cpu's run queue by a rebalance.
     pub steals: u64,
     /// Requests the kernel sent to the pager, and the object pages those requests named. The

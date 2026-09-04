@@ -370,3 +370,26 @@ pub fn monitor_rt_lookup_symbol(
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
     monitor.lookup_symbol(caller, info.thread_id(), lib_desc, name_len)
 }
+
+#[secgate::entry(lib = "monitor-api")]
+pub fn monitor_rt_get_state() -> Result<u64, TwzError> {
+    Ok(crate::mon::state::get())
+}
+
+#[secgate::entry(lib = "monitor-api")]
+pub fn monitor_rt_or_state(bits: u64) -> Result<u64, TwzError> {
+    Ok(crate::mon::state::or(bits))
+}
+
+#[secgate::entry(lib = "monitor-api")]
+pub fn monitor_rt_wait_state(cur: u64) -> Result<u64, TwzError> {
+    Ok(crate::mon::state::wait(cur))
+}
+
+#[secgate::entry(lib = "monitor-api")]
+pub fn monitor_rt_get_compartment_ids() -> Result<usize, TwzError> {
+    let info = secgate::get_caller().ok_or(TwzError::NOT_SUPPORTED)?;
+    let monitor = crate::mon::get_monitor();
+    let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
+    monitor.compartment_ids(caller, info.thread_id())
+}

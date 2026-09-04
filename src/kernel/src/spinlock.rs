@@ -66,6 +66,17 @@ impl<T> GenericSpinlock<T> {
     }
 
     #[track_caller]
+    /// Whether the lock is held right now, without taking a ticket.
+    ///
+    /// Advisory by construction: the answer can be stale the instant it is read, so this is only
+    /// sound for a caller that may decline to proceed. It exists for `BACKGROUND` work whose whole
+    /// purpose is to stay out of the way -- see `frame::zero_pass`, which would otherwise queue a
+    /// ticket on the one lock every allocation in the system needs. Never use it to guard
+    /// correctness: a `false` here does not mean the following `lock()` is uncontended.
+    pub fn is_locked(&self) -> bool {
+        self.tickets.next.load(Ordering::Relaxed) != self.tickets.current.load(Ordering::Relaxed)
+    }
+
     pub fn lock(&self) -> LockGuard<'_, T> {
         /* TODO: do we need to set thread critical for this? */
         let interrupt_state = crate::interrupt::disable();

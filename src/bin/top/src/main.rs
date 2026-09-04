@@ -161,6 +161,31 @@ fn main() {
         tracker.view = ThreadView::HideSystem;
     }
 
+    // Raw cumulative counters, one line, no interval. For bracketing a workload: read it before
+    // and after and subtract, rather than integrating the header's per-second rates.
+    if args.iter().any(|a| a == "--counters") {
+        let k = sys_kernel_stats();
+        let m = sys_memory_stats();
+        println!(
+            "KCOUNTERS wakeups={} threadwakes={} switches={} preempts={} steals={} interrupts={} \
+             hardticks={} syscalls={} faults={} tlbflush={} shootdown={} pagerreq={} stealns={}",
+            k.wakeups,
+            k.thread_wakes,
+            k.ctx_switches,
+            k.preempts,
+            k.steals,
+            k.interrupts,
+            k.hardticks,
+            k.syscalls,
+            m.page_fault_count,
+            m.tlb_flush_count,
+            m.tlb_shootdown_count,
+            k.pager_requests,
+            k.steal_ns,
+        );
+        return;
+    }
+
     if batch {
         // Percentages are per-interval, so one sample has nothing to compare against.
         tracker.sample();
