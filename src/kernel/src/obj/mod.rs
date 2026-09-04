@@ -1247,7 +1247,7 @@ pub mod reapstats {
         let total = sent + sup;
         // Integer math only; mean batch scaled by 1000 rather than a float.
         logln!(
-            "== reaper wake: sent={} suppressed={} ({}% of {}) wakes={} objs={} graves={} deduped={} lingers={} depth_drift={} mean_batch_x1000={} stale_count_reaps={} (batch_wake={} defer_teardown={} targeted={} mapcount_fast={}) ==",
+            "== reaper wake: sent={} suppressed={} ({}% of {}) wakes={} objs={} graves={} deduped={} lingers={} depth_drift={} mean_batch_x1000={} stale_count_reaps={} boosts={} (batch_wake={} defer_teardown={} targeted={} mapcount_fast={}) ==",
             sent,
             sup,
             if total > 0 { sup * 100 / total } else { 0 },
@@ -1264,6 +1264,7 @@ pub mod reapstats {
                 0
             },
             STALE_COUNT_REAPS.load(Ordering::Relaxed),
+            BOOSTS.load(Ordering::Relaxed),
             // Every const that governs this subsystem's behaviour, emitted with the numbers it
             // governs. A handover message describing tree state can be wrong or absent -- this
             // rides in the artifact, so a transcript is self-identifying about the configuration

@@ -589,6 +589,8 @@ pub fn print_pager_profile() {
         p.narrowed_pages.load(Ordering::Relaxed),
     );
 
+    super::boost::print_stats();
+
     if let Some(rs) = super::queues::completion_recv_stats() {
         // `parks` is what the spin was supposed to avoid and `spins` is what it cost trying: a
         // parks-to-recvs ratio near one means the producer answers one request at a time and the

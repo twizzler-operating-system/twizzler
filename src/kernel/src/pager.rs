@@ -38,6 +38,7 @@ use crate::{
     },
 };
 
+mod boost;
 mod inflight;
 pub(crate) mod profile;
 mod queues;
@@ -344,6 +345,9 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
         let submitted = Instant::now();
         profile::lookupstats::submitted((submitted - looked_up).as_nanos() as u64);
 
+        // Before the lock, not under it: `set_priority` can re-file a queued thread, which takes
+        // scheduler locks, and doing that while holding the inflight mutex would nest the two.
+        let _boost = boost::WaitBoost::new();
         let mut mgr = lock_inflight_for(inflight.rk());
         let thread = current_thread_ref().unwrap();
         if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
@@ -571,6 +575,9 @@ fn wait_for_page_requests(
     if inflights.is_empty() {
         return;
     }
+    // Whole-function scope: this is reached only after the caller has submitted, and every path
+    // out of it is a path out of the wait.
+    let _boost = boost::WaitBoost::new();
     // The one covering the caller's pages, else the first: with no required range the old
     // behaviour is to wait for the whole thing, and any of them serves to park on.
     let target = required
@@ -684,6 +691,7 @@ fn cmd_object(req: ReqKind, obj: Option<&ObjectRef>) {
         queues::submit_pager_request(pager_req, obj, inflight.rk().clone());
     });
 
+    let _boost = boost::WaitBoost::new();
     let mut mgr = lock_inflight_for(inflight.rk());
     let thread = current_thread_ref().unwrap();
     if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
@@ -790,6 +798,10 @@ pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) -> Result<()
 }
 
 fn do_sync_region(obj: &ObjectRef, req: ReqKind, wait: bool) {
+    // Covers both waits below -- the one for a previous sync and the one for ours. The first is a
+    // wait on a request this thread did not submit, which counts all the same: what the counter
+    // means is "a thread of this class is blocked on the completion thread".
+    let _boost = boost::WaitBoost::new();
     // Backpressure: wait for any sync already in flight for this object before submitting
     // another. Every SyncRegion is unique (see `SyncRegionInfo`), so nothing coalesces them, and
     // the fire-and-forget path (`wait == false`, a null sync_info) otherwise lets a tight sync
@@ -1394,6 +1406,7 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
     }
 
     if wait {
+        let _boost = boost::WaitBoost::new();
         for inflight in &inflights {
             let mut mgr = lock_inflight_for(inflight.rk());
             let thread = current_thread_ref().unwrap();
@@ -1412,6 +1425,7 @@ fn wait_oldest_donation(inflights: &mut Vec<Inflight>) -> bool {
     if inflights.is_empty() {
         return false;
     }
+    let _boost = boost::WaitBoost::new();
     let inflight = inflights.remove(0);
     let mut mgr = lock_inflight_for(inflight.rk());
     let thread = current_thread_ref().unwrap();

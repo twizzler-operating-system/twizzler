@@ -831,13 +831,17 @@ pub fn init_pager_queue(id: ObjID, outgoing: bool) {
     if SENDER.poll().is_some() && RECEIVER.poll().is_some() {
         super::start_memory_provider();
         super::start_deleter();
-        // TODO: these should be higher?
-        start_new_kernel(
-            Priority::REALTIME,
+        // Base priority, not fixed priority: `boost` raises this thread to the highest class
+        // with a live waiter and drops it back when the last one leaves. Realtime as a *floor*
+        // was the inversion -- this thread wakes constantly and does almost nothing per wake, so
+        // at realtime it preempted the very compiler it was fetching pages for on every
+        // completion, whether or not anything realtime was blocked on it.
+        super::boost::register_completion_thread(start_new_kernel(
+            super::boost::COMPLETION_BASE,
             pager_compl_handler_entry,
             0,
             "pager-completion",
-        );
+        ));
         start_new_kernel(
             Priority::USER,
             pager_request_handler_entry,

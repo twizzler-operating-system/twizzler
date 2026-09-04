@@ -23,17 +23,44 @@ use crate::{
     },
     mutex::Mutex,
     obj::{ObjectRef, PageNumber},
-    processor::spin_wait_until,
+    processor::{
+        sched::{SchedFlags, needs_reschedule, schedule},
+        spin_wait_until,
+    },
     spinlock::Spinlock,
     syscall::sync::sys_thread_sync,
+    thread::{current_thread_ref, priority::PriorityClass},
 };
 
 /// Floor for the adaptive receive spin. Cheap enough to be worth keeping for the case the spin is
 /// actually for -- a second entry already on its way -- while being ~1.5% of the length that costs
 /// nothing but time when it is not.
-const RECV_SPIN_MIN: usize = 16;
+const RECV_SPIN_MIN: usize = twizzler_queue_raw::SPIN_ATTEMPTS;
 /// Ceiling: the raw queue's own default, so adapting can only ever spin less than not adapting.
 const RECV_SPIN_MAX: usize = twizzler_queue_raw::SPIN_ATTEMPTS;
+
+/// How the calling thread's priority class shapes the spin: the budget it may spend, and whether
+/// it must check for a reschedule while spending it.
+///
+/// The adaptive budget answers "does spinning pay off here"; this answers "may this thread spend a
+/// cpu finding out". They are different questions and the second is not the consumer's to decide
+/// from throughput alone -- a realtime consumer that spins is holding a cpu no one can preempt,
+/// and a background one is holding a cpu that anybody may.
+fn spin_policy(adaptive: usize) -> (usize, bool) {
+    let class = current_thread_ref()
+        .map(|t| t.effective_priority().class)
+        .unwrap_or(PriorityClass::User);
+    match class {
+        // Spin barely at all. A realtime thread is scheduled the moment it is woken, so the park
+        // it is avoiding is close to free for it -- while the cpu it burns avoiding one is a cpu
+        // nothing else can take. The trade the adaptive budget optimises runs the other way here.
+        PriorityClass::Realtime => (adaptive.min(RECV_SPIN_MIN), false),
+        // The measured case: budget as adapted.
+        PriorityClass::User => (adaptive, false),
+        // May spin, may not hold the cpu doing it.
+        PriorityClass::Background | PriorityClass::Idle => (adaptive, true),
+    }
+}
 
 /// What a queue's receive side has been doing, for [`QueueObject::completion_recv_stats`].
 pub struct QueueRecvStats {
@@ -124,51 +151,81 @@ impl<T: Copy> Queue<T> {
     }
 
     fn recv(&self) -> (u32, T) {
-        let budget = self.spin.load(Ordering::Relaxed);
+        let (budget, must_yield) = spin_policy(self.spin.load(Ordering::Relaxed));
         // Set from inside the wait callback rather than inferred from `spun == budget`: the loop
         // re-arms and waits again on a spurious wake, and only the callback firing distinguishes
         // "ran out of spin and slept" from "ran out of spin and then found an entry".
         let parked = Cell::new(false);
-        let (item, spun) = self
-            .raw
-            .receive_spin(
-                budget,
-                |word, val| {
-                    parked.set(true);
-                    sys_thread_sync(
-                        &mut [ThreadSync::new_sleep(ThreadSyncSleep::new(
-                            ThreadSyncReference::Virtual(word),
-                            val,
-                            ThreadSyncOp::Equal,
-                            ThreadSyncFlags::empty(),
-                        ))],
-                        None,
-                    )
-                    .unwrap();
-                },
-                |word| {
-                    sys_thread_sync(
-                        &mut [ThreadSync::new_wake(ThreadSyncWake::new(
-                            ThreadSyncReference::Virtual(word),
-                            usize::MAX,
-                        ))],
-                        None,
-                    )
-                    .unwrap();
-                },
-                ReceiveFlags::empty(),
+        let wait = |word: &AtomicU64, val: u64| {
+            parked.set(true);
+            sys_thread_sync(
+                &mut [ThreadSync::new_sleep(ThreadSyncSleep::new(
+                    ThreadSyncReference::Virtual(word),
+                    val,
+                    ThreadSyncOp::Equal,
+                    ThreadSyncFlags::empty(),
+                ))],
+                None,
             )
             .unwrap();
+        };
+        let ring = |word: &AtomicU64| {
+            sys_thread_sync(
+                &mut [ThreadSync::new_wake(ThreadSyncWake::new(
+                    ThreadSyncReference::Virtual(word),
+                    usize::MAX,
+                ))],
+                None,
+            )
+            .unwrap();
+        };
+        let (item, spun) = if must_yield {
+            // The spin runs here rather than inside the raw queue so a reschedule can be honoured
+            // between iterations. A budget of zero on each call makes `receive_spin` arm and park
+            // without spinning, so the polling half and the parking half stay separated: poll with
+            // NON_BLOCK, which never arms, then arm exactly once at the end.
+            let mut spun = 0;
+            let item = loop {
+                match self
+                    .raw
+                    .receive_spin(0, &wait, &ring, ReceiveFlags::NON_BLOCK)
+                {
+                    Ok((item, _)) => break item,
+                    Err(_) => {}
+                }
+                if spun >= budget {
+                    break self
+                        .raw
+                        .receive_spin(0, &wait, &ring, ReceiveFlags::empty())
+                        .unwrap()
+                        .0;
+                }
+                spun += 1;
+                if needs_reschedule(false) {
+                    schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
+                }
+                core::hint::spin_loop();
+            };
+            (item, spun)
+        } else {
+            self.raw
+                .receive_spin(budget, &wait, &ring, ReceiveFlags::empty())
+                .unwrap()
+        };
         if spun != 0 {
+            // Adapt the stored budget, not the policy-shaped one this call used: the policy is a
+            // property of who is calling, and folding a realtime caller's cap into the stored
+            // value would let one such call reset an adaptation the User callers earned.
+            let stored = self.spin.load(Ordering::Relaxed);
             let next = if parked.get() {
-                (budget / 2).max(RECV_SPIN_MIN)
+                (stored / 2).max(RECV_SPIN_MIN)
             } else {
-                (budget * 2).min(RECV_SPIN_MAX)
+                (stored * 2).min(RECV_SPIN_MAX)
             };
             // Racy against another receiver by construction, and harmlessly so: `QueueObject`
             // admits one receiver at a time per direction, and a lost update costs one
             // mis-sized spin.
-            if next != budget {
+            if next != stored {
                 self.spin.store(next, Ordering::Relaxed);
             }
         }
