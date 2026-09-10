@@ -633,6 +633,71 @@ pub fn get_sctx_id() -> ObjID {
     }
 }
 
+/// Count gate calls by gate.
+///
+/// The question this exists for is "which cross-compartment call is being made millions of times",
+/// and the kernel's syscall profile cannot answer it: every gate's entry and exit switch the
+/// security context from the same two pcs inside the runtime, so per-pc attribution collapses them
+/// all together.
+///
+/// The identity comes from `#[track_caller]` on [`runtime_preentry`]. The entry macro generates
+/// that call inside each gate's trampoline, so the caller location resolves to the gate's own
+/// `#[secgate::entry]` site -- one distinct `&'static Location` per gate, for free.
+///
+/// Has its own cadence rather than [`statcadence::report_now`], so it can be switched on without
+/// also turning on the transit timing, which adds three clock reads to every gate entry.
+pub mod gatecount {
+    use core::{
+        panic::Location,
+        sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    };
+
+    pub const GATE_STATS: bool = false;
+
+    /// One slot per gate; the last collects the overflow.
+    const NR: usize = 32;
+    #[allow(clippy::declare_interior_mutable_const)]
+    const ZERO_U: AtomicUsize = AtomicUsize::new(0);
+    #[allow(clippy::declare_interior_mutable_const)]
+    const ZERO: AtomicU64 = AtomicU64::new(0);
+    static SITES: [AtomicUsize; NR] = [ZERO_U; NR];
+    static COUNTS: [AtomicU64; NR] = [ZERO; NR];
+
+    pub fn note(loc: &'static Location<'static>) {
+        if !GATE_STATS {
+            return;
+        }
+        let key = loc as *const _ as *const u8 as usize;
+        let mut idx = NR - 1;
+        for i in 0..NR - 1 {
+            let cur = SITES[i].load(Ordering::Relaxed);
+            if cur == key {
+                idx = i;
+                break;
+            }
+            if cur == 0
+                && SITES[i]
+                    .compare_exchange(0, key, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+            {
+                idx = i;
+                // The legend, once per gate. It cannot ride in the statlog tag: that is truncated
+                // to a few characters, which turns every distinct gate into the same row.
+                std::println!("GATEMAP {} {}:{}", idx, loc.file(), loc.line());
+                break;
+            }
+        }
+        let n = COUNTS[idx].fetch_add(1, Ordering::Relaxed) + 1;
+        // Powers of two: a gate called twice and one called two million both report, and neither
+        // floods a console shared with the workload being measured. The slot index is a value
+        // rather than part of the tag, for the same truncation reason.
+        if n.is_power_of_two() {
+            crate::statlog::record_on(GATE_STATS, "GATE", n, &[idx as u64]);
+        }
+    }
+}
+
+#[track_caller]
 pub fn runtime_preentry(info: &GateCallInfo) -> Result<(), TwzError> {
     // Before the entry work, so `transit` is the transition alone and `entry` is what
     // `cross_compartment_entry` adds on top of it.
@@ -645,6 +710,7 @@ pub fn runtime_preentry(info: &GateCallInfo) -> Result<(), TwzError> {
     let res = twizzler_rt_abi::core::twz_rt_cross_compartment_entry();
     let t_done = statcadence::STATS_ON.then(twizzler_rt_abi::time::twz_rt_get_monotonic_time);
     res?;
+    gatecount::note(core::panic::Location::caller());
     // Reported only after the entry call has returned: a cold entry runs with no usable thread
     // pointer until then, and the report path is not worth auditing for that. The transit value is
     // still the one taken before it.

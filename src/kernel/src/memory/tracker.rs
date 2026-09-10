@@ -215,6 +215,20 @@ pub mod allocprofile {
         };
     }
 
+    /// Precharge call-site tags, so over-fetch can be attributed instead of inferred.
+    pub const PC_SITE_OTHER: u8 = 0;
+    pub const PC_SITE_FILL: u8 = 1;
+    pub const PC_SITE_MAP: u8 = 2;
+
+    /// `(calls, want, unused)` counters for a site tag.
+    pub fn pc_counters(site: u8) -> (&'static AtomicU64, &'static AtomicU64, &'static AtomicU64) {
+        match site {
+            PC_SITE_FILL => (&PC_FILL_CALLS, &PC_FILL_WANT, &PC_FILL_UNUSED),
+            PC_SITE_MAP => (&PC_MAP_CALLS, &PC_MAP_WANT, &PC_MAP_UNUSED),
+            _ => (&PC_OTHER_CALLS, &PC_OTHER_WANT, &PC_OTHER_UNUSED),
+        }
+    }
+
     counters!(
         ALLOCS,
         ALLOC_NS,
@@ -336,6 +350,15 @@ pub mod allocprofile {
         // whether `FA_INLINE_CAP` is the right size: a per-operation allocator should never spill,
         // and the pool spills exactly once per cpu at provisioning.
         FA_SPILL,
+        PC_FILL_CALLS,
+        PC_FILL_WANT,
+        PC_FILL_UNUSED,
+        PC_MAP_CALLS,
+        PC_MAP_WANT,
+        PC_MAP_UNUSED,
+        PC_OTHER_CALLS,
+        PC_OTHER_WANT,
+        PC_OTHER_UNUSED,
     );
 
     /// Nanoseconds since `start`, for a caller that wants the number as well as the counter.
@@ -528,7 +551,7 @@ impl MemoryTracker {
     }
 
     fn free_frame(&self, frame: FrameRef) {
-        self.free_frame_inner(frame, true)
+        self.free_frame_inner(frame, true, false)
     }
 
     /// `allow_park = false` is for callers that are *draining* the pool: `FrameAllocator::trim`
@@ -536,7 +559,7 @@ impl MemoryTracker {
     /// `Drop`, so a parking free would push the frame straight back into the pool the caller is
     /// emptying -- bounded by `TRIM_PER_DROP`, so not a live loop, but a no-op that still counts
     /// `FA_TRIMMED` and returns no memory. See [`allocprofile::FA_NO_TAKE`] hazard 1.
-    fn free_frame_inner(&self, frame: FrameRef, allow_park: bool) {
+    fn free_frame_inner(&self, frame: FrameRef, allow_park: bool, known_zero: bool) {
         allocprofile::add(&allocprofile::FREES, 1);
         let count = frame.size() / FRAME_SIZE;
         // Park before any accounting: a parked frame stays ALLOCATED and stays charged to its
@@ -545,7 +568,7 @@ impl MemoryTracker {
         // nothing became available to a waiter, which is consistent with parking stopping once
         // `MemoryState` reaches `Tight`, the only state in which waiters exist.
         if count == 1 && allow_park {
-            if cache_freed_frame(frame) {
+            if cache_freed_frame_hinted(frame, known_zero) {
                 return;
             }
             if park_frame_in_pool(frame) {
@@ -563,6 +586,15 @@ impl MemoryTracker {
         assert!(old > 0);
         self.idle.fetch_add(count, Ordering::SeqCst);
         self.freed.fetch_add(count, Ordering::SeqCst);
+        // The cache declined this frame (pressure, or no magazine), so it goes to the physical
+        // allocator -- which files it by `PhysicalFrameFlags::ZEROED` alone. That bit was cleared
+        // when the frame was handed out, so without this a frame we *know* is zero lands on the
+        // dirty free list and the background zeroer pays to zero it again. Setting it here is
+        // sound for the same reason the caller's claim is: it is set at the moment of the free,
+        // from a caller that has proved the contents, not carried over from an earlier life.
+        if known_zero {
+            frame.set_flags(crate::memory::frame::PhysicalFrameFlags::ZEROED, true);
+        }
         crate::memory::frame::raw_free_frame(frame);
         self.note_idle_change();
         self.wake();
@@ -1293,6 +1325,32 @@ pub fn free_frame(frame: FrameRef) {
         .free_frame(frame)
 }
 
+/// [`free_frame`], where the caller can prove nothing has written the frame since it was zeroed.
+///
+/// The only caller is the unmap path, for an entry whose hardware dirty bit is clear and that was
+/// installed by the anonymous fill -- which allocates the frame zeroed and is the one path whose
+/// entries carry no synthetic `DIRTY`. `zeroprobe` measured that population at 0 false positives
+/// in ~525k clean entries, and [`framecache::VERIFY_KNOWN_ZERO`] re-checks it on demand.
+pub fn free_frame_known_zero(frame: FrameRef) {
+    assert!(
+        !frame.is_pooled(),
+        "freeing frame that is parked in a per-cpu pool (double free): {:?}",
+        frame
+    );
+    assert!(
+        frame.refcount() == 0,
+        "freeing frame with non-zero refcount"
+    );
+    assert!(
+        !frame.is_pt(),
+        "freeing frame that is still marked as a page table"
+    );
+    TRACKER
+        .poll()
+        .expect("page tracker not initialized")
+        .free_frame_inner(frame, true, true)
+}
+
 /// [`free_frame`] for a caller that is emptying a per-cpu cache and must not re-fill it.
 /// Same asserts, same accounting; only the caching attempt is skipped.
 ///
@@ -1316,7 +1374,7 @@ pub(crate) fn free_frame_nopark(frame: FrameRef) {
     TRACKER
         .poll()
         .expect("page tracker not initialized")
-        .free_frame_inner(frame, false)
+        .free_frame_inner(frame, false, false)
 }
 
 /// Track a page as owned by the pager.
@@ -1840,6 +1898,8 @@ pub struct FrameAllocator {
     /// could write it. Cleared by [`Self::merge`], which can move *abort* frames into the
     /// precharge list -- those went out to a failed map and may have been written.
     precharge_known_zero: bool,
+    /// Call-site tag; see `allocprofile::PC_SITE_*`.
+    site: u8,
 }
 
 impl FrameAllocator {
@@ -1851,7 +1911,13 @@ impl FrameAllocator {
             precharge: FrameStore::new(),
             avoid_alloc: false,
             precharge_known_zero: flags.contains(FrameAllocFlags::ZEROED),
+            site: allocprofile::PC_SITE_OTHER,
         }
+    }
+
+    /// Tag this allocator's precharges for attribution. See `allocprofile::PC_SITE_*`.
+    pub fn set_site(&mut self, site: u8) {
+        self.site = site;
     }
 
     pub fn merge(&mut self, other: &mut Self) {
@@ -1940,6 +2006,11 @@ impl FrameAllocator {
 
     #[track_caller]
     pub fn precharge(&mut self, count: usize, flags: FrameAllocFlags) {
+        {
+            let (c, w, _) = allocprofile::pc_counters(self.site);
+            allocprofile::add(c, 1);
+            allocprofile::add(w, count as u64);
+        }
         if count >= PHYS_LEVEL_LAYOUTS[1].size() / PHYS_LEVEL_LAYOUTS[0].size() {
             // debug!, not warn!: this fires ~1600 times a sweep on healthy runs, which drowns real
             // warnings in grep-based triage. Raise it again if it ever correlates with a failure.
@@ -2082,6 +2153,11 @@ impl FrameAllocator {
     #[track_caller]
     pub fn precharge_nowait(&mut self, count: usize) -> usize {
         allocprofile::add(&allocprofile::PRECHARGE_CALLS, 1);
+        {
+            let (c, w, _) = allocprofile::pc_counters(self.site);
+            allocprofile::add(c, 1);
+            allocprofile::add(w, count as u64);
+        }
         // Hooked here as well as in `precharge`: with an exact page-table precharge, `map_page`
         // often makes no request at all, and the fill loop's `precharge_nowait` becomes the only
         // allocating call a fault path makes. Provisioning must not depend on which one runs.
@@ -2912,6 +2988,11 @@ impl Drop for FrameAllocator {
             &allocprofile::FA_DROP_FRAMES,
             (self.precharge.len() + self.abort.len()) as u64,
         );
+        {
+            // Leftover precharge is exactly the over-fetch: fetched, never popped, handed back.
+            let (_, _, u) = allocprofile::pc_counters(self.site);
+            allocprofile::add(u, self.precharge.len() as u64);
+        }
         // Note that the abort list is recycled by the save/take path below rather than freed:
         // abort frames can carry a non-zero refcount (a failed map after an rc bump), which
         // `free_frame` refuses outright. Parking feeds only from `free_frame` (rc==0 asserted).

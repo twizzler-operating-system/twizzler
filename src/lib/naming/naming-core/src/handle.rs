@@ -186,6 +186,20 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
         out
     }
 
+    /// One node out of the shared buffer, onto the caller's stack: [`Self::read_nodes`] for a
+    /// single entry, with the same safety argument.
+    fn read_node(buffer: &SimpleBuffer, offset: usize) -> NsNode {
+        let mut node = core::mem::MaybeUninit::<NsNode>::uninit();
+        unsafe {
+            let raw = core::slice::from_raw_parts_mut(
+                node.as_mut_ptr().cast::<u8>(),
+                size_of::<NsNode>(),
+            );
+            buffer.read_offset(raw, offset);
+            node.assume_init()
+        }
+    }
+
     /// Open a new naming handle.
     pub fn new(api: &'a API) -> Option<Self> {
         NamingHandle::open(api).ok()
@@ -294,14 +308,33 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
         self.api.link(self.desc, slot.offset(), name_len, link_len)
     }
 
-    /// A slot bounds one enumerate call's reply, so large requests page through the slot; the
-    /// `skip`/`count` protocol underneath is unchanged.
     pub fn enumerate_names_nsid(
         &self,
         nsid: ObjID,
         skip: usize,
         count: usize,
     ) -> Result<Vec<NsNode>> {
+        let mut out = Vec::new();
+        self.enumerate_names_nsid_visit(nsid, skip, count, |_, node| {
+            out.push(*node);
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    /// [`Self::enumerate_names_nsid`] without the `Vec`: each entry is copied out of the shared
+    /// buffer one at a time and handed to `f` with its index relative to `skip`. An error from
+    /// `f` aborts the enumeration and is returned. Returns the number of entries visited.
+    ///
+    /// A slot bounds one enumerate call's reply, so large requests page through the slot; the
+    /// `skip`/`count` protocol underneath is unchanged.
+    pub fn enumerate_names_nsid_visit(
+        &self,
+        nsid: ObjID,
+        skip: usize,
+        count: usize,
+        mut f: impl FnMut(usize, &NsNode) -> Result<()>,
+    ) -> Result<usize> {
         tracing::trace!(
             "enumerating namespace {} (skip {}, count {})",
             nsid,
@@ -311,22 +344,26 @@ impl<'a, API: NamerAPI> NamingHandle<'a, API> {
         let per = BUFFER_SLOT_SIZE / size_of::<NsNode>();
         let buffer = self.buffer()?;
         let slot = self.take_slot();
-        let mut out = Vec::new();
+        let mut visited = 0;
         loop {
-            let want = (count - out.len()).min(per);
+            let want = (count - visited).min(per);
             if want == 0 {
                 break;
             }
             let n = self
                 .api
-                .enumerate_names_nsid(self.desc, nsid, slot.offset(), skip + out.len(), want)?
+                .enumerate_names_nsid(self.desc, nsid, slot.offset(), skip + visited, want)?
                 .min(want);
-            out.extend(Self::read_nodes(buffer, slot.offset(), n));
+            for i in 0..n {
+                let node = Self::read_node(buffer, slot.offset() + i * size_of::<NsNode>());
+                f(visited + i, &node)?;
+            }
+            visited += n;
             if n < want {
                 break;
             }
         }
-        Ok(out)
+        Ok(visited)
     }
 
     pub fn enumerate_names_relative<P: AsRef<Path>>(

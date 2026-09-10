@@ -567,6 +567,7 @@ impl Object {
             FrameAllocFlags::WAIT_OK | FrameAllocFlags::ZEROED,
             PHYS_LEVEL_LAYOUTS[0],
         );
+        alloc.set_site(crate::memory::tracker::allocprofile::PC_SITE_FILL);
         // Try to get the frames without giving the caller's lock up. Only *waiting* for memory is
         // unacceptable here -- it would block every other fault on this object -- and there is
         // normally nothing to wait for, so the unconditional drop-and-retake this used to do cost
@@ -591,7 +592,11 @@ impl Object {
             largealloc::record(large_frame.is_some());
             if let Some(large_frame) = large_frame {
                 *all_were_present = false;
-                guard.map_page(large_page.as_byte_offset() as u64, large_frame)?;
+                guard.map_page_probed(
+                    large_page.as_byte_offset() as u64,
+                    large_frame,
+                    !self.use_pager(),
+                )?;
                 page = large_page.offset(nr_pages_for_large);
                 page_count = page_count.saturating_sub(nr_pages_for_large - pre_covered);
 
@@ -713,7 +718,7 @@ impl Object {
                 let ints = crate::interrupt::taken();
                 // The anonymous fill is the whole probed population: a frame allocated zeroed
                 // here, installed here, and never seen by the pager. See `zeroprobe`.
-                let r = guard.map_page_probed(offset, frame, true);
+                let r = guard.map_page_probed(offset, frame, !self.use_pager());
                 if allocprofile::TIME_ALLOCS {
                     allocprofile::add(
                         &allocprofile::FILL_MAP_INTS,
@@ -769,7 +774,7 @@ impl Object {
             }
             *all_were_present = false;
             let frame = alloc.try_allocate().ok_or(ResourceError::OutOfMemory)?;
-            if let Err(e) = guard.map_page(offset, frame) {
+            if let Err(e) = guard.map_page_probed(offset, frame, !self.use_pager()) {
                 alloc.abort([frame]);
                 return Err(e);
             }
@@ -1347,7 +1352,7 @@ impl Object {
             self_pt.split_to_level((src_offset + len) as u64, level)?;
         }
 
-        dst_pt.setup_zero_range(dst_offset as u64, len)?;
+        dst_pt.setup_zero_range(dst_offset as u64, len, !dst.use_pager())?;
         self_pt.setup_cow_range(&mut *dst_pt, src_offset as u64, dst_offset as u64, len)?;
 
         // Both locks off before either one's shootdown wait runs; dropping them implicitly would
@@ -1505,7 +1510,7 @@ impl Object {
             len,
             self.id()
         );
-        pt.setup_zero_range(offset as u64, len)?;
+        pt.setup_zero_range(offset as u64, len, !self.use_pager())?;
         Ok(())
     }
 

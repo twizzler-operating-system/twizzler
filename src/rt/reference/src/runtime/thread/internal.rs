@@ -112,6 +112,12 @@ impl InternalThread {
         self.repr_id
     }
 
+    /// (base, len) of this thread's stack allocation; (0, 0) when the runtime did not allocate
+    /// it (the core thread -- see `init_core_thread`), which callers report as "unknown".
+    pub(super) fn stack_bounds(&self) -> (usize, usize) {
+        (self.stack_addr, self.stack_size)
+    }
+
     #[allow(dead_code)]
     pub(crate) fn repr(&self) -> Option<&ThreadRepr> {
         // Safety: repr_handle ensures that the start memory will be alive, and that it contains

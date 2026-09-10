@@ -314,6 +314,9 @@ fn main() {
             a if a.starts_with("--diag=") => {
                 std::env::set_var("TWZ_DIAG", &a["--diag=".len()..]);
             }
+            "--syncexit" => SYNC_ON_EXIT.store(true, Ordering::Relaxed),
+            "--statexit" => DUMP_ON_EXIT.store(true, Ordering::Relaxed),
+            "--zerostart" => ZERO_ON_START.store(true, Ordering::Relaxed),
             a if a.starts_with("--") => {}
             _ => autostart = Some(arg),
         }
@@ -579,9 +582,17 @@ fn main() {
         .spawn(move || loop {
             let mut buf = [0; 1024];
             let mut ioc = twizzler_rt_abi::io::IoCtx::default();
-            let count =
-                twizzler_rt_abi::io::twz_rt_fd_pread(server_fd, &mut buf, &mut ioc).unwrap();
-            //tracing::info!("Read {} bytes from pty: {:?}", count, &buf[0..count]);
+            // Never unwrap: this thread is the *only* path from any program's stdout to the
+            // console, and it has no supervisor. The unwrap this replaces turned one transient
+            // read error into permanent, silent loss of all console output for the rest of the
+            // boot -- which reads as a hung or mute system rather than as a failed read.
+            let count = match twizzler_rt_abi::io::twz_rt_fd_pread(server_fd, &mut buf, &mut ioc) {
+                Ok(count) => count,
+                Err(_) => continue,
+            };
+            if count == 0 {
+                continue;
+            }
             twizzler_abi::syscall::sys_kernel_console_write(
                 twizzler_abi::syscall::KernelConsoleSource::Console,
                 &buf[0..count],
@@ -753,6 +764,11 @@ fn run_brush(pty_id: ObjID) -> Result<(), TwzError> {
 /// resolved to nothing, 126 for one that resolved but could not be run -- so the harness's status
 /// distinguishes them from anything the program itself returns.
 fn run_autostart(autostart: &str, autostart_args: &[String]) {
+    // With `--statexit`, rebaseline the kernel's profiles here so the counters printed at exit
+    // cover the autostart program alone rather than boot plus the program.
+    if DUMP_ON_EXIT.load(Ordering::Relaxed) {
+        twizzler_abi::syscall::sys_debug_perfmark(true);
+    }
     // Two fallbacks, in PATH order: the boot image first, then the on-disk program directory.
     // The second is what finds uuhelper's coreutils aliases, which are ext4 symlinks in the image
     // rather than naming-server nodes init used to make -- so `--autostart="ls /"` still works.
@@ -776,6 +792,19 @@ fn run_autostart(autostart: &str, autostart_args: &[String]) {
         shutdown(127);
         return;
     };
+
+    if ZERO_ON_START.load(Ordering::Relaxed) {
+        let start = Instant::now();
+        let r = sys_ctrl(
+            SysCtrlCmd::ZeroAll,
+            Some(std::time::Duration::from_secs(120)),
+            SysCtrlFlags::empty(),
+            0,
+            0,
+            0,
+        );
+        println!("ZEROSTART ms={} bytes={:?}", start.elapsed().as_millis(), r);
+    }
 
     println!("autostart: {} {:?}", path, autostart_args);
     let mut args = vec![path.to_string()];
@@ -915,10 +944,51 @@ fn wait_for_exit(comp: &CompartmentHandle, timeout: std::time::Duration) -> bool
     }
 }
 
+/// Set by `--syncexit`. Off by default, because `shutdown` is on the path of every harness run
+/// and making them all pay for writeback would move numbers nobody asked to move.
+static SYNC_ON_EXIT: AtomicBool = AtomicBool::new(false);
+
+/// Set by `--zerostart`: sweep every free physical frame to zero *before* the autostart program
+/// runs, so that page-fault-time zeroing is not on the workload's critical path.
+///
+/// The control for "is the guest paying to zero pages while it works": with every free frame
+/// already clean the fault path installs them directly, so a workload that speeds up here was
+/// bounded by zeroing and one that does not was not. `zero_all` is bounded by its own pass cap
+/// and by the timeout passed here.
+static ZERO_ON_START: AtomicBool = AtomicBool::new(false);
+
+/// Set by `--statexit`: run `SysCtrlCmd::DebugDump` just before shutting down, so that a run whose
+/// program has exited still prints the kernel's lock-free counters (the spinlock census among
+/// them). Non-verbose deliberately -- the verbose dump adds one block per object, thousands on a
+/// build, and would bury what this is for.
+static DUMP_ON_EXIT: AtomicBool = AtomicBool::new(false);
+
 /// Take the guest down. Every exit from `run_autostart` goes through here, including the two
 /// failures -- the whole point of the function is that the boot ends when the program does, and a
 /// path that returns instead hands the harness a timeout to interpret.
+///
+/// `sys_debug_shutdown` does *not* drain the background sync queue or flush the pager's backing
+/// store, unlike the `sys_ctrl(Shutdown)` that `watch_monitor_state` uses. So an `--autostart`
+/// run discards whatever is still dirty when its program exits, and the wall time it reports
+/// excludes that writeback entirely. `--syncexit` makes the cost visible: it runs the same
+/// `SyncAll` first and prints how long it took.
 fn shutdown(code: u32) {
+    if SYNC_ON_EXIT.load(Ordering::Relaxed) {
+        let start = Instant::now();
+        let r = sys_ctrl(
+            SysCtrlCmd::SyncAll,
+            Some(std::time::Duration::from_secs(120)),
+            SysCtrlFlags::empty(),
+            0,
+            0,
+            0,
+        );
+        println!("SYNCEXIT ms={} result={:?}", start.elapsed().as_millis(), r);
+    }
+    if DUMP_ON_EXIT.load(Ordering::Relaxed) {
+        twizzler_abi::syscall::sys_debug_perfmark(false);
+        let _ = sys_ctrl(SysCtrlCmd::DebugDump, None, SysCtrlFlags::empty(), 0, 0, 0);
+    }
     #[allow(deprecated)]
     twizzler_abi::syscall::sys_debug_shutdown(code);
 }

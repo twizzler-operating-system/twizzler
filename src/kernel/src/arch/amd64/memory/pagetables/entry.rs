@@ -112,6 +112,15 @@ bitflags::bitflags! {
         /// Software bit. Bits 52-58 are available in every entry type on x86-64; 59-62 are
         /// protection keys, so this is the low end of the safe range.
         const PROBED = 1 << 52;
+        /// Software bit, as [`EntryFlags::PROBED`]. Marks the population separately: an entry the
+        /// zero-range swap installed, rather than an anonymous fill. Both probe, and mixing them
+        /// makes the matrix unattributable -- swap entries inherit the old entry's `DIRTY` and so
+        /// are almost always dirty, while anon fills have it cleared at install.
+        const PROBED_SWAP = 1 << 53;
+        /// Software bit. "Treated as dirty for writeback because it was marked at map time",
+        /// as opposed to `DIRTY`, which on a hardware-tracked entry means the cpu actually wrote.
+        /// Writeback honours both; keeping them apart is what makes the waste measurable.
+        const SYNTH_DIRTY = 1 << 54;
         const NO_EXECUTE = 1 << 63;
     }
 }

@@ -323,9 +323,116 @@ pub mod census {
     /// Per-kind totals over every fault, whether or not its object found a slot.
     static KIND_TOTAL: [AtomicU64; NR_KINDS] = [const { AtomicU64::new(0) }; NR_KINDS];
 
-    pub fn record(id: ObjID, kind: Kind) {
+    /// Protection class of the faulting region: executable (code/libraries), read-only (rodata),
+    /// or read-write (heap/stack/bss/data). Global and overflow-proof, unlike the per-object table
+    /// -- this is what tells file-backed code faults (shareable across compartments) apart from
+    /// anon read-write churn without needing a per-object note. `EXEC` wins over `WRITE`.
+    pub const NR_PROT: usize = 3;
+    pub const PROT_NAMES: [&str; NR_PROT] = ["exec", "ro", "rw"];
+    static PROT_KIND: [[AtomicU64; NR_KINDS]; NR_PROT] =
+        [const { [const { AtomicU64::new(0) }; NR_KINDS] }; NR_PROT];
+
+    /// Object-note snapshot (userspace's role label: `heap:<sctx>`, `mk:<file>:<line>`, ...),
+    /// captured here because the object is usually deleted before the census prints. Notes are
+    /// added by userspace *after* create -- often after the first fault -- so a claimed slot
+    /// whose note is still empty retries on later faults (one relaxed byte-read per fault).
+    pub const NOTE_LEN: usize = 24;
+    static NOTES: [[core::sync::atomic::AtomicU8; NOTE_LEN]; CAP] =
+        [const { [const { core::sync::atomic::AtomicU8::new(0) }; NOTE_LEN] }; CAP];
+
+    /// Fault instruction pointers, so the census can name the CODE that touches new memory and
+    /// not only the object it landed in.
+    ///
+    /// Sized generously but not paranoid: distinct fault SITES are few (a handful of hot touch
+    /// loops -- memset, memcpy, first-touch), unlike the distinct OBJECTS the table above keys on,
+    /// which is why that one overflowed 159,859 of 175,695 faults on a guest build. `IP_OVERFLOW`
+    /// reports saturation either way rather than leaving it silent.
+    const IP_CAP: usize = 8192;
+    static IP_KEY: [AtomicU64; IP_CAP] = [const { AtomicU64::new(0) }; IP_CAP];
+    static IP_N: [[AtomicU64; NR_KINDS]; IP_CAP] =
+        [const { [const { AtomicU64::new(0) }; NR_KINDS] }; IP_CAP];
+    static IP_OVERFLOW: AtomicU64 = AtomicU64::new(0);
+
+    /// Record the userspace instruction that took the fault. Costs two atomics and touches no user
+    /// memory -- the ip is already in the trap frame, so unlike a stack walk this cannot take a
+    /// nested fault.
+    pub fn record_ip(ip: u64, kind: Kind) {
+        if ip == 0 {
+            return;
+        }
+        let mut idx = ((ip.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 48) as usize) % IP_CAP;
+        for _ in 0..64 {
+            let cur = IP_KEY[idx].load(Relaxed);
+            if cur == ip {
+                IP_N[idx][kind as usize].fetch_add(1, Relaxed);
+                return;
+            }
+            if cur == 0 {
+                if IP_KEY[idx]
+                    .compare_exchange(0, ip, core::sync::atomic::Ordering::AcqRel, Relaxed)
+                    .is_ok()
+                {
+                    IP_N[idx][kind as usize].fetch_add(1, Relaxed);
+                    return;
+                }
+                continue; // lost the race for this slot; re-read it
+            }
+            idx = (idx + 1) % IP_CAP;
+        }
+        IP_OVERFLOW.fetch_add(1, Relaxed);
+    }
+
+    /// Top fault sites by instruction pointer. Selection rather than a full sort: this runs on the
+    /// console path, and console writes are slow enough to distort what follows them.
+    pub fn print_ips() {
+        const TOP: usize = 40;
+        let tot = |i: usize| IP_N[i].iter().map(|c| c.load(Relaxed)).sum::<u64>();
+        let mut best = [(0usize, 0u64); TOP];
+        for i in 0..IP_CAP {
+            if IP_KEY[i].load(Relaxed) == 0 {
+                continue;
+            }
+            let t = tot(i);
+            if t <= best[TOP - 1].1 {
+                continue;
+            }
+            let mut j = TOP - 1;
+            while j > 0 && best[j - 1].1 < t {
+                best[j] = best[j - 1];
+                j -= 1;
+            }
+            best[j] = (i, t);
+        }
+        let distinct = (0..IP_CAP)
+            .filter(|i| IP_KEY[*i].load(Relaxed) != 0)
+            .count();
+        logln!(
+            "== fault sites by ip: {} distinct, {} faults with no slot ==",
+            distinct,
+            IP_OVERFLOW.load(Relaxed)
+        );
+        logln!("  {:>18}  {:>9}  {}", "ip", "total", KIND_NAMES.join(" "));
+        for (i, t) in best.iter() {
+            if *t == 0 {
+                break;
+            }
+            logln!(
+                "  FAULTIP {:#018x} {:9} {} {} {} {} {}",
+                IP_KEY[*i].load(Relaxed),
+                t,
+                IP_N[*i][0].load(Relaxed),
+                IP_N[*i][1].load(Relaxed),
+                IP_N[*i][2].load(Relaxed),
+                IP_N[*i][3].load(Relaxed),
+                IP_N[*i][4].load(Relaxed),
+            );
+        }
+    }
+
+    pub fn record(id: ObjID, kind: Kind, prot: usize, note: impl FnOnce(&mut [u8]) -> usize) {
         TOTAL.fetch_add(1, Relaxed);
         KIND_TOTAL[kind as usize].fetch_add(1, Relaxed);
+        PROT_KIND[prot.min(NR_PROT - 1)][kind as usize].fetch_add(1, Relaxed);
         let raw = id.raw();
         let lo = raw as u64;
         let hi = (raw >> 64) as u64;
@@ -351,6 +458,14 @@ pub mod census {
             return;
         }
         N[i][kind as usize].fetch_add(1, Relaxed);
+        if NOTES[i][0].load(Relaxed) == 0 {
+            let mut buf = [0u8; NOTE_LEN];
+            let n = note(&mut buf).min(NOTE_LEN);
+            // First byte last, since a nonzero first byte is what marks the slot captured.
+            for j in (0..n).rev() {
+                NOTES[i][j].store(buf[j], Relaxed);
+            }
+        }
     }
 
     /// Sorted by total, descending -- an unsorted dump reads as a ranking to anyone who truncates
@@ -376,6 +491,20 @@ pub mod census {
         for (i, name) in KIND_NAMES.iter().enumerate() {
             logln!("  {:>8}: {}", name, KIND_TOTAL[i].load(Relaxed));
         }
+        logln!("  by protection x kind ({}):", KIND_NAMES.join(" "));
+        for (p, pname) in PROT_NAMES.iter().enumerate() {
+            let row: [u64; NR_KINDS] = core::array::from_fn(|k| PROT_KIND[p][k].load(Relaxed));
+            logln!(
+                "    {:>5}: {} {} {} {} {}  (sum {})",
+                pname,
+                row[0],
+                row[1],
+                row[2],
+                row[3],
+                row[4],
+                row.iter().sum::<u64>(),
+            );
+        }
         logln!(
             "  {:>10}  {:>34}  {}",
             "TOTAL",
@@ -393,8 +522,13 @@ pub mod census {
                 continue;
             }
             let id = ObjID::new(((HI[i].load(Relaxed) as u128) << 64) | lo as u128);
+            let mut note = [0u8; NOTE_LEN];
+            for (j, b) in note.iter_mut().enumerate() {
+                *b = NOTES[i][j].load(Relaxed);
+            }
+            let end = note.iter().position(|b| *b == 0).unwrap_or(NOTE_LEN);
             logln!(
-                "  {:>10}  {:>34}  {} {} {} {} {}",
+                "  {:>10}  {:>34}  {} {} {} {} {}  {}",
                 total,
                 id,
                 N[i][0].load(Relaxed),
@@ -402,8 +536,10 @@ pub mod census {
                 N[i][2].load(Relaxed),
                 N[i][3].load(Relaxed),
                 N[i][4].load(Relaxed),
+                core::str::from_utf8(&note[..end]).unwrap_or("?"),
             );
         }
+        print_ips();
     }
 }
 

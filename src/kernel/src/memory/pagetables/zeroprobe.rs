@@ -92,6 +92,32 @@ static SEEN: AtomicUsize = AtomicUsize::new(0);
 static SHARED: AtomicUsize = AtomicUsize::new(0);
 /// `[dirty][nonzero]`.
 static MATRIX: [[AtomicUsize; 2]; 2] = [const { [const { AtomicUsize::new(0) }; 2] }; 2];
+/// Same matrix for the zero-range swap population, kept apart from the anonymous fills.
+static MATRIX_SWAP: [[AtomicUsize; 2]; 2] = [const { [const { AtomicUsize::new(0) }; 2] }; 2];
+static INSTALLED_SWAP: AtomicUsize = AtomicUsize::new(0);
+static SEEN_SWAP: AtomicUsize = AtomicUsize::new(0);
+
+pub fn record_install_swap() {
+    if !ENABLED {
+        return;
+    }
+    INSTALLED_SWAP.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The swap population's own tally, printed beside the anonymous one by [`print`].
+pub fn swap_counts() -> (usize, usize, [[usize; 2]; 2]) {
+    let mut m = [[0usize; 2]; 2];
+    for d in 0..2 {
+        for z in 0..2 {
+            m[d][z] = MATRIX_SWAP[d][z].load(Ordering::Relaxed);
+        }
+    }
+    (
+        INSTALLED_SWAP.load(Ordering::Relaxed),
+        SEEN_SWAP.load(Ordering::Relaxed),
+        m,
+    )
+}
 /// Bytes covered by the entries in [`MATRIX`], so a large page is not counted as one 4 KiB page.
 static BYTES: [[AtomicUsize; 2]; 2] = [const { [const { AtomicUsize::new(0) }; 2] }; 2];
 
@@ -103,11 +129,15 @@ pub fn record_install() {
 }
 
 /// Tally one probed entry being torn down. `dirty` is the entry's hardware dirty bit.
-pub fn record(dirty: bool, frame: FrameRef) {
+pub fn record(dirty: bool, frame: FrameRef, swap: bool) {
     if !ENABLED {
         return;
     }
-    SEEN.fetch_add(1, Ordering::Relaxed);
+    if swap {
+        SEEN_SWAP.fetch_add(1, Ordering::Relaxed);
+    } else {
+        SEEN.fetch_add(1, Ordering::Relaxed);
+    }
     // The caller is about to drop this reference; anything above one means another entry also
     // points here and this entry's bit does not describe the frame.
     if frame.refcount() > 1 {
@@ -124,7 +154,11 @@ pub fn record(dirty: bool, frame: FrameRef) {
     };
     let d = dirty as usize;
     let z = nonzero as usize;
-    MATRIX[d][z].fetch_add(1, Ordering::Relaxed);
+    if swap {
+        MATRIX_SWAP[d][z].fetch_add(1, Ordering::Relaxed);
+    } else {
+        MATRIX[d][z].fetch_add(1, Ordering::Relaxed);
+    }
     BYTES[d][z].fetch_add(frame.size(), Ordering::Relaxed);
 }
 
@@ -146,6 +180,17 @@ pub fn print() {
             BYTES[d][z].load(Ordering::Relaxed),
         )
     };
+    let (si, ss, sm) = swap_counts();
+    emerglogln!(
+        "== zeroprobe SWAP: installed {}, {} reached unmap; clean+zero {} clean+NONZERO {} \
+         dirty+zero {} dirty+nonzero {}",
+        si,
+        ss,
+        sm[0][0],
+        sm[0][1],
+        sm[1][0],
+        sm[1][1]
+    );
     let (cz, cz_b) = cell(0, 0);
     let (cn, cn_b) = cell(0, 1);
     let (dz, dz_b) = cell(1, 0);

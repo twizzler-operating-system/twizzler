@@ -11,7 +11,7 @@ use twizzler_abi::syscall::{
     ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
 };
 use twizzler_rt_abi::{
-    bindings::{thread_info, twz_error},
+    bindings::{stack_bounds, thread_info, twz_error},
     error::{ArgumentError, TwzError},
     thread::{ThreadSpawnArgs, TlsIndex},
     Result,
@@ -251,5 +251,29 @@ impl ReferenceRuntime {
                 tcb: core::ptr::null_mut(),
                 objid: 0,
             })
+    }
+
+    /// The calling thread's stack bounds, or {0, 0} for "unknown".
+    ///
+    /// Unknown covers every thread whose stack this runtime did not allocate: the core thread
+    /// (`init_core_thread` records no bounds), threads entering through a cross-compartment gate
+    /// (not in this compartment's thread table), and anything pre-READY. Callers -- stacker's
+    /// twizzler backend in rustc is the one this exists for -- treat unknown as "keep doing what
+    /// you did without bounds", so every miss here degrades to the old behavior, never to a wrong
+    /// number.
+    pub fn get_stack_bounds(&self) -> stack_bounds {
+        const UNKNOWN: stack_bounds = stack_bounds { start: 0, len: 0 };
+        // Same pre-READY hazard as thread_get_info above: the bootstrap TLS has no constructed
+        // RuntimeThreadControl, and reading its lock word aborts.
+        if !self.state().contains(RuntimeState::READY) {
+            return UNKNOWN;
+        }
+        let id = with_current_thread(|cur| cur.id());
+        THREAD_MGR
+            .with_internal(id, |th| {
+                let (start, len) = th.stack_bounds();
+                stack_bounds { start, len }
+            })
+            .unwrap_or(UNKNOWN)
     }
 }

@@ -1,5 +1,4 @@
 use alloc::sync::Arc;
-use core::time::Duration;
 
 use heapless::index_map::FnvIndexMap;
 use twizzler_abi::{
@@ -24,6 +23,7 @@ use super::{
 };
 use crate::{
     arch::{PhysAddr, memory::phys_to_virt},
+    condvar::CondVar,
     idcounter::{IdCounter, SimpleId},
     instant::Instant,
     is_test_mode,
@@ -39,7 +39,6 @@ use crate::{
     queue::{ManagedQueueReceiver, QueueObject},
     security::KERNEL_SCTX,
     spinlock::Spinlock,
-    syscall::sync::sys_thread_sync,
     thread::{
         current_thread_ref,
         entry::{run_closure_in_new_thread, start_new_kernel},
@@ -58,6 +57,18 @@ struct RequestSender {
     ids: IdCounter,
     queue: QueueObject<RequestFromKernel, CompletionToKernel>,
     idmap: Spinlock<heapless::index_map::FnvIndexMap<u32, SentRequestInfo, NR_REQUESTS>>,
+    /// Signalled when a completion frees an `idmap` slot.
+    ///
+    /// `idmap` is fixed at `NR_REQUESTS` while `ids` hands out ids without regard to it, so a
+    /// submitter can find the map full. It used to poll: `warn!` plus a flat 200 ms sleep per
+    /// attempt, which cost 6-9 s of a `-j1` cargo build on `/ext` at smp1 (30-45 events, each a
+    /// fixed 200 ms) and nothing at all on a target dir the pager does not back.
+    ///
+    /// Correctness rests on the waiter queueing itself while it still holds the `idmap` guard --
+    /// `CondVar::wait` inserts and sets `sync_sleep` before releasing it -- so a signaller, which
+    /// must take that same spinlock to remove an entry, cannot slip between the check and the
+    /// sleep.
+    idmap_space: CondVar,
 }
 
 static SENDER: Once<RequestSender> = Once::new();
@@ -673,6 +684,11 @@ pub(super) fn pager_compl_handler_main() {
         // holding it across that would invert the order. Dropping the entry itself is also deferred
         // past here: it owns an `ObjectRef`, and dropping the last one runs `Object::drop`.
         drop(idmap);
+        // A retiring completion is the only thing that frees a slot, so this is where a submitter
+        // parked on a full map becomes runnable. After the drop: `signal` takes its own spinlock.
+        if done {
+            sender.idmap_space.signal();
+        }
         let Some(request) = entry else {
             logln!("warn -- received completion for unknown request");
             continue;
@@ -772,13 +788,15 @@ pub fn submit_pager_request(mut req: RequestFromKernel, obj: Option<&ObjectRef>,
             reqkind,
         },
     );
-    // Before sleeping below, and before the submit: this must not be held across either.
-    drop(idmap);
+    // `wait` releases and retakes the guard, so the retry re-checks under the lock and the map
+    // cannot fill again between the wake and the insert.
     while let Err((id, sri)) = old {
-        log::warn!("overflowing pager queue, waiting...");
-        let _ = sys_thread_sync(&mut [], Some(&mut Duration::from_millis(200)));
-        old = sender.idmap.lock().insert(id, sri);
+        idmap = sender.idmap_space.wait(idmap);
+        old = idmap.insert(id, sri);
     }
+    // Held to here rather than dropped before the loop: `wait` needs it. Still not held across the
+    // submit below, which is what the original note about this drop was protecting.
+    drop(idmap);
     if let Ok(Some(ref old)) = old {
         log::warn!(
             "replaced old item on request index ({}: {:?} -> {:?})",
@@ -820,6 +838,7 @@ pub fn init_pager_queue(id: ObjID, outgoing: bool) {
         let queue = QueueObject::<RequestFromKernel, CompletionToKernel>::from_object(obj);
         SENDER.call_once(|| RequestSender {
             ids: IdCounter::new(),
+            idmap_space: CondVar::new(),
             queue,
             idmap: Spinlock::new(FnvIndexMap::new()),
         });

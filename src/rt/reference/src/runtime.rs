@@ -4,11 +4,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 pub(crate) mod alloc;
 mod core;
-mod debug;
+pub(crate) mod debug;
 mod exec;
 mod file;
-#[cfg(target_arch = "x86_64")]
-pub(crate) mod memsettrace;
 mod object;
 mod process;
 mod slot;

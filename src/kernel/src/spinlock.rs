@@ -1,7 +1,7 @@
 use core::{
     cell::UnsafeCell,
     panic::Location,
-    sync::atomic::{AtomicPtr, AtomicU32, Ordering},
+    sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
 use crate::{processor::spin_wait_until, thread::locktrack};
@@ -45,6 +45,145 @@ impl<T> core::ops::DerefMut for CacheAligned<T> {
     }
 }
 
+/// Per-call-site census of spinlock acquisitions: how many had to wait, and for how long.
+///
+/// This exists because the sample profile cannot answer it. `lock()` disables interrupts before
+/// taking its ticket, so a waiter spins with interrupts masked and its deferred tick lands on the
+/// same `sti` as the eventual holder's release -- hold time and wait time are summed at the guard
+/// drop and are not separable there. See
+/// [[kernel-profiles-misrank-interrupt-reenable-epilogues]] for the general shape.
+///
+/// Waiting is counted as *failed condition checks*, not as `spin_wait_until`'s pause count:
+/// `pause()` runs only once per 100 spins, so a lock contended for 99 spins reports zero pauses.
+pub mod spinstat {
+    use super::*;
+
+    /// Off by default. A const rather than a runtime flag so the whole census, including the
+    /// per-check counter increment in the spin loop, compiles out of a normal build.
+    pub const SPIN_STATS: bool = false;
+
+    /// Sites are claimed permanently and never evicted, so a full table silently drops the
+    /// sites that arrive last. `report()` prints the occupancy so that truncation is visible
+    /// rather than inferred from a short list.
+    ///
+    /// Sized off the const so an ordinary build carries one slot rather than 32KiB of `.bss` for
+    /// a census it never takes.
+    const NR_SITES: usize = if SPIN_STATS { 1024 } else { 1 };
+
+    struct Site {
+        /// `Location` pointer, or 0 for a free slot. Claimed once, never cleared.
+        key: AtomicUsize,
+        acquires: AtomicU64,
+        /// Acquisitions that found the lock held, i.e. at least one failed check.
+        waited: AtomicU64,
+        /// Total failed checks, summed over acquisitions. The wait *magnitude*.
+        checks: AtomicU64,
+    }
+
+    impl Site {
+        const fn new() -> Self {
+            Self {
+                key: AtomicUsize::new(0),
+                acquires: AtomicU64::new(0),
+                waited: AtomicU64::new(0),
+                checks: AtomicU64::new(0),
+            }
+        }
+    }
+
+    #[allow(clippy::declare_interior_mutable_const)]
+    const EMPTY: Site = Site::new();
+    static SITES: [Site; NR_SITES] = [EMPTY; NR_SITES];
+    /// Acquisitions dropped because the table was full. Counted, not silently discarded.
+    static OVERFLOW: AtomicU64 = AtomicU64::new(0);
+
+    /// Record one completed acquisition. `checks` is the number of times the ticket comparison
+    /// failed before it succeeded -- zero for an uncontended acquire.
+    ///
+    /// Lock-free by construction: this runs inside `lock()`, so anything that could block or take
+    /// another lock would be a cycle.
+    pub fn record(caller: &'static Location<'static>, checks: u64) {
+        let key = caller as *const _ as usize;
+        // Pointers are at least 4-byte aligned; shifting keeps the low bits from being dead.
+        let mut idx = (key >> 2) % NR_SITES;
+        for _ in 0..NR_SITES {
+            let slot = &SITES[idx];
+            let cur = slot.key.load(Ordering::Relaxed);
+            if cur == key
+                || (cur == 0
+                    && slot
+                        .key
+                        .compare_exchange(0, key, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok())
+            {
+                slot.acquires.fetch_add(1, Ordering::Relaxed);
+                if checks > 0 {
+                    slot.waited.fetch_add(1, Ordering::Relaxed);
+                    slot.checks.fetch_add(checks, Ordering::Relaxed);
+                }
+                return;
+            }
+            idx = (idx + 1) % NR_SITES;
+        }
+        OVERFLOW.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Print the census, most-contended first. Sorted here rather than by the reader: an unsorted
+    /// dump gets read as a ranking.
+    pub fn report() {
+        if !SPIN_STATS {
+            return;
+        }
+        let mut order = [usize::MAX; NR_SITES];
+        let mut n = 0;
+        for (i, site) in SITES.iter().enumerate() {
+            if site.key.load(Ordering::Relaxed) != 0 {
+                order[n] = i;
+                n += 1;
+            }
+        }
+        // Selection sort by total failed checks. n <= 256 and this runs once.
+        for i in 0..n {
+            let mut best = i;
+            for j in (i + 1)..n {
+                if SITES[order[j]].checks.load(Ordering::Relaxed)
+                    > SITES[order[best]].checks.load(Ordering::Relaxed)
+                {
+                    best = j;
+                }
+            }
+            order.swap(i, best);
+        }
+        emerglogln!(
+            "== spinlock census: {} sites of {} used, {} acquisitions dropped (table full)",
+            n,
+            NR_SITES,
+            OVERFLOW.load(Ordering::Relaxed)
+        );
+        emerglogln!("     acquires      waited    wait%      checks  avg  site");
+        for &i in order.iter().take(n) {
+            let site = &SITES[i];
+            let acquires = site.acquires.load(Ordering::Relaxed);
+            let waited = site.waited.load(Ordering::Relaxed);
+            let checks = site.checks.load(Ordering::Relaxed);
+            if acquires == 0 {
+                continue;
+            }
+            let loc = unsafe { &*(site.key.load(Ordering::Relaxed) as *const Location<'static>) };
+            emerglogln!(
+                "SPINCENSUS {:11} {:11} {:6}.{:01}% {:11} {:4}  {}",
+                acquires,
+                waited,
+                waited * 100 / acquires,
+                (waited * 1000 / acquires) % 10,
+                checks,
+                if waited > 0 { checks / waited } else { 0 },
+                loc
+            );
+        }
+    }
+}
+
 pub struct GenericSpinlock<T> {
     tickets: Tickets,
     cell: UnsafeCell<T>,
@@ -77,6 +216,10 @@ impl<T> GenericSpinlock<T> {
         self.tickets.next.load(Ordering::Relaxed) != self.tickets.current.load(Ordering::Relaxed)
     }
 
+    /// `#[track_caller]` is load-bearing, not decoration: without it every `Location::caller()`
+    /// below resolves to this function's own line, so `locked_from`, the stuck-lock report and the
+    /// locktrack intent record all named one constant site regardless of who took the lock.
+    #[track_caller]
     pub fn lock(&self) -> LockGuard<'_, T> {
         /* TODO: do we need to set thread critical for this? */
         let interrupt_state = crate::interrupt::disable();
@@ -108,9 +251,15 @@ impl<T> GenericSpinlock<T> {
         });
         let ticket = self.tickets.next.fetch_add(1, Ordering::Relaxed);
         let mut iters = 0;
+        // Counts *failed* checks, so zero means the lock was free on arrival. `iters` cannot serve:
+        // `spin_wait_until` pauses once per 100 spins, so it is zero for a real wait of up to 99.
+        let mut checks = 0u64;
         spin_wait_until(
             || {
                 if self.tickets.current.load(Ordering::Acquire) != ticket {
+                    if spinstat::SPIN_STATS {
+                        checks += 1;
+                    }
                     None
                 } else {
                     Some(())
@@ -136,6 +285,9 @@ impl<T> GenericSpinlock<T> {
                 }
             },
         );
+        if spinstat::SPIN_STATS {
+            spinstat::record(caller, checks);
+        }
         // Relaxed: this is read only by the stuck-lock report above, which is already reading a
         // value that may be stale by the time it prints. `SeqCst` made it an `xchg` -- a locked
         // RMW on a third line of this lock, on every acquisition, for a diagnostic.

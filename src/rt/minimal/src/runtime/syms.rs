@@ -877,6 +877,15 @@ pub unsafe extern "C-unwind" fn twz_rt_get_thread_info(
 check_ffi_type!(twz_rt_get_thread_info, _);
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn twz_rt_get_stack_bounds() -> twizzler_rt_abi::bindings::stack_bounds
+{
+    // This runtime does not track per-thread stack bounds; {0, 0} means "unknown" and callers
+    // fall back to whatever they do without bounds.
+    twizzler_rt_abi::bindings::stack_bounds { start: 0, len: 0 }
+}
+check_ffi_type!(twz_rt_get_stack_bounds);
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_fd_rename(
     _old_name: *const c_char,
     _old_len: usize,

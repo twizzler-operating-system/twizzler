@@ -169,6 +169,42 @@ pub fn mark(rebaseline: bool) {
     // gap between the sum and the whole is time spent between the probes rather than in any of
     // them -- which is what a preemption or an interrupt inside the loop looks like.
     let (ints, int_ns) = ints;
+    // Per-call-site precharge attribution: which sites fetch frames they never use.
+    // Looked up by name so appending counters cannot shift these out from under the indices.
+    {
+        let idx = |n: &str| allocprofile::NAMES.iter().position(|x| *x == n).unwrap();
+        let g = |n: &str| a(idx(n));
+        let row = |tag: &str, c: u64, w: u64, u: u64| {
+            logln!(
+                "PERFMARK-PCSITE {}: calls={} want={} unused={} ({}% of want) want/call={}",
+                tag,
+                c,
+                w,
+                u,
+                if w > 0 { u * 100 / w } else { 0 },
+                if c > 0 { w * 100 / c } else { 0 },
+            );
+        };
+        row(
+            "fill ",
+            g("PC_FILL_CALLS"),
+            g("PC_FILL_WANT"),
+            g("PC_FILL_UNUSED"),
+        );
+        row(
+            "map  ",
+            g("PC_MAP_CALLS"),
+            g("PC_MAP_WANT"),
+            g("PC_MAP_UNUSED"),
+        );
+        row(
+            "other",
+            g("PC_OTHER_CALLS"),
+            g("PC_OTHER_WANT"),
+            g("PC_OTHER_UNUSED"),
+        );
+    }
+
     logln!(
         "PERFMARK-FILL: iters={} loop={}us | empty={}us take={}us map={}us | map buckets [<1us {} <10us {} <100us {} >= {}] ints-in-map={} | all ints={}/{}us",
         a(10),

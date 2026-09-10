@@ -283,6 +283,23 @@ pub struct PagerData {
 
 #[allow(dead_code)]
 impl PagerData {
+    /// Whether at least `want` bytes are available, without totalling what is not needed.
+    ///
+    /// The fill path's only use of `avail_mem` is a comparison against a threshold, and the fold
+    /// runs under the hot inner lock, so answering the comparison directly lets it stop at the
+    /// first region that settles it -- on a system with headroom, the first one.
+    pub fn avail_mem_at_least(&self, want: usize) -> bool {
+        let inner = self.inner.lock().unwrap();
+        let mut acc = 0usize;
+        for region in &inner.memory.regions {
+            acc += region.avail();
+            if acc >= want {
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn avail_mem(&self) -> usize {
         let inner = self.inner.lock().unwrap();
         inner
@@ -742,15 +759,28 @@ impl PagerData {
         let nr_pages = if obj_range.page_count() <= 1 {
             1
         } else {
-            let current_mem_pages = ctx.data.avail_mem() / PAGE as usize;
-            let max_pages = (current_mem_pages / 2).min(4096 * 128);
-            tracing::trace!(
-                "req: {}, cur: {} ({})",
-                obj_range.pages().count(),
-                current_mem_pages,
-                current_mem_pages / 2
-            );
-            obj_range.page_count().min(max_pages).max(1)
+            // The clamp is `min(avail_pages / 2)`, so it cannot bind once availability reaches
+            // twice the request -- and the request is at most the kernel's read-ahead window, so
+            // on a system with a few MiB of headroom this is a low-memory guard that never fires.
+            // Ask the threshold question instead of computing the total; only a genuinely short
+            // system falls through and walks every region.
+            let want = obj_range
+                .page_count()
+                .saturating_mul(2)
+                .saturating_mul(PAGE as usize);
+            if ctx.data.avail_mem_at_least(want) {
+                obj_range.page_count()
+            } else {
+                let current_mem_pages = ctx.data.avail_mem() / PAGE as usize;
+                let max_pages = (current_mem_pages / 2).min(4096 * 128);
+                tracing::trace!(
+                    "req: {}, cur: {} ({})",
+                    obj_range.pages().count(),
+                    current_mem_pages,
+                    current_mem_pages / 2
+                );
+                obj_range.page_count().min(max_pages).max(1)
+            }
         };
         let mut reqs = [PageRequest::new(start_page as i64, nr_pages as u32)];
         let count = page_in_many(ctx, id, &mut reqs)?;

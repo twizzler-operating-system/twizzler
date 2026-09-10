@@ -415,6 +415,7 @@ impl Mapper {
         mut cursor: MappingCursor,
         consist: &mut Consistency,
         fa: &mut FrameAllocator,
+        anon: bool,
     ) -> Result<(), TwzError> {
         log::trace!(
             "setup_zero_range: cursor {:?}, root {:x}",
@@ -429,13 +430,24 @@ impl Mapper {
         // global, not per-table, so one miss answers for the rest of the range. See
         // `Table::setup_zero_range`.
         let mut swap_dry = false;
+        // Per-call budget for the in-place-zero arm (bytes memset under this object's page-table
+        // mutex); threaded like `swap_dry` so the cap bounds the whole descent, not each table.
+        let mut in_place_done = 0usize;
         while cursor.remaining() > 0 {
             log::trace!(
                 "top level setup_zero_range: cursor {:?}, start_level {}",
                 cursor,
                 start_level
             );
-            root.setup_zero_range(consist, &mut cursor, start_level, fa, &mut swap_dry)?;
+            root.setup_zero_range(
+                consist,
+                &mut cursor,
+                start_level,
+                fa,
+                &mut swap_dry,
+                &mut in_place_done,
+                anon,
+            )?;
         }
         consist.flush_cache();
         Ok(())

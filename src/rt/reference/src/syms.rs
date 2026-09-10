@@ -207,11 +207,6 @@ pub unsafe extern "C-unwind" fn twz_rt_malloc(
         return core::ptr::null_mut();
     };
     if flags & ZERO_MEMORY != 0 {
-        #[cfg(target_arch = "x86_64")]
-        if sz >= crate::runtime::memsettrace::BIG {
-            crate::runtime::memsettrace::ZMALLOC
-                .record(crate::runtime::memsettrace::return_address(), sz);
-        }
         // An anonymous mmap reaches the runtime as a page-aligned, page-multiple zeroed request
         // (mlibc `sys_vm_map`). Zeroing it with the CPU costs a byte-for-byte memset of the whole
         // mapping; the kernel can do it as a page-table operation and leave the bytes to first
@@ -219,12 +214,16 @@ pub unsafe extern "C-unwind" fn twz_rt_malloc(
         // `ensure_sufficient_stack` and touches almost none of it -- 81,136 such mappings and
         // 85.7 GB of `rep stosq` in one measured `cargo build`, 99.5% of all runtime zeroing.
         if sz >= LAZY_ZERO_MIN && align >= PAGE && sz % PAGE == 0 {
+            crate::runtime::alloc::ferroc::zbump(0, 1);
+            crate::runtime::alloc::ferroc::zbump(1, sz as u64);
             // Whole pages out of a dedicated arena: already zero, so nothing is written and no
             // syscall is made. Declines (not ready, too big, table full) fall through to the
             // heap-backed path below, which still beats a memset.
             if let Some(p) = crate::runtime::alloc::anon::alloc(sz) {
                 return p.cast();
             }
+            crate::runtime::alloc::ferroc::zbump(2, 1);
+            crate::runtime::alloc::ferroc::zbump(3, sz as u64);
             let ptr = OUR_RUNTIME.alloc(layout);
             if ptr.is_null() {
                 return core::ptr::null_mut();
@@ -235,6 +234,8 @@ pub unsafe extern "C-unwind" fn twz_rt_malloc(
             }
             return ptr.cast();
         }
+        crate::runtime::alloc::ferroc::zbump(4, 1);
+        crate::runtime::alloc::ferroc::zbump(5, sz as u64);
         OUR_RUNTIME.alloc_zeroed(layout).cast()
     } else {
         OUR_RUNTIME.alloc(layout).cast()
@@ -819,6 +820,13 @@ pub unsafe extern "C-unwind" fn twz_rt_get_thread_info(
     OUR_RUNTIME.thread_get_info(id)
 }
 check_ffi_type!(twz_rt_get_thread_info, _);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_get_stack_bounds() -> twizzler_rt_abi::bindings::stack_bounds
+{
+    OUR_RUNTIME.get_stack_bounds()
+}
+check_ffi_type!(twz_rt_get_stack_bounds);
 
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_fd_rename(
@@ -1528,7 +1536,11 @@ pub unsafe extern "C" fn __dlapi_open(
         .resolve_name(twizzler_rt_abi::fd::NameResolver::Default, name.as_bytes())
         .ok();
     match monitor_api::LibraryLoader::new(name, id).load() {
-        Ok(desc) => desc_to_handle(desc.into_raw()),
+        Ok(desc) => {
+            // A new library changes the set of images the unwinder must see.
+            crate::runtime::debug::invalidate_phdr_cache();
+            desc_to_handle(desc.into_raw())
+        }
         Err(e) => {
             set_dl_error(format!("dlopen: library '{}' not found: {:?}", name, e));
             core::ptr::null_mut()
@@ -1629,7 +1641,11 @@ pub unsafe extern "C" fn __dlapi_close(handle: *const c_void) -> c_int {
         return 0;
     };
     match monitor_api::monitor_rt_drop_library_handle(desc) {
-        Ok(()) => 0,
+        Ok(()) => {
+            // Dropping the handle may unload the library, changing the image set.
+            crate::runtime::debug::invalidate_phdr_cache();
+            0
+        }
         Err(_) => 1,
     }
 }

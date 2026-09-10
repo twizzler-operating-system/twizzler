@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex,
     },
 };
@@ -16,6 +16,34 @@ use twizzler_rt_abi::{
 use super::ReferenceRuntime;
 
 static LIBNAMES: Mutex<BTreeMap<String, &'static [u8]>> = Mutex::new(BTreeMap::new());
+
+/// Cache of the `dl_phdr_info` list `iterate_phdr` emits.
+///
+/// The unwinder calls `dl_iterate_phdr` on every unwind (every panic, every backtrace capture),
+/// and each call otherwise makes a cross-compartment monitor gate call per library -- open the
+/// handle, read its info, drop it -- times every library in this compartment and its deps. The
+/// list is static except when a library is loaded or unloaded, which in this runtime only happens
+/// through `__dlapi_open`/`__dlapi_close`; those bump [`PHDR_GEN`], which invalidates the cache.
+/// The cached `dl_phdr_info` pointers stay valid because a loaded library keeps its fixed slot
+/// address for the compartment's life, and the name points into the permanent [`LIBNAMES`] arena.
+struct PhdrEntry(dl_phdr_info);
+// SAFETY: the raw pointers inside are into permanently-loaded library images and the LIBNAMES
+// arena; they outlive the cache and are only read, never used to alias mutable state.
+unsafe impl Send for PhdrEntry {}
+
+struct PhdrCache {
+    gen: u64,
+    entries: Vec<PhdrEntry>,
+}
+
+static PHDR_CACHE: Mutex<Option<PhdrCache>> = Mutex::new(None);
+static PHDR_GEN: AtomicU64 = AtomicU64::new(0);
+
+/// Invalidate the `dl_iterate_phdr` cache. Called after a library is loaded or unloaded, since
+/// either changes the set of images the unwinder must see.
+pub(crate) fn invalidate_phdr_cache() {
+    PHDR_GEN.fetch_add(1, Ordering::Release);
+}
 
 impl ReferenceRuntime {
     fn find_comp_dep_lib(&self, id: loaded_image_id) -> Option<(Option<String>, LibraryHandle)> {
@@ -84,19 +112,11 @@ impl ReferenceRuntime {
         // with whatever rustc was actually reporting destroyed.
         let mut info = lib.try_info()?;
         tracing::trace!("get_image_info: {:?}", info);
-        let mut lib_names = LIBNAMES.lock().ok()?;
-        let fullname = if let Some(cn) = cn {
-            format!("{}::{}", cn, info.name)
-        } else {
-            info.name.clone()
+        let fullname = match cn {
+            Some(cn) => format!("{}::{}", cn, info.name),
+            None => info.name.clone(),
         };
-        if !lib_names.contains_key(&fullname) {
-            let mut name_bytes = fullname.clone().into_bytes();
-            name_bytes.push(0);
-            lib_names.insert(fullname.clone(), name_bytes.leak());
-        }
-        let name_ptr = lib_names.get(&fullname)?.as_ptr();
-        info.dl_info.name = name_ptr.cast();
+        info.dl_info.name = Self::intern_name(&fullname)?.cast();
         let handle = self.map_object(info.objid, MapFlags::READ).ok()?;
         Some(loaded_image {
             image_start: unsafe { handle.start().add(NULLPAGE_SIZE).cast() },
@@ -107,25 +127,109 @@ impl ReferenceRuntime {
         })
     }
 
+    /// Intern a library name into the permanent [`LIBNAMES`] arena and return a pointer to its
+    /// NUL-terminated bytes. `dl_phdr_info::name` must outlive every handle, so it cannot point at
+    /// the transient `LibraryInfo` buffer `try_info` fills.
+    fn intern_name(fullname: &str) -> Option<*const u8> {
+        let mut lib_names = LIBNAMES.lock().ok()?;
+        if !lib_names.contains_key(fullname) {
+            let mut name_bytes = fullname.as_bytes().to_vec();
+            name_bytes.push(0);
+            lib_names.insert(fullname.to_string(), name_bytes.leak());
+        }
+        Some(lib_names.get(fullname)?.as_ptr())
+    }
+
+    /// The `dl_phdr_info` for one library, name interned. Unlike [`Self::build_image`] this maps
+    /// nothing: `iterate_phdr` only ever reads `dl_info`, so mapping the image (as `build_image`
+    /// does for `get_image_info`) is a wasted object map and handle per library per unwind.
+    fn build_dl_info(&self, cn: Option<&str>, lib: &LibraryHandle) -> Option<dl_phdr_info> {
+        // Fallible for the same reason build_image is: this runs on every unwind, so a library the
+        // monitor cannot describe must be skipped, not panicked on, or a panic-in-panic aborts
+        // with the original message lost.
+        let mut info = lib.try_info()?;
+        let fullname = match cn {
+            Some(cn) => format!("{}::{}", cn, info.name),
+            None => info.name.clone(),
+        };
+        info.dl_info.name = Self::intern_name(&fullname)?.cast();
+        Some(info.dl_info)
+    }
+
+    /// Build the full `dl_phdr_info` list, one gate round per library. The slow path behind the
+    /// cache in [`Self::iterate_phdr`]; a library the monitor cannot describe is skipped (one
+    /// missing set of FDEs) rather than terminating the list, which would cost every later library
+    /// its FDEs too -- see [`ImageLookup::Skip`].
+    fn collect_phdrs(&self) -> Vec<PhdrEntry> {
+        let mut out = Vec::new();
+        let current = CompartmentHandle::current();
+        for lib in current.libs() {
+            if let Some(info) = self.build_dl_info(None, &lib) {
+                out.push(PhdrEntry(info));
+            }
+        }
+        for dep in current.deps() {
+            let name = dep.info().ok().map(|i| i.name);
+            for lib in dep.libs() {
+                if let Some(info) = self.build_dl_info(name.as_deref(), &lib) {
+                    out.push(PhdrEntry(info));
+                }
+            }
+        }
+        out
+    }
+
     pub fn iterate_phdr(
         &self,
         f: &mut dyn FnMut(dl_phdr_info) -> core::ffi::c_int,
     ) -> core::ffi::c_int {
-        let mut n = 0;
-        let mut ret = 0;
-        loop {
-            match self.image_info(n) {
-                ImageLookup::Found(image) => {
-                    ret = f(image.dl_info);
+        // The unwinder calls this on every unwind, and rebuilding the list is O(libs) monitor gate
+        // calls (a security-context switch each way, per library). The list only changes when a
+        // library is loaded or unloaded, tracked by PHDR_GEN, so cache it and rebuild only on a
+        // generation change. try_lock, not lock: a live rebuild could re-enter this (e.g. an
+        // allocation hook that unwinds), and blocking on our own held lock would deadlock -- fall
+        // back to an uncached walk instead.
+        let cur_gen = PHDR_GEN.load(Ordering::Acquire);
+        let Ok(mut guard) = PHDR_CACHE.try_lock() else {
+            let mut ret = 0;
+            let current = CompartmentHandle::current();
+            for lib in current.libs() {
+                if let Some(info) = self.build_dl_info(None, &lib) {
+                    ret = f(info);
                     if ret != 0 {
                         return ret;
                     }
                 }
-                ImageLookup::Skip => {}
-                ImageLookup::End => return ret,
             }
-            n += 1;
+            for dep in current.deps() {
+                let name = dep.info().ok().map(|i| i.name);
+                for lib in dep.libs() {
+                    if let Some(info) = self.build_dl_info(name.as_deref(), &lib) {
+                        ret = f(info);
+                        if ret != 0 {
+                            return ret;
+                        }
+                    }
+                }
+            }
+            return ret;
+        };
+
+        if guard.as_ref().map_or(true, |c| c.gen != cur_gen) {
+            *guard = Some(PhdrCache {
+                gen: cur_gen,
+                entries: self.collect_phdrs(),
+            });
         }
+
+        let mut ret = 0;
+        for entry in &guard.as_ref().unwrap().entries {
+            ret = f(entry.0);
+            if ret != 0 {
+                break;
+            }
+        }
+        ret
     }
 }
 

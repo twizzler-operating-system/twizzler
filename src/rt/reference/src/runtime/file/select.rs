@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+    cell::RefCell,
+    sync::{atomic::AtomicU64, Arc},
+};
 
 use secgate::TwzError;
 use twizzler_abi::syscall::{sys_thread_sync, ThreadSync};
@@ -42,44 +45,88 @@ impl FdSet {
     }
 }
 
-pub struct SelectFds {
-    set: HashMap<(RawFd, wait_kind), FdImpl>,
+/// The buffers one `select` call fills, reused across calls on the same thread -- the same
+/// treatment as `poll`'s `PollScratch`, for the same reason. Emptied on release so an idle
+/// thread holds no descriptors or `keepalive` `Arc`s from a call that already returned.
+#[derive(Default)]
+struct SelectScratch {
+    fds: Vec<(RawFd, wait_kind, FdImpl)>,
+    waits: Vec<ThreadSync>,
+    info: Vec<(RawFd, wait_kind)>,
+    keepalives: Vec<Option<Arc<AtomicU64>>>,
 }
 
-pub struct SelectState {
+impl SelectScratch {
+    fn clear(&mut self) {
+        self.fds.clear();
+        self.waits.clear();
+        self.info.clear();
+        self.keepalives.clear();
+    }
+}
+
+thread_local! {
+    static SELECT_SCRATCH: RefCell<SelectScratch> = RefCell::new(SelectScratch::default());
+}
+
+struct ScratchGuard(Option<SelectScratch>);
+
+impl ScratchGuard {
+    fn take() -> Self {
+        let mut s = SELECT_SCRATCH.with(|c| core::mem::take(&mut *c.borrow_mut()));
+        s.clear();
+        Self(Some(s))
+    }
+
+    fn get(&mut self) -> &mut SelectScratch {
+        // Unwrap-Ok: only `drop` takes the value, and that is the end of this guard's life.
+        self.0.as_mut().unwrap()
+    }
+}
+
+impl Drop for ScratchGuard {
+    fn drop(&mut self) {
+        if let Some(mut s) = self.0.take() {
+            s.clear();
+            SELECT_SCRATCH.with(|c| *c.borrow_mut() = s);
+        }
+    }
+}
+
+pub struct SelectState<'a> {
     pub read: FdSet,
     pub write: FdSet,
     pub _except: FdSet,
-    pub fds: SelectFds,
+    pub fds: &'a mut Vec<(RawFd, wait_kind, FdImpl)>,
     pub timeout: Option<std::time::Duration>,
 }
 
-impl SelectState {
+impl<'a> SelectState<'a> {
     pub fn new(
         nfds: usize,
         read: FdSet,
         write: FdSet,
         except: FdSet,
         timeout: Option<std::time::Duration>,
+        fds: &'a mut Vec<(RawFd, wait_kind, FdImpl)>,
     ) -> Result<Self, TwzError> {
-        let mut fds = SelectFds {
-            set: HashMap::new(),
-        };
         let binding = get_fd_slots().read().unwrap();
         for fd in 0..nfds {
             let fd = fd as RawFd;
             if read.contains(fd) {
-                fds.set.insert(
-                    (fd, WAIT_READ),
+                fds.push((
+                    fd,
+                    WAIT_READ,
                     binding.io_parts(fd as usize).ok_or(TwzError::BAD_HANDLE)?.0,
-                );
+                ));
                 read.remove(fd);
             }
             if write.contains(fd) {
-                fds.set.insert(
-                    (fd, WAIT_WRITE),
+                fds.push((
+                    fd,
+                    WAIT_WRITE,
                     binding.io_parts(fd as usize).ok_or(TwzError::BAD_HANDLE)?.0,
-                );
+                ));
                 write.remove(fd);
             }
             if except.contains(fd) {
@@ -87,22 +134,7 @@ impl SelectState {
                 // Unsupported for now
             }
         }
-        tracing::debug!(
-            "SelectState::new: nfds={}, timeout={:?}, read={:?}, write={:?}, except={:?}",
-            nfds,
-            timeout,
-            fds.set
-                .keys()
-                .filter(|(_, k)| *k == WAIT_READ)
-                .map(|(fd, _)| fd)
-                .collect::<Vec<_>>(),
-            fds.set
-                .keys()
-                .filter(|(_, k)| *k == WAIT_WRITE)
-                .map(|(fd, _)| fd)
-                .collect::<Vec<_>>(),
-            except
-        );
+        tracing::debug!("SelectState::new: nfds={}, timeout={:?}", nfds, timeout);
         Ok(Self {
             fds,
             timeout,
@@ -112,7 +144,12 @@ impl SelectState {
         })
     }
 
-    fn wait(&self) -> Result<usize, TwzError> {
+    fn wait(
+        &self,
+        waits: &mut Vec<ThreadSync>,
+        info: &mut Vec<(RawFd, wait_kind)>,
+        keepalives: &mut Vec<Option<Arc<AtomicU64>>>,
+    ) -> Result<usize, TwzError> {
         let mut ready = 0;
 
         let maybe_mark_ready =
@@ -128,12 +165,7 @@ impl SelectState {
                 is_ready
             };
 
-        let mut fds = Vec::new();
-        let mut waits = Vec::new();
-        // Must be held alive for as long as `waits` may still be read (through the
-        // sys_thread_sync call below) -- see WaitpointResult::keepalive.
-        let mut keepalives = Vec::new();
-        for ((fd, kind), fd_desc) in self.fds.set.iter() {
+        for (fd, kind, fd_desc) in self.fds.iter() {
             let Ok(wp) = fd_desc.waitpoint(*kind) else {
                 continue;
             };
@@ -141,8 +173,10 @@ impl SelectState {
             if maybe_mark_ready(&sleep, *kind, *fd, wp.ready) {
                 ready += 1;
             }
-            fds.push((fd, *kind, fd_desc));
+            info.push((*fd, *kind));
             waits.push(sleep);
+            // Must be held alive for as long as `waits` may still be read (through the
+            // sys_thread_sync call below) -- see WaitpointResult::keepalive.
             keepalives.push(wp.keepalive);
         }
         tracing::debug!("SelectState::wait: initial ready={}", ready,);
@@ -151,14 +185,14 @@ impl SelectState {
             return Ok(ready);
         }
 
-        match sys_thread_sync(&mut waits, self.timeout) {
+        match sys_thread_sync(waits, self.timeout) {
             Ok(_) => {}
             Err(TwzError::TIMED_OUT) => {}
             Err(e) => return Err(e),
         }
 
-        for ((fd, kind, _), wp) in fds.into_iter().zip(waits.into_iter()) {
-            if maybe_mark_ready(&wp, kind, *fd, false) {
+        for ((fd, kind), wp) in info.iter().zip(waits.iter()) {
+            if maybe_mark_ready(wp, *kind, *fd, false) {
                 ready += 1;
             }
         }
@@ -176,13 +210,21 @@ impl ReferenceRuntime {
         except: *mut fd_set,
         timeout: Option<std::time::Duration>,
     ) -> Result<usize, TwzError> {
+        let mut guard = ScratchGuard::take();
+        let SelectScratch {
+            fds,
+            waits,
+            info,
+            keepalives,
+        } = guard.get();
         let state = SelectState::new(
             nfd,
             unsafe { FdSet::new(read, nfd) },
             unsafe { FdSet::new(write, nfd) },
             unsafe { FdSet::new(except, nfd) },
             timeout,
+            fds,
         )?;
-        state.wait()
+        state.wait(waits, info, keepalives)
     }
 }

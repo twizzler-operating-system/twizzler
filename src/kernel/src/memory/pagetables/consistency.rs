@@ -276,6 +276,10 @@ pub struct Consistency {
     cl: ArchCacheLineMgr,
     tlb: ArchTlbMgr,
     pages: LinkedList<FrameAdapter>,
+    /// Frames the unmap path proved are still zero. A separate list rather than a flag on the
+    /// frame: `PhysicalFrameFlags` is a full u8, and the one bit that already means "zero"
+    /// deliberately is not trusted at free time (see `framecache::free_one_hinted`).
+    zero_pages: LinkedList<FrameAdapter>,
     /// Set by [Self::finish_send], handed to the [DeferredUnmappingOps] so that the frames cannot
     /// be freed before the shootdown is acknowledged.
     pending: Option<PendingShootdown>,
@@ -319,6 +323,7 @@ impl Consistency {
             cl: ArchCacheLineMgr::default(),
             tlb: ArchTlbMgr::new(target),
             pages: LinkedList::new(FrameAdapter::NEW),
+            zero_pages: LinkedList::new(FrameAdapter::NEW),
             pending: None,
             page_delta: 0,
             suppress: false,
@@ -380,6 +385,13 @@ impl Consistency {
         }
     }
 
+    /// [`Self::free_frame`] for a frame the caller has proved is still all-zero.
+    pub fn free_frame_known_zero(&mut self, frame: FrameRef) {
+        if frame.dec_refcount() == 0 {
+            self.zero_pages.push_back(frame);
+        }
+    }
+
     /// Flush the TLB invalidations.
     fn flush_invalidations(&mut self) {
         self.tlb.finish();
@@ -400,7 +412,7 @@ impl Consistency {
     /// shootdown must consult it: `DeferredUnmappingOps::run_all` waits on the pending *before*
     /// returning frames to the allocator, so an empty pending frees them immediately.
     pub fn has_pages(&self) -> bool {
-        !self.pages.is_empty()
+        !self.pages.is_empty() || !self.zero_pages.is_empty()
     }
 
     pub fn set_pending(&mut self, pending: PendingShootdown) {
@@ -414,6 +426,7 @@ impl Consistency {
         assert!(!self.tlb.has_pending());
         DeferredUnmappingOps {
             pages: self.pages,
+            zero_pages: self.zero_pages,
             pending: self.pending,
         }
     }
@@ -448,7 +461,10 @@ impl Consistency {
     /// Measured at **396 ns per page** on `page_fault_zero_fill` (`knobs-on`), of which 214 ns is
     /// the park half alone -- against zero TLB work performed.
     pub fn is_trivial(&self) -> bool {
-        !self.tlb.has_pending() && self.pages.is_empty() && self.pending.is_none()
+        !self.tlb.has_pending()
+            && self.pages.is_empty()
+            && self.zero_pages.is_empty()
+            && self.pending.is_none()
     }
 
     pub fn tlb(&self) -> &ArchTlbMgr {
@@ -461,6 +477,7 @@ impl Consistency {
 }
 
 pub struct DeferredUnmappingOps {
+    zero_pages: LinkedList<FrameAdapter>,
     pages: LinkedList<FrameAdapter>,
     pending: Option<PendingShootdown>,
 }
@@ -474,6 +491,7 @@ impl Debug for DeferredUnmappingOps {
 impl Drop for DeferredUnmappingOps {
     fn drop(&mut self) {
         assert!(self.pages.is_empty());
+        assert!(self.zero_pages.is_empty());
     }
 }
 
@@ -483,6 +501,7 @@ impl DeferredUnmappingOps {
     pub fn from_pending(pending: PendingShootdown) -> Self {
         Self {
             pages: LinkedList::new(FrameAdapter::NEW),
+            zero_pages: LinkedList::new(FrameAdapter::NEW),
             pending: Some(pending),
         }
     }
@@ -497,6 +516,9 @@ impl DeferredUnmappingOps {
     /// not: a hold runs one consistency-generating operation per page of a page-in or copy loop.
     pub fn absorb(&mut self, mut other: Self) {
         self.pages.back_mut().splice_after(other.pages.take());
+        self.zero_pages
+            .back_mut()
+            .splice_after(other.zero_pages.take());
         match (self.pending.as_mut(), other.pending.take()) {
             (Some(ours), Some(theirs)) => ours.absorb(theirs),
             (None, theirs) => self.pending = theirs,
@@ -515,6 +537,10 @@ impl DeferredUnmappingOps {
         while let Some(page) = self.pages.pop_back() {
             page.set_pt(false);
             crate::memory::tracker::free_frame(page)
+        }
+        while let Some(page) = self.zero_pages.pop_back() {
+            page.set_pt(false);
+            crate::memory::tracker::free_frame_known_zero(page)
         }
     }
 }

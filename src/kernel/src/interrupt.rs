@@ -1,5 +1,8 @@
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::{
+    panic::Location,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use intrusive_collections::RBTree;
 use twizzler_abi::{
@@ -62,10 +65,142 @@ pub fn get() -> bool {
     crate::arch::interrupt::get()
 }
 
+/// Time each interrupts-disabled window and attribute it to the caller that opened it.
+///
+/// Off by default and, like [`INTERRUPT_PROFILE`], folds away entirely when off rather than
+/// testing at runtime -- this sits under every critical section in the kernel.
+///
+/// What it answers: a sampling profile cannot measure an irqs-off region directly, because the
+/// tick that would sample it is exactly the thing the region defers. The deferred samples do
+/// estimate residency (time in the window), but they cannot separate a long window from a frequent
+/// one, and those want opposite fixes.
+pub const IRQOFF_PROFILE: bool = false;
+
+/// Interrupts-disabled windows opened by [`with_disabled`], by call site.
+///
+/// Lock-free by necessity, not by preference: every spinlock acquire calls [`disable`], so a
+/// recorder that took a lock -- or that called `with_disabled` itself, as [`record_interrupt`]
+/// does -- would recurse. Plain relaxed atomics have neither problem.
+///
+/// Timings include the recorder's own cost.
+///
+/// READ THE NEXT PARAGRAPH BEFORE RANKING THIS OUTPUT. What is timed is wall-clock across the
+/// closure, which equals the interrupts-off window only for a closure that does not block. A
+/// closure that blocks -- `syscall::sync::finish_blocking`, whose `schedule()` deschedules the
+/// caller -- keeps the timer running for the whole sleep, while the cpu is off running other
+/// threads with interrupts enabled. Such a site reports milliseconds and means nothing here; its
+/// real residency comes from the deferred-tick samples instead, which measure the cpu rather than
+/// the closure. Sites are flagged in the report when their mean exceeds a plausible window.
+pub mod irqoff {
+    use core::{
+        panic::Location,
+        sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    };
+
+    /// One slot per distinct call site; the last collects the overflow so a site that appears
+    /// after the table fills reads as "other" rather than vanishing.
+    const NR: usize = 24;
+
+    #[allow(clippy::declare_interior_mutable_const)]
+    const ZERO_U: AtomicUsize = AtomicUsize::new(0);
+    #[allow(clippy::declare_interior_mutable_const)]
+    const ZERO: AtomicU64 = AtomicU64::new(0);
+    /// The `&'static Location` pointer is the key -- two call sites never share one.
+    static SITES: [AtomicUsize; NR] = [ZERO_U; NR];
+    static COUNTS: [AtomicU64; NR] = [ZERO; NR];
+    static NANOS: [AtomicU64; NR] = [ZERO; NR];
+    static MAXNS: [AtomicU64; NR] = [ZERO; NR];
+
+    fn slot(loc: &'static Location<'static>) -> usize {
+        let key = loc as *const _ as *const u8 as usize;
+        for i in 0..NR - 1 {
+            let cur = SITES[i].load(Ordering::Relaxed);
+            if cur == key {
+                return i;
+            }
+            if cur == 0
+                && SITES[i]
+                    .compare_exchange(0, key, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+            {
+                return i;
+            }
+        }
+        NR - 1
+    }
+
+    pub fn record(loc: &'static Location<'static>, ns: u64) {
+        let i = slot(loc);
+        COUNTS[i].fetch_add(1, Ordering::Relaxed);
+        NANOS[i].fetch_add(ns, Ordering::Relaxed);
+        MAXNS[i].fetch_max(ns, Ordering::Relaxed);
+    }
+
+    pub fn print() {
+        if !super::IRQOFF_PROFILE {
+            return;
+        }
+        let mut rows: alloc::vec::Vec<(u64, u64, u64, usize)> = (0..NR)
+            .map(|i| {
+                (
+                    NANOS[i].load(Ordering::Relaxed),
+                    COUNTS[i].load(Ordering::Relaxed),
+                    MAXNS[i].load(Ordering::Relaxed),
+                    SITES[i].load(Ordering::Relaxed),
+                )
+            })
+            .filter(|r| r.1 > 0)
+            .collect();
+        rows.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        let total_ns: u64 = rows.iter().map(|r| r.0).sum();
+        logln!(
+            "== irqs-off windows (with_disabled): {} us over {} windows; BLOCKS = closure sleeps, \
+             wall-clock not irqs-off, ignore its time ==",
+            total_ns / 1000,
+            rows.iter().map(|r| r.1).sum::<u64>()
+        );
+        for (ns, count, max, key) in rows {
+            let loc = if key == 0 {
+                None
+            } else {
+                // SAFETY: the key is a `&'static Location` interned by `slot`, never anything else.
+                Some(unsafe { &*(key as *const Location<'static>) })
+            };
+            // No real irqs-off region survives a millisecond: anything above that blocked.
+            let blocks = if ns / count.max(1) > 1_000_000 {
+                "BLOCKS "
+            } else {
+                ""
+            };
+            logln!(
+                "==   {:>10} us  {:>8} windows  mean {:>7} ns  max {:>9} ns  {}{}",
+                ns / 1000,
+                count,
+                ns / count.max(1),
+                max,
+                blocks,
+                loc.map(|l| alloc::format!("{}:{}", l.file(), l.line()))
+                    .unwrap_or_else(|| "other (table full)".into())
+            );
+        }
+    }
+}
+
 #[inline]
+#[track_caller]
 pub fn with_disabled<T, F: FnOnce() -> T>(f: F) -> T {
     let tmp = disable();
+    // Read the clock inside the window, so what is measured is the window and not the call.
+    let start = if IRQOFF_PROFILE {
+        crate::instant::current_ns()
+    } else {
+        0
+    };
     let t = f();
+    if IRQOFF_PROFILE && start != 0 {
+        let end = crate::instant::current_ns();
+        irqoff::record(Location::caller(), end.saturating_sub(start));
+    }
     set(tmp);
     t
 }

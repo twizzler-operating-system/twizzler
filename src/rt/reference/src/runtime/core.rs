@@ -154,8 +154,12 @@ impl ReferenceRuntime {
                 // Same reason: rustc exits this way, so a post_main_hook-only report measures
                 // cargo and never the process the profile is actually about.
                 crate::runtime::file::namestats::report();
-                #[cfg(target_arch = "x86_64")]
-                crate::runtime::memsettrace::report();
+                crate::runtime::file::kinds::raw_file::writestats::report();
+                crate::runtime::alloc::reallocstats::report();
+                crate::runtime::alloc::sites::report();
+                crate::runtime::alloc::sites::compmap();
+                crate::runtime::alloc::talc::heapspan::report();
+                crate::runtime::alloc::ferroc::decommitstats::report();
             } else if code != 0 && !self.state().contains(RuntimeState::IS_MONITOR) {
                 // `twz_rt_exit` is overloaded: both thread trampolines (std's `thread_start`,
                 // mlibc's `sys_thread_exit`) end a finished thread through here with code 0, and
@@ -333,6 +337,11 @@ impl ReferenceRuntime {
 
     pub fn pre_main_hook(&self) -> Option<ExitCode> {
         let _t0 = std::time::Instant::now();
+        if crate::runtime::alloc::ferroc::decommitstats::REPORT_ON {
+            crate::runtime::alloc::census::__twz_rt_diag_heap_census_arm();
+        }
+        crate::runtime::alloc::sites::arm(self.state().contains(RuntimeState::IS_MONITOR));
+        crate::runtime::alloc::sites::note_identity();
         // TODO: control this with env vars
         // TWZ_LOG_TRACE promotes this compartment to TRACE *and* installs the `log` -> `tracing`
         // bridge, which is what makes smoltcp's own `net_trace!` calls visible: they are
@@ -417,6 +426,8 @@ impl ReferenceRuntime {
         secgate::statlog::drain();
         crate::runtime::object::mapstats::report();
         crate::runtime::file::namestats::report();
+        crate::runtime::alloc::sites::report();
+        crate::runtime::alloc::sites::compmap();
         monitor_api::monitor_rt_comp_ctrl(monitor_api::MonitorCompControlCmd::RuntimePostMain)
             .unwrap();
     }

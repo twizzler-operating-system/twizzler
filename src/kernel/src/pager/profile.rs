@@ -561,6 +561,7 @@ pub fn print_pager_profile() {
     // Before the early return: a boot where nothing was submitted still did lookups, and the
     // in-kernel hit path is half of what this measures.
     lookupstats::print();
+    crate::pager::syncwait::report();
     let submitted = p.submitted.load(Ordering::Relaxed);
     if submitted == 0 {
         return;

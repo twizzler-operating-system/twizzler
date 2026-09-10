@@ -35,7 +35,7 @@ use crate::{
 /// Floor for the adaptive receive spin. Cheap enough to be worth keeping for the case the spin is
 /// actually for -- a second entry already on its way -- while being ~1.5% of the length that costs
 /// nothing but time when it is not.
-const RECV_SPIN_MIN: usize = twizzler_queue_raw::SPIN_ATTEMPTS;
+const RECV_SPIN_MIN: usize = 16;
 /// Ceiling: the raw queue's own default, so adapting can only ever spin less than not adapting.
 const RECV_SPIN_MAX: usize = twizzler_queue_raw::SPIN_ATTEMPTS;
 

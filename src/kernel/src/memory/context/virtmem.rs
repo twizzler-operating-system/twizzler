@@ -669,7 +669,18 @@ impl Slot {
     }
 
     fn range(&self) -> Range<VirtAddr> {
-        self.start_vaddr()..self.start_vaddr().offset(MAX_SIZE).unwrap()
+        let start = self.start_vaddr();
+        // The top user slot ends at 0x0000_8000_0000_0000 -- the first address past the lower
+        // canonical half -- because SLOTS * MAX_SIZE lands exactly on the canonical hole.
+        // `VirtAddr::new` rejects that value, so `offset` returns Err there and the unwrap this
+        // replaces panicked the kernel for any range query on the last slot. `end_user_memory()`
+        // *is* that address (built directly rather than through `new`), so the range stays exact
+        // rather than losing its final byte. The kernel half cannot reach this: object memory
+        // stops well short of 2^64.
+        let end = start
+            .offset(MAX_SIZE)
+            .unwrap_or_else(|_| VirtAddr::end_user_memory());
+        start..end
     }
 }
 
@@ -1281,6 +1292,7 @@ impl VirtContext {
     /// (`fault::get_map_region`), so waiting for memory under it stalls every fault in that context
     /// for the duration. `FrameAllocator::precharge_nowait` names the same rule.
     fn precharge_slot_map(fa: &mut FrameAllocator) {
+        fa.set_site(crate::memory::tracker::allocprofile::PC_SITE_MAP);
         fa.precharge(Self::slot_map_tables(), FrameAllocFlags::WAIT_OK);
     }
 

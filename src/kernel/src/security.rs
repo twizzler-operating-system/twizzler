@@ -175,16 +175,18 @@ impl SecurityContext {
         if self.obj.is_none() {
             return PermsInfo::new(KERNEL_SCTX, Protections::all(), Protections::empty());
         }
-        // Take a reference to the map, then walk it with the lock released: the hold is one
-        // refcount bump rather than a tree descent.
-        let cache = {
+        // Hot path: check the cache under the lock and copy the (small, `Copy`) `PermsInfo` out on
+        // a hit. The map was previously `Arc::clone`d here so the `get` could run
+        // lock-free, but a `BTreeMap::get` is a short O(log n) walk while the clone cost a
+        // contended atomic refcount bump on a shared cache line on every access check. A
+        // miss releases the lock at the end of this block and rebuilds below exactly as
+        // before -- `cache_insert` re-takes the lock, so the miss path must not hold it.
+        {
             let cache = self.cache.lock();
-            Arc::clone(&*cache)
-        };
-        if let Some(cache_entry) = cache.get(&_id) {
-            return *cache_entry;
+            if let Some(cache_entry) = cache.get(&_id) {
+                return *cache_entry;
+            }
         }
-        drop(cache);
 
         // by default granted permissions are going to be the most restrictive
         let mut granted_perms =

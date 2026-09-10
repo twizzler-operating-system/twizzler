@@ -200,6 +200,11 @@ impl TlsGenMgr {
             return None;
         }
 
+        // `alloc_early`, not `alloc`: this runs in `cross_compartment_entry`'s zero-thread-pointer
+        // window, and the normal path (`alloc` -> frozen talc -> OOM -> `create_and_map` -> a
+        // monitor gate call) crosses a compartment boundary and touches TLS there. The early talc
+        // grows through the monitor's own direct-map path, never a gate, so it stays TLS-free. The
+        // `tlspool` fast path already avoids allocating at all; this only bounds the fallback.
         let new = tlspool::take(template.layout)
             .unwrap_or_else(|| unsafe { LOCAL_ALLOCATOR.alloc(template.layout) });
         let tlsgen = self.map.entry(template.gen).or_insert_with(|| TlsGen {

@@ -256,6 +256,22 @@ macro_rules! counters {
         pub fn snapshot() -> [u64; NR] {
             [$($name.load(Ordering::Relaxed)),*]
         }
+        /// Absolute values at `debug_shutdown`. `perfmark` differences these between marks, which
+        /// answers "what changed"; a whole-boot total answers "did this path run at all", and a
+        /// measurement that cannot tell an inert path from an ineffective one is not a measurement.
+        pub fn print() {
+            let v = snapshot();
+            let mut any = false;
+            for (n, x) in NAMES.iter().zip(v.iter()) {
+                if *x != 0 {
+                    if !any {
+                        crate::logln!("== framecache counters (whole boot) ==");
+                        any = true;
+                    }
+                    crate::logln!("==   {:<20} {}", n, x);
+                }
+            }
+        }
     };
 }
 
@@ -908,7 +924,7 @@ fn should_zero_on_free() -> bool {
 /// Read as `u64`s rather than bytes so the compare is 512 loads instead of 4096, and reported
 /// with the offset of the first non-zero word -- "somewhere in this frame" is not enough to find
 /// which caller lied.
-fn verify_zero(frame: FrameRef) {
+pub(crate) fn verify_zero(frame: FrameRef) {
     let ptr = frame.start_address().kernel_vaddr().as_ptr::<u64>();
     let words = frame.size() / core::mem::size_of::<u64>();
     for i in 0..words {

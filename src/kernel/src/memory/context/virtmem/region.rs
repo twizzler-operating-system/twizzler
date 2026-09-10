@@ -66,7 +66,7 @@ use crate::{
 /// What these benches cannot see: they touch every page in the window, so over-allocation on a
 /// *sparse* first-touch workload is unmeasured. `fault_around` bounds the run by the 2 MiB block
 /// and stops at a present neighbour, which limits it, but a sparse object still gets 16-page runs.
-pub(crate) const ANON_FAULT_AROUND: usize = 16;
+pub(crate) const ANON_FAULT_AROUND: usize = 4;
 
 /// Whether [`ANON_FAULT_AROUND`] is a ceiling that adapts per region, or a fixed width.
 /// `false` restores the fixed behaviour from one tree, which is the A/B.
@@ -644,7 +644,20 @@ impl MapRegion {
             } else {
                 census::Kind::Present
             };
-            census::record(self.object().id(), kind);
+            // exec wins over write: a code page is classified as code even if writable.
+            let protclass = if self.prot.contains(Protections::EXEC) {
+                0
+            } else if !self.prot.contains(Protections::WRITE) {
+                1
+            } else {
+                2
+            };
+            census::record(self.object().id(), kind, protclass, |buf| {
+                self.object().get_notes().summarize(buf)
+            });
+            // The faulting instruction, already in hand from the trap frame: names the code that
+            // touched the page, which the object id alone cannot.
+            census::record_ip(ip.raw(), kind);
         }
 
         self.trace_fault(addr, ip, cause, pfflags, used_pager, false, start_time);
@@ -751,7 +764,10 @@ impl MapRegion {
                     let mut pt = self.object().lock_page_tables();
                     let mut stable = PtGuard::new(stable);
                     let len = self.range.end - self.range.start;
-                    stable.setup_zero_range(self.offset, len)?;
+                    // Conservative: the stable shadow is not the region's own object and its
+                    // backing is not established here, so it keeps the inherited DIRTY and behaves
+                    // exactly as before.
+                    stable.setup_zero_range(self.offset, len, false)?;
                     pt.setup_cow_range(&mut *stable, self.offset, self.offset, len)?;
                     // Both locks off before either one's shootdown wait runs. Letting these drop
                     // implicitly would run the inner guard's wait under the outer lock, which is

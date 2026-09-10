@@ -61,7 +61,7 @@ fn try_read_thread_name(id: ObjID) -> Option<String> {
     Some(std::str::from_utf8(&buf[..len.min(128)]).ok()?.to_string())
 }
 
-pub fn stat(state: TracingState) {
+pub fn stat(state: TracingState, raw_pcs: bool) {
     println!(
         "statistics for {}, executed over {} seconds",
         state.name,
@@ -711,6 +711,52 @@ pub fn stat(state: TracingState) {
             }
         };
 
+        // Which binary the time is in. The pc histogram above is too fragmented to rank -- the
+        // hottest single pc is under 5%, and the same library is mapped at a different slot in
+        // every rustc -- but "our runtime vs the compiler we are hosting" is answerable by
+        // summing, and that is the split that decides what is worth optimizing.
+        let mut slot_name = HashMap::<usize, String>::new();
+        let mut by_lib = HashMap::<String, (usize, usize)>::new();
+        for ((sctx, ip), count) in pcs.iter() {
+            let lib = if *ip == 0 {
+                "<kernel thread, no entry frame>".to_string()
+            } else if let Some((l, _)) = resolve(libs_of(*sctx), *ip) {
+                l.to_string()
+            } else {
+                let slot = (*ip >> 30) as usize;
+                if !slot_name.contains_key(&slot) {
+                    let d = describe(*sctx, *ip);
+                    let d = d.split('+').next().unwrap_or("?").trim().to_string();
+                    slot_name.insert(slot, d);
+                }
+                slot_name[&slot].clone()
+            };
+            // Machine-readable, emitted here because this is where the pc already carries a
+            // slot-resolved library name: resolving against the compartment's own lib list alone
+            // degrades to "slotN" for most samples, which is what a first cut of this dump did.
+            if raw_pcs {
+                println!("PCRAW {} {} {:x}", count, lib, *ip & 0x3fff_ffff);
+            }
+            let e = by_lib.entry(lib).or_insert((0usize, 0usize));
+            e.0 += *count;
+            e.1 += sys_by_pc.get(&(*sctx, *ip)).copied().unwrap_or(0);
+        }
+        let mut libs = by_lib.into_iter().collect::<Vec<_>>();
+        libs.sort_by_key(|x| x.1.0);
+        println!(
+            "\n{:>8}  {:>7}  {:>6}   LIBRARY ({} running samples, summed over compartments)",
+            "COUNT", "%", "SYS", running
+        );
+        for (lib, (count, sys)) in libs.iter().rev().take(26) {
+            println!(
+                "{:>8}  {:>6.2}%  {:>5.1}%   {}",
+                count,
+                100.0 * *count as f64 / running as f64,
+                pct(*sys, *count),
+                lib
+            );
+        }
+
         // Aggregate by *what the pc is*, not by (compartment, pc): the same library is mapped in
         // every rustc compartment at a different slot, so keying on the address fragments one hot
         // syscall into a dozen rows and inflates the remainder. That is what made a 12% entry
@@ -757,6 +803,12 @@ pub fn stat(state: TracingState) {
             pct(kpc_total - kshown, kpc_total),
             kpcs.len().saturating_sub(24)
         );
+
+        if raw_pcs {
+            for (ip, count) in kpcs.iter() {
+                println!("PCRAWK {} {:x}", count, ip);
+            }
+        }
 
         // What the hottest leaf is writing. A sample cannot carry a return address -- reading
         // `[sp]` from the tick path halted the processor, and by report time the stack word is

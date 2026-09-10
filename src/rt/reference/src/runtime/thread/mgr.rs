@@ -475,6 +475,11 @@ impl ReferenceRuntime {
             .runtime_data
             .flags
             .fetch_or(THREAD_STARTED, Ordering::SeqCst);
+        // stack_addr/stack_size are deliberately 0: the monitor built this thread's stack, not
+        // us, and nothing here knows its bounds. `get_stack_bounds` reports that as "unknown",
+        // which keeps stacker (in rustc) on its conservative grow-always path for the core
+        // thread only. Populating these would need the monitor to hand the bounds through
+        // comp_init_info -- do that if core-thread recursion ever matters.
         let thread = InternalThread::new(
             Some(thread_repr_obj),
             thid,

@@ -1169,6 +1169,15 @@ pub struct RuntimeThreadControl {
     pub internal_lock: AtomicU32,
     pub flags: AtomicU32,
     pub stack_canary: u64,
+    /// Reserved for mlibc: `Tcb<RuntimeThreadControl>` deliberately overlays mlibc's `Tcb`
+    /// (tcb.hpp), and this is the continuation past `stackCanary` -- `cancelBits` through
+    /// `guardSize` live in here (on x86_64, `stackSize`/`stackAddr` are words 9/10). Initialized
+    /// by `__mlibc_init_tcb`; the runtime never writes it. NOTE: mlibc's `stackSize`/`stackAddr`
+    /// therefore stay ZERO on twz-rt threads, so any mlibc path reading them (e.g.
+    /// `pthread_getattr_np`, currently not compiled for twizzler) would report a zero stack
+    /// base -- which callers like stacker's unix backend read as "infinite stack". Populate
+    /// these at spawn (per-arch offsets!) before ever enabling such a path; stack bounds are
+    /// available honestly via `twz_rt_get_stack_bounds` instead.
     pub libc_data: [u64; 16],
 }
 

@@ -36,6 +36,11 @@ pub struct RunCli {
     pub all_threads: bool,
     #[arg(
         long,
+        help = "Dump every (library, offset, count) triple as PCRAW lines. The pc histogram is too flat to rank from the top-40 -- 63% of samples land in single-sample pcs -- so function-level attribution has to be aggregated offline against the binary that ran."
+    )]
+    pub raw_pcs: bool,
+    #[arg(
+        long,
         short,
         help = "Stop tracing and report after this many seconds even if the target has not exited."
     )]
@@ -69,7 +74,7 @@ fn main() -> miette::Result<()> {
 
     match cli.cmd {
         None | Some(Subcommand::Stat) => {
-            stat::stat(state);
+            stat::stat(state, cli.prog.raw_pcs);
         }
     }
 

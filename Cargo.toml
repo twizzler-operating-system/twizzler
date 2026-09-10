@@ -64,6 +64,7 @@ members = [
     #"src/test/serialecho", "tools/serialtest",
 
     "src/test/ptest",
+    "src/test/memlat",
     "src/test/spawn-test",
     "src/test/kqueue_test",
     "src/test/devfs_test",
@@ -172,6 +173,7 @@ initrd = [
     "crate:leakcheck",
     "crate:nullexit",
     "crate:pagepar",
+    "crate:memlat",
     "crate:hmrepro",
     #"crate:ssh",
     #"crate:sshd",
@@ -432,6 +434,18 @@ async-net = { path = "src/ports/async-net" }
 # the fork also held parking_lot at 0.12.4, which blocked `cached` 2.x (brush).
 #parking_lot = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
 #lock_api = { git = "https://github.com/twizzler-operating-system/parking_lot.git", branch = "twizzler" }
+# Only `parking_lot_core` is patched, deliberately: the dropped fork also pinned `parking_lot`
+# itself to 0.12.4 and blocked `cached` 2.x. Patching the core alone restores the futex parker
+# and leaves `parking_lot` free to resolve (0.12.5 today). The vendored copy is 0.9.12 -- the
+# version already locked -- with one change: the `target_os = "twizzler"` arm moved ABOVE the
+# `unix` arm, which is what made the fork's parker unreachable in the first place.
+parking_lot_core = { path = "src/ports/parking_lot_core" }
+# The crates.io copy has no twizzler arm, so `native_libraries()` returns empty, `avma_to_svma`
+# always misses, and every symbolization is a silent no-op -- backtraces of bare addresses.
+# std's own copy already carries the port (library/backtrace/.../gimli/twizzler.rs); this is that
+# port transplanted onto the 0.3.76 the workspace actually resolves. Affects miette, human-panic,
+# backtrace-ext and tokio.
+backtrace = { path = "src/ports/backtrace" }
 #blocking = { path = "src/ports/blocking" }
 
 #num_cpus = { git = "https://github.com/twizzler-operating-system/num_cpus.git", branch = "twizzler" }

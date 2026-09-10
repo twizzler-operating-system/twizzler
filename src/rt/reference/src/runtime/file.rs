@@ -45,9 +45,9 @@ use super::{ReferenceRuntime, OUR_RUNTIME};
 ///
 /// Written to attribute a PC-sampled profile that named first `memcmp` and then `twz_rt_futex_wake`
 /// as ~27% of a compile's CPU. Both names were wrong -- the profile had been symbolized against a
-/// `libtwz_rt.so` that had been rebuilt out from under it, so the PCs and the symbol table came from
-/// different binaries. These counters are what established that: naming paths measured 0.06% of
-/// wall, and `futex_wake` 0.133 s across a whole build against a claimed 2.4 s in one compile.
+/// `libtwz_rt.so` that had been rebuilt out from under it, so the PCs and the symbol table came
+/// from different binaries. These counters are what established that: naming paths measured 0.06%
+/// of wall, and `futex_wake` 0.133 s across a whole build against a claimed 2.4 s in one compile.
 ///
 /// Kept because the measurements are cheap and the question recurs. Gating matches
 /// [`super::object::mapstats`]. Reported from `post_main_hook` *and* from `exit()`, because
@@ -165,7 +165,7 @@ pub(crate) mod namestats {
 use crate::runtime::file::kinds::kconsole::KernelConsoleFile;
 
 mod file_desc;
-mod kinds;
+pub(crate) mod kinds;
 mod kqueue;
 mod poll;
 mod select;
@@ -318,14 +318,39 @@ impl<T> Drop for MaybeNoDrop<T> {
     }
 }
 
-#[derive(Clone)]
+/// Per-description state, shared by dup'd descriptors, in one allocation. A full `binding_info`
+/// is 4 KiB (`bind_data` is a fixed 4096-byte array) for what is usually a ~20-byte path, so
+/// `bind_data` holds only the actual bytes and `read_binds` rebuilds the ABI struct on demand.
+struct DescState {
+    /// Descriptor status flags (F_GETFL/F_SETFL).
+    flags: AtomicU32,
+    /// `binding_info::kind` for exec inheritance.
+    kind: open_kind,
+    bind_data: Box<[u8]>,
+}
+
 struct FileDesc {
     file: FdImpl,
-    binding: MaybeNoDrop<Arc<binding_info>>,
-    flags: Arc<AtomicU32>,
-    /// Close-on-exec. Per-descriptor, not per-description: the dup paths below install a fresh
-    /// cell rather than sharing this one, because POSIX has dup() clear the flag on the copy.
-    cloexec: Arc<AtomicBool>,
+    state: MaybeNoDrop<Arc<DescState>>,
+    /// `binding_info::flags` for exec inheritance. Per-descriptor, NOT in `DescState`: std's
+    /// pipe() builds its two ends as dups of one flagless open and then shuts down one direction
+    /// on each, so each end must record its own remaining direction -- a shared cell would end up
+    /// with neither flag and the spawned child's re-open would fail.
+    bind_flags: AtomicU32,
+    /// Close-on-exec. Per-descriptor, and `Clone` resets it rather than copying, because POSIX
+    /// has dup() clear the flag on the copy, and dup is the only cloner.
+    cloexec: AtomicBool,
+}
+
+impl Clone for FileDesc {
+    fn clone(&self) -> Self {
+        Self {
+            file: self.file.clone(),
+            state: self.state.clone(),
+            bind_flags: AtomicU32::new(self.bind_flags.load(Ordering::SeqCst)),
+            cloexec: AtomicBool::new(false),
+        }
+    }
 }
 
 /// Combine a descriptor's own flags with the per-call ones from an `io_ctx`.
@@ -343,13 +368,10 @@ fn io_flags(desc_flags: u32, ctx: *mut io_ctx) -> IoFlags {
 
 impl FileDesc {
     /// The two things an I/O call actually needs: the backing object, and the flags to combine
-    /// with the call's own.
-    ///
-    /// Cloning the whole `FileDesc` to reach these bumps four `Arc`s (and drops three or four),
-    /// i.e. ~8 atomic RMWs per read/write, for one pointer and one `u32`. `binding` and `cloexec`
-    /// are never read on an I/O path at all.
+    /// with the call's own. Avoids cloning the whole `FileDesc` (refcount churn) for one pointer
+    /// and one `u32`.
     fn io_parts(&self) -> (FdImpl, u32) {
-        (self.file.clone(), self.flags.load(Ordering::SeqCst))
+        (self.file.clone(), self.state.flags.load(Ordering::SeqCst))
     }
 
     pub fn new(
@@ -359,22 +381,20 @@ impl FileDesc {
         bind_info: Option<&[u8]>,
         should_drop: bool,
     ) -> Self {
-        let bind_len = bind_info.map_or(0, |bi| bi.len()).min(BIND_DATA_MAX);
-        let mut binding = binding_info {
-            kind: bind_kind,
-            fd: 0,
-            flags,
-            bind_data: [0; _],
-            bind_len: bind_len as u32,
-        };
-        if let Some(bind_info) = bind_info {
-            binding.bind_data[0..bind_len].copy_from_slice(&bind_info[0..bind_len])
-        }
+        let bind_info = bind_info.unwrap_or(&[]);
+        let bind_len = bind_info.len().min(BIND_DATA_MAX);
         FileDesc {
             file,
-            binding: MaybeNoDrop::new(Arc::new(binding), should_drop),
-            flags: Arc::new(AtomicU32::new(0)),
-            cloexec: Arc::new(AtomicBool::new(false)),
+            state: MaybeNoDrop::new(
+                Arc::new(DescState {
+                    flags: AtomicU32::new(0),
+                    kind: bind_kind,
+                    bind_data: bind_info[..bind_len].into(),
+                }),
+                should_drop,
+            ),
+            bind_flags: AtomicU32::new(flags),
+            cloexec: AtomicBool::new(false),
         }
     }
 
@@ -403,7 +423,7 @@ impl FileDesc {
         self.file.fd_cmd(cmd, arg, ret).into()
     }
 
-    /// The shutdown arm, which rewrites `binding` and so needs the write lock.
+    /// The shutdown arm.
     fn fd_cmd_shutdown(&mut self, arg: *const u8) -> Result<()> {
         let val = unsafe { arg.cast::<u32>().read() };
         let shutdown = match val {
@@ -412,13 +432,12 @@ impl FileDesc {
             2 => std::net::Shutdown::Write,
             _ => std::net::Shutdown::Both,
         };
-        let mut b = **self.binding;
-        b.flags = match shutdown {
-            Shutdown::Read => b.flags & !OPEN_FLAG_READ,
-            Shutdown::Write => b.flags & !OPEN_FLAG_WRITE,
-            Shutdown::Both => b.flags & !(OPEN_FLAG_READ | OPEN_FLAG_WRITE),
+        let clear = match shutdown {
+            Shutdown::Read => OPEN_FLAG_READ,
+            Shutdown::Write => OPEN_FLAG_WRITE,
+            Shutdown::Both => OPEN_FLAG_READ | OPEN_FLAG_WRITE,
         };
-        self.binding = MaybeNoDrop::new(Arc::new(b), true);
+        self.bind_flags.fetch_and(!clear, Ordering::SeqCst);
         self.file.shutdown(shutdown)
     }
 }
@@ -599,6 +618,21 @@ pub(crate) fn current_dir() -> Result<PathBuf> {
         *memo = Some(path.clone());
     }
     Ok(path)
+}
+
+/// `current_dir()?.push(rel)` in one exact-capacity allocation: the memoized cwd is read under
+/// its lock straight into the joined buffer, instead of being cloned (one allocation) and then
+/// grown again by `push` (a second).
+pub(crate) fn current_dir_join(rel: &Path) -> Result<PathBuf> {
+    if let Some(cd) = CWD_MEMO.lock().unwrap().as_deref() {
+        let mut joined = PathBuf::with_capacity(cd.as_os_str().len() + rel.as_os_str().len() + 1);
+        joined.push(cd);
+        joined.push(rel);
+        return Ok(joined);
+    }
+    let mut cd = current_dir()?;
+    cd.push(rel);
+    Ok(cd)
 }
 
 /// Seed the memo with a cwd known without asking.
@@ -994,6 +1028,28 @@ impl ReferenceRuntime {
         }
     }
 
+    /// No "." or ".." components, no empty segments ("//"), no trailing separator: a path
+    /// `normalize_lexically` would return unchanged.
+    fn is_lexically_normal(path: &[u8]) -> bool {
+        let mut rest = match path {
+            [] => return false,
+            [b'/'] => return true,
+            [b'/', rest @ ..] => rest,
+            rest => rest,
+        };
+        loop {
+            let seg_len = rest.iter().position(|c| *c == b'/').unwrap_or(rest.len());
+            // A trailing '/' shows up here as an empty final segment.
+            if matches!(&rest[..seg_len], b"" | b"." | b"..") {
+                return false;
+            }
+            if seg_len == rest.len() {
+                return true;
+            }
+            rest = &rest[seg_len + 1..];
+        }
+    }
+
     pub fn canon_name(
         &self,
         resolver: twizzler_rt_abi::fd::NameResolver,
@@ -1020,7 +1076,7 @@ impl ReferenceRuntime {
             return Ok(res.len().min(out_slice.len()) * size_of::<socket_address>());
         }
         // Borrowed, not owned: an absolute path needs no copy at all here, and a relative one
-        // needs exactly the `current_dir` clone it is pushed onto. The `PathBuf::from` this
+        // needs exactly the one joined buffer `current_dir_join` builds. The `PathBuf::from` this
         // replaces allocated on every call and was then copied again by `push`.
         let name = str::from_utf8(name).map_err(|_| TwzError::INVALID_ARGUMENT)?;
         let rel = Path::new(name);
@@ -1028,14 +1084,19 @@ impl ReferenceRuntime {
         let path: &Path = if rel.is_absolute() {
             rel
         } else {
-            let mut cd = current_dir()?;
-            cd.push(rel);
-            joined = cd;
+            joined = current_dir_join(rel)?;
             &joined
         };
 
-        let npath = path.normalize_lexically();
-        let path = npath.as_deref().unwrap_or(path);
+        // Already-normal paths -- the overwhelmingly common case -- pass through borrowed;
+        // `normalize_lexically` allocates a fresh `PathBuf` even when it changes nothing.
+        let npath;
+        let path: &Path = if Self::is_lexically_normal(path.as_os_str().as_encoded_bytes()) {
+            path
+        } else {
+            npath = path.normalize_lexically();
+            npath.as_deref().unwrap_or(path)
+        };
         let path = path.to_str().ok_or(TwzError::INVALID_ARGUMENT)?.as_bytes();
 
         let len = out_name.len().min(path.len());
@@ -1162,8 +1223,15 @@ impl ReferenceRuntime {
                 return idx;
             }
             if let Some(info) = info {
-                binds[idx] = **info.binding;
-                binds[idx].fd = fd.try_into().unwrap();
+                let state = &**info.state;
+                let out = &mut binds[idx];
+                out.kind = state.kind;
+                out.fd = fd.try_into().unwrap();
+                out.flags = info.bind_flags.load(Ordering::SeqCst);
+                let len = state.bind_data.len();
+                out.bind_len = len as u32;
+                out.bind_data[..len].copy_from_slice(&state.bind_data);
+                out.bind_data[len..].fill(0);
                 idx += 1;
             }
         }
@@ -1187,7 +1255,7 @@ impl ReferenceRuntime {
         let existing_flags = if kind == OpenKind::SocketConnect && existing_fd.is_some() {
             let slots = get_fd_slots().read().unwrap();
             if let Some(fd) = slots.get(existing_fd.unwrap() as usize) {
-                Some(fd.flags.load(Ordering::SeqCst))
+                Some(fd.state.flags.load(Ordering::SeqCst))
             } else {
                 None
             }
@@ -1251,7 +1319,7 @@ impl ReferenceRuntime {
             ),
         };
         if let Some(existing_flags) = existing_flags {
-            elem.flags.store(existing_flags, Ordering::SeqCst);
+            elem.state.flags.store(existing_flags, Ordering::SeqCst);
         }
 
         let t_fd = std::time::Instant::now();
@@ -1405,7 +1473,10 @@ impl ReferenceRuntime {
             if val_len != size_of::<u32>() {
                 return Err(TwzError::INVALID_ARGUMENT);
             }
-            unsafe { val.cast::<u32>().write(fd.flags.load(Ordering::SeqCst)) };
+            unsafe {
+                val.cast::<u32>()
+                    .write(fd.state.flags.load(Ordering::SeqCst))
+            };
             return Ok(());
         }
 
@@ -1431,7 +1502,7 @@ impl ReferenceRuntime {
                 return Err(TwzError::INVALID_ARGUMENT);
             }
             let val = unsafe { val.cast::<u32>().read() };
-            fd.flags.store(val, Ordering::SeqCst);
+            fd.state.flags.store(val, Ordering::SeqCst);
             return Ok(());
         }
         fd.file.set_config(reg, val, val_len).into()
@@ -1486,9 +1557,6 @@ impl ReferenceRuntime {
                 .unwrap_or_else(|| file_desc.file.clone());
             let mut nfd = file_desc.clone();
             nfd.file = file;
-            nfd.cloexec = Arc::new(AtomicBool::new(false));
-            let b = **nfd.binding;
-            nfd.binding = MaybeNoDrop::new(Arc::new(b), true);
             let newfd = binding
                 .insert_first_empty(nfd)
                 .ok_or(ResourceError::OutOfNames)?;
@@ -1522,9 +1590,6 @@ impl ReferenceRuntime {
             let dup_file = file.clone();
             let mut nfd = file_desc.clone();
             nfd.file = file;
-            nfd.cloexec = Arc::new(AtomicBool::new(false));
-            let b = **nfd.binding;
-            nfd.binding = MaybeNoDrop::new(Arc::new(b), true);
 
             // Whatever occupied the target descriptor is closed, as dup2 requires. Release the
             // slot lock before closing it, matching Self::close.
@@ -1686,82 +1751,49 @@ impl ReferenceRuntime {
         let session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
         let acq_ns = t_acq.elapsed().as_nanos() as u64;
         let t_gate = std::time::Instant::now();
-        let names = session.enumerate_names_nsid(stat.id.into(), off, buf.len())?;
-        let gate_ns = t_gate.elapsed().as_nanos() as u64;
-        let t_conv = std::time::Instant::now();
-        tracing::trace!("enumerate_names_nsid returned {} entries", names.len());
-        let end = buf.len().min(names.len());
-        for i in 0..end {
-            let name = &names[i];
-            let Ok(entry_name) = name.name() else {
-                // The index is the caller's cursor -- it advances `off` by the count returned, so
-                // compacting past a bad name would slide every later entry down and desynchronize
-                // the next chunk. Write an empty name instead: `continue` alone left this slot
-                // holding whatever the previous chunk put there, which a caller reusing its buffer
-                // (libstd's `ReadDir` does) reads back as a duplicate of an unrelated entry.
-                buf[i] = twizzler_rt_abi::fd::NameEntry::default();
-                continue;
-            };
-            let ne = if name.kind == NsNodeKind::SymLink {
-                twizzler_rt_abi::fd::NameEntry::new_symlink(
-                    entry_name.as_bytes(),
-                    name.readlink()?.as_bytes(),
-                    twizzler_rt_abi::fd::FdInfo {
-                        kind: match name.kind {
-                            naming_core::NsNodeKind::Namespace => {
-                                twizzler_rt_abi::fd::FdKind::Directory
-                            }
-                            naming_core::NsNodeKind::Object => twizzler_rt_abi::fd::FdKind::Regular,
-                            naming_core::NsNodeKind::SymLink => {
-                                twizzler_rt_abi::fd::FdKind::SymLink
-                            }
-                            naming_core::NsNodeKind::DevNode => twizzler_rt_abi::fd::FdKind::Other,
-                        },
-                        flags: twizzler_rt_abi::fd::FdFlags::empty(),
-                        id: name.id.raw(),
-                        size: 0,
-                        unix_mode: 0,
-                        nlink: 1,
-                        accessed: std::time::Duration::ZERO,
-                        modified: std::time::Duration::ZERO,
-                        created: std::time::Duration::ZERO,
-                    }
-                    .into(),
-                )
-            } else {
-                twizzler_rt_abi::fd::NameEntry::new(
-                    entry_name.as_bytes(),
-                    twizzler_rt_abi::fd::FdInfo {
-                        kind: match name.kind {
-                            naming_core::NsNodeKind::Namespace => {
-                                twizzler_rt_abi::fd::FdKind::Directory
-                            }
-                            naming_core::NsNodeKind::Object => twizzler_rt_abi::fd::FdKind::Regular,
-                            naming_core::NsNodeKind::SymLink => {
-                                twizzler_rt_abi::fd::FdKind::SymLink
-                            }
-                            naming_core::NsNodeKind::DevNode => twizzler_rt_abi::fd::FdKind::Other,
-                        },
-                        flags: twizzler_rt_abi::fd::FdFlags::empty(),
-                        id: name.id.raw(),
-                        size: 0,
-                        unix_mode: 0,
-                        nlink: 1,
-                        accessed: std::time::Duration::ZERO,
-                        modified: std::time::Duration::ZERO,
-                        created: std::time::Duration::ZERO,
-                    }
-                    .into(),
-                )
-            };
-            buf[i] = ne;
-        }
-        enumstats::record(
-            acq_ns,
-            gate_ns,
-            t_conv.elapsed().as_nanos() as u64,
-            end as u64,
-        );
+        let end =
+            session.enumerate_names_nsid_visit(stat.id.into(), off, buf.len(), |i, name| {
+                let Ok(entry_name) = name.name() else {
+                    // The index is the caller's cursor -- it advances `off` by the count returned,
+                    // so compacting past a bad name would slide every later
+                    // entry down and desynchronize the next chunk. Write an
+                    // empty name instead: skipping alone left this slot holding
+                    // whatever the previous chunk put there, which a caller reusing its buffer
+                    // (libstd's `ReadDir` does) reads back as a duplicate of an unrelated entry.
+                    buf[i] = twizzler_rt_abi::fd::NameEntry::default();
+                    return Ok(());
+                };
+                let info = twizzler_rt_abi::fd::FdInfo {
+                    kind: match name.kind {
+                        naming_core::NsNodeKind::Namespace => {
+                            twizzler_rt_abi::fd::FdKind::Directory
+                        }
+                        naming_core::NsNodeKind::Object => twizzler_rt_abi::fd::FdKind::Regular,
+                        naming_core::NsNodeKind::SymLink => twizzler_rt_abi::fd::FdKind::SymLink,
+                        naming_core::NsNodeKind::DevNode => twizzler_rt_abi::fd::FdKind::Other,
+                    },
+                    flags: twizzler_rt_abi::fd::FdFlags::empty(),
+                    id: name.id.raw(),
+                    size: 0,
+                    unix_mode: 0,
+                    nlink: 1,
+                    accessed: std::time::Duration::ZERO,
+                    modified: std::time::Duration::ZERO,
+                    created: std::time::Duration::ZERO,
+                };
+                buf[i] = if name.kind == NsNodeKind::SymLink {
+                    twizzler_rt_abi::fd::NameEntry::new_symlink(
+                        entry_name.as_bytes(),
+                        name.readlink()?.as_bytes(),
+                        info.into(),
+                    )
+                } else {
+                    twizzler_rt_abi::fd::NameEntry::new(entry_name.as_bytes(), info.into())
+                };
+                Ok(())
+            })?;
+        // Conversion happens inside the visit now, so gate and conv are one measurement.
+        enumstats::record(acq_ns, t_gate.elapsed().as_nanos() as u64, 0, end as u64);
         Ok(end)
     }
 }

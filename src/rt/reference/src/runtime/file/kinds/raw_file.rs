@@ -1,10 +1,7 @@
 use std::{
     io::{ErrorKind, SeekFrom},
     ptr::null_mut,
-    sync::{
-        atomic::{AtomicPtr, AtomicU64, Ordering},
-        Arc,
-    },
+    sync::atomic::{AtomicPtr, AtomicU64, Ordering},
 };
 
 use libc::{S_IFREG, S_IRWXG, S_IRWXO, S_IRWXU};
@@ -74,9 +71,95 @@ struct RawFileInner {
     mtimed: AtomicPtr<MetaExt>,
 }
 
-#[derive(Clone)]
+/// Write-shape census for `RawFile::write`.
+///
+/// `generate_crate_metadata` is the one rustc pass slower on Twizzler in every configuration
+/// (1.44-1.47x, +0.65s, flat across store and cpu count), and the standing hypothesis is that its
+/// self time is `FileEncoder` streaming the `.rmeta` through many small writes, each paying the
+/// per-write meta-page work below. That has sat unconfirmed since 2026-09-01 because nobody
+/// counted; this counts.
+///
+/// Sizes matter as much as the call count: 1k writes of 8 KiB and 200k writes of 40 bytes move
+/// the same bytes and have wildly different per-write overheads.
+pub(crate) mod writestats {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    /// Off by default: this prints on every compartment exit and a build exits ~25 of them.
+    pub const REPORT_ON: bool = false;
+
+    pub static CALLS: AtomicU64 = AtomicU64::new(0);
+    pub static BYTES: AtomicU64 = AtomicU64::new(0);
+    /// Writes that extended the file, i.e. paid a `MEXT_SIZED` `set_meta_ext`. A streaming append
+    /// makes this every write.
+    pub static EXTENDING: AtomicU64 = AtomicU64::new(0);
+    /// Writes that stamped mtime (native objects only -- external files skip it).
+    pub static MTIME_STAMPED: AtomicU64 = AtomicU64::new(0);
+    /// Of those, the ones that stored a value the ext already held. `set_meta_ext` guards against
+    /// exactly this ("a store of an identical value still dirties the metadata page"), but
+    /// `stamp_mtime`'s cached fast path does not, and mtime has one-second granularity.
+    pub static MTIME_REDUNDANT: AtomicU64 = AtomicU64::new(0);
+
+    /// log2-ish buckets: <=64, <=256, <=1K, <=4K, <=16K, <=64K, >64K.
+    pub const NR_BUCKETS: usize = 7;
+    pub static SIZES: [AtomicU64; NR_BUCKETS] = [const { AtomicU64::new(0) }; NR_BUCKETS];
+    pub const BUCKET_NAMES: [&str; NR_BUCKETS] =
+        ["<=64", "<=256", "<=1K", "<=4K", "<=16K", "<=64K", ">64K"];
+
+    #[inline(always)]
+    pub fn bucket(len: usize) -> usize {
+        match len {
+            0..=64 => 0,
+            65..=256 => 1,
+            257..=1024 => 2,
+            1025..=4096 => 3,
+            4097..=16384 => 4,
+            16385..=65536 => 5,
+            _ => 6,
+        }
+    }
+
+    #[inline(always)]
+    pub fn record(len: usize, extending: bool) {
+        CALLS.fetch_add(1, Relaxed);
+        BYTES.fetch_add(len as u64, Relaxed);
+        SIZES[bucket(len)].fetch_add(1, Relaxed);
+        if extending {
+            EXTENDING.fetch_add(1, Relaxed);
+        }
+    }
+
+    pub fn report() {
+        if !REPORT_ON {
+            return;
+        }
+        let calls = CALLS.load(Relaxed);
+        if calls == 0 {
+            return;
+        }
+        let bytes = BYTES.load(Relaxed);
+        let mut hist = String::new();
+        for (i, name) in BUCKET_NAMES.iter().enumerate() {
+            let n = SIZES[i].load(Relaxed);
+            if n != 0 {
+                hist.push_str(&format!(" {}={}", name, n));
+            }
+        }
+        secgate::statcadence::report_forced(format_args!(
+            "WRITESTAT {} calls, {} KiB, {} B mean; extending {}; mtime stamped {} ({} redundant);\
+             sizes{}",
+            calls,
+            bytes / 1024,
+            bytes / calls,
+            EXTENDING.load(Relaxed),
+            MTIME_STAMPED.load(Relaxed),
+            MTIME_REDUNDANT.load(Relaxed),
+            hist,
+        ));
+    }
+}
+
 pub struct RawFile {
-    inner: Arc<RawFileInner>,
+    inner: RawFileInner,
     handle: ObjectHandle,
 }
 
@@ -152,6 +235,12 @@ impl RawFile {
     fn stamp_mtime(&self, secs: u64) {
         let cached = self.inner.mtimed.load(Ordering::Relaxed);
         if let Some(me) = unsafe { cached.as_ref() } {
+            if writestats::REPORT_ON {
+                writestats::MTIME_STAMPED.fetch_add(1, Ordering::Relaxed);
+                if me.value.load(Ordering::SeqCst) == secs {
+                    writestats::MTIME_REDUNDANT.fetch_add(1, Ordering::Relaxed);
+                }
+            }
             me.value.store(secs, Ordering::SeqCst);
             return;
         }
@@ -242,13 +331,13 @@ impl RawFile {
         };
         objstats::record(map_ns, t_meta.elapsed().as_nanos() as u64);
         Ok(Self {
-            inner: Arc::new(RawFileInner {
+            inner: RawFileInner {
                 pos: AtomicU64::new(0),
                 len: AtomicU64::new(len),
                 flags: AtomicU64::new(0),
                 sized: AtomicPtr::new(sized),
                 mtimed: AtomicPtr::new(null_mut()),
-            }),
+            },
             handle,
         })
     }
@@ -317,10 +406,14 @@ impl Fd for RawFile {
             return Err(TwzError::INVALID_ARGUMENT);
         }
         let len = self.inner.len.load(Ordering::SeqCst);
-        if end_pos > len {
+        let extending = end_pos > len;
+        if extending {
             self.inner.len.store(end_pos, Ordering::SeqCst);
             let me = twizzler_rt_abi::object::MetaExt::new(MEXT_SIZED, end_pos);
             unsafe { self.handle.set_meta_ext(me)? };
+        }
+        if writestats::REPORT_ON {
+            writestats::record(write_len, extending);
         }
         unsafe {
             let dest = self.handle.start().add(NULLPAGE_SIZE + offset as usize);
@@ -387,7 +480,7 @@ impl Fd for RawFile {
         if self
             .inner
             .flags
-            .fetch_add(!RFI_NEEDS_SYNC, Ordering::SeqCst)
+            .fetch_and(!RFI_NEEDS_SYNC, Ordering::SeqCst)
             & RFI_NEEDS_SYNC
             != 0
         {

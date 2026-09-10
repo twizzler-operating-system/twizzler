@@ -797,10 +797,79 @@ pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) -> Result<()
     }
 }
 
+/// Who blocks in `do_sync_region`, for how long, and on which of its two waits.
+///
+/// Every written file's `close()` reaches here with `wait = true`: `RawFile::shutdown` sends
+/// `ASYNC_DURABLE | DURABLE`, and `region.rs`'s `ctrl` passes the *ASYNC* bit as the `wait`
+/// argument -- so the async-named flag is precisely what makes the call synchronous. For a
+/// `.rmeta` that close lands inside rustc's `generate_crate_metadata` timer.
+///
+/// The two waits are counted apart deliberately. `queue_ns` is backpressure -- waiting on a
+/// *previous* sync for the same object, which is queueing, not service; request slots are shared
+/// with page-ins too. `wait_ns` is this call's own completion. One blended number invites reading
+/// it as "the pager needs N ms to write this much data", which it is not.
+pub mod syncwait {
+    use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    /// Off by default: this times two blocking paths in the pager.
+    pub const SYNC_WAIT_STATS: bool = false;
+
+    pub static CALLS: AtomicU64 = AtomicU64::new(0);
+    /// Of `CALLS`, those that asked to block.
+    pub static WAITED: AtomicU64 = AtomicU64::new(0);
+    pub static QUEUE_NS: AtomicU64 = AtomicU64::new(0);
+    pub static QUEUE_HITS: AtomicU64 = AtomicU64::new(0);
+    pub static WAIT_NS: AtomicU64 = AtomicU64::new(0);
+    pub static WAIT_HITS: AtomicU64 = AtomicU64::new(0);
+    pub static MAX_NS: AtomicU64 = AtomicU64::new(0);
+
+    pub fn record_queue(ns: u64) {
+        QUEUE_NS.fetch_add(ns, Relaxed);
+        QUEUE_HITS.fetch_add(1, Relaxed);
+        MAX_NS.fetch_max(ns, Relaxed);
+    }
+
+    pub fn record_wait(ns: u64) {
+        WAIT_NS.fetch_add(ns, Relaxed);
+        WAIT_HITS.fetch_add(1, Relaxed);
+        MAX_NS.fetch_max(ns, Relaxed);
+    }
+
+    pub fn report() {
+        if !SYNC_WAIT_STATS {
+            return;
+        }
+        let calls = CALLS.load(Relaxed);
+        if calls == 0 {
+            return;
+        }
+        let (q, w) = (QUEUE_NS.load(Relaxed), WAIT_NS.load(Relaxed));
+        logln!(
+            "== sync-region waits: {} calls, {} asked to block; queue {} us over {} hits, \
+             own-sync {} us over {} hits, total {} ms, max single {} us ==",
+            calls,
+            WAITED.load(Relaxed),
+            q / 1000,
+            QUEUE_HITS.load(Relaxed),
+            w / 1000,
+            WAIT_HITS.load(Relaxed),
+            (q + w) / 1_000_000,
+            MAX_NS.load(Relaxed) / 1000,
+        );
+    }
+}
+
 fn do_sync_region(obj: &ObjectRef, req: ReqKind, wait: bool) {
     // Covers both waits below -- the one for a previous sync and the one for ours. The first is a
     // wait on a request this thread did not submit, which counts all the same: what the counter
     // means is "a thread of this class is blocked on the completion thread".
+    if syncwait::SYNC_WAIT_STATS {
+        use core::sync::atomic::Ordering::Relaxed;
+        syncwait::CALLS.fetch_add(1, Relaxed);
+        if wait {
+            syncwait::WAITED.fetch_add(1, Relaxed);
+        }
+    }
     let _boost = boost::WaitBoost::new();
     // Backpressure: wait for any sync already in flight for this object before submitting
     // another. Every SyncRegion is unique (see `SyncRegionInfo`), so nothing coalesces them, and
@@ -821,7 +890,11 @@ fn do_sync_region(obj: &ObjectRef, req: ReqKind, wait: bool) {
         if let Some(guard) = mgr.setup_wait(&prev, &thread) {
             drop(mgr);
             crate::thread::locktrack::warn_if_blocking_with_mutexes("pager request");
+            let t = syncwait::SYNC_WAIT_STATS.then(Instant::now);
             finish_blocking(guard);
+            if let Some(t) = t {
+                syncwait::record_queue((Instant::now() - t).as_nanos() as u64);
+            }
         } else {
             // Declined: the previous sync is done but not yet removed. Give the completion
             // thread a chance to remove it rather than spinning on the lookup.
@@ -854,7 +927,11 @@ fn do_sync_region(obj: &ObjectRef, req: ReqKind, wait: bool) {
     if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
         drop(mgr);
         crate::thread::locktrack::warn_if_blocking_with_mutexes("pager request");
+        let t = syncwait::SYNC_WAIT_STATS.then(Instant::now);
         finish_blocking(guard);
+        if let Some(t) = t {
+            syncwait::record_wait((Instant::now() - t).as_nanos() as u64);
+        }
     };
 }
 

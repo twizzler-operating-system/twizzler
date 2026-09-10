@@ -57,6 +57,38 @@ mod virgindrop {
     }
 }
 
+/// Which 1 GiB slots the *early* talc owns, as a 64-bit residue set over `slot % 64`.
+///
+/// Every `dealloc` in the compartment has to ask whether the pointer belongs to the early
+/// allocator before it can route the free. Answering that by taking the allocator mutex and
+/// scanning the early span list made the question itself 0.79% of a `cargo build`, plus its share
+/// of the mutex above it -- for a set that holds a handful of slots and only ever grows during
+/// startup.
+///
+/// The test here is conservative in the safe direction: a slot the early talc owns always has its
+/// bit set, so a clear bit is a definitive "not early" and the caller can skip the lock. A set bit
+/// only means "maybe" (two slots can share a residue), and falls through to the exact scan, which
+/// is the pre-existing path. Bits are never cleared, so a released span degrades to a false
+/// positive rather than a wrong answer.
+mod early_slots {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static MASK: AtomicU64 = AtomicU64::new(0);
+
+    pub fn insert(slot: usize) {
+        MASK.fetch_or(1u64 << (slot % 64), Ordering::Release);
+    }
+
+    /// `false` is exact; `true` means the exact check still has to run.
+    #[inline]
+    pub fn maybe_contains(slot: usize) -> bool {
+        // Relaxed is sufficient: a pointer into an early span cannot be observed by a thread that
+        // has not already synchronized with the `insert` for that span, because the pointer is
+        // only handed out from under the allocator lock that `insert` runs beneath.
+        MASK.load(Ordering::Relaxed) & (1u64 << (slot % 64)) != 0
+    }
+}
+
 use talc::{OomHandler, Span, Talc};
 use twizzler_abi::{
     object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
@@ -97,6 +129,10 @@ impl LocalAllocator {
 
     pub fn is_ptr_early_alloc(&self, ptr: *const u8) -> bool {
         let slot = ptr as usize / MAX_SIZE;
+        // The overwhelmingly common answer, reached without the allocator lock. See `early_slots`.
+        if !early_slots::maybe_contains(slot) {
+            return false;
+        }
         let inner = self.inner.lock();
         inner
             .early_talc
@@ -115,6 +151,46 @@ impl LocalAllocator {
 /// Every heap object *this compartment's* allocator owns, as `[slot, id_hi, id_lo]` triples,
 /// followed by `[n_main, n_early]`. Returns words written.
 ///
+/// How many 1 GiB slots this compartment's heap is spread across, and which.
+///
+/// The input side of `generate_crate_metadata` is a cold traversal of everything the compilation
+/// allocated, so the question is whether that heap is one contiguous span or many objects a
+/// gigabyte apart -- the latter costs a separate upper page-table path per object, which a
+/// scattered walk pays for and a compute-bound pass does not.
+pub(crate) mod heapspan {
+    use super::LOCAL_ALLOCATOR;
+
+    /// Off by default: prints on every compartment exit.
+    pub const REPORT_ON: bool = false;
+
+    pub fn report() {
+        if !REPORT_ON {
+            return;
+        }
+        let inner = LOCAL_ALLOCATOR.inner.lock();
+        let main = &inner.talc.oom_handler.objects;
+        let early = &inner.early_talc.oom_handler.objects;
+        if main.is_empty() && early.is_empty() {
+            return;
+        }
+        let (mut lo, mut hi) = (usize::MAX, 0usize);
+        for (slot, _) in main.iter().chain(early.iter()) {
+            lo = lo.min(*slot);
+            hi = hi.max(*slot);
+        }
+        // Span is in slots, i.e. GiB of address space between the lowest and highest heap object.
+        secgate::statcadence::report_forced(format_args!(
+            "HEAPSPAN {} objects ({} main, {} early), slots {}..{} spanning {} GiB",
+            main.len() + early.len(),
+            main.len(),
+            early.len(),
+            lo,
+            hi,
+            hi - lo + 1,
+        ));
+    }
+}
+
 /// DIAG, and the point is ownership. `note=heap` is written identically by every compartment's
 /// allocator, so a census grower reading `note=heap` says "a heap" and not "whose". Walking the
 /// caller's own `oom_handler.objects` answers it exactly: an id in this list belongs to the calling
@@ -163,6 +239,10 @@ struct LocalAllocatorInner {
 }
 
 struct RuntimeOom {
+    /// Whether this handler belongs to the early talc, so `handle_oom` can publish the span's
+    /// slot to [`early_slots`]. `RuntimeOom` is otherwise identical between the two allocators
+    /// and `handle_oom` is a static that only receives its own `Talc`.
+    is_early: bool,
     list_obj: Option<(usize, ObjID)>,
     objects: Vec<(usize, ObjID), FailAlloc>,
     /// Bump cursor/limit of the *virgin region*: the tail of the most recent heap span, held back
@@ -175,11 +255,11 @@ struct RuntimeOom {
     virgin_top: usize,
 }
 
-fn release_object(id: ObjID) {
+pub(crate) fn release_object(id: ObjID) {
     monitor_api::monitor_rt_object_unmap(id, MapFlags::READ | MapFlags::WRITE).unwrap();
 }
 
-fn create_and_map() -> Option<(usize, ObjID)> {
+pub(crate) fn create_and_map() -> Option<(usize, ObjID)> {
     let is_mon = OUR_RUNTIME.state().contains(RuntimeState::IS_MONITOR);
     let ties = if is_mon {
         &[][..]
@@ -339,6 +419,11 @@ impl OomHandler for RuntimeOom {
         }
 
         talc.oom_handler.objects.push((slot, id));
+        if talc.oom_handler.is_early {
+            // Before this returns, and therefore before any pointer carved from the span can be
+            // freed -- which is what lets the read side skip the lock.
+            early_slots::insert(slot);
+        }
 
         Ok(())
     }
@@ -494,12 +579,14 @@ impl LocalAllocatorInner {
     const fn new() -> Self {
         Self {
             talc: Talc::new(RuntimeOom {
+                is_early: false,
                 objects: Vec::new_in(FailAlloc),
                 list_obj: None,
                 virgin_next: 0,
                 virgin_top: 0,
             }),
             early_talc: Talc::new(RuntimeOom {
+                is_early: true,
                 objects: Vec::new_in(FailAlloc),
                 list_obj: None,
                 virgin_next: 0,

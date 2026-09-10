@@ -44,14 +44,41 @@ use crate::{
 /// exclusively under the lock.
 pub const TLB_LOCKFREE_ACK: bool = true;
 
-const MAX_INVALIDATION_INSTRUCTIONS: usize = 16;
+/// Instruction capacity, sized so [`TlbInvData`] fills a whole number of cache lines.
+///
+/// Each *instruction* now describes a contiguous *run* of same-level pages ([`InvInstruction`]
+/// packs a page count), and [`TlbInvData::enqueue`] coalesces adjacent invalidations into one, so
+/// the cap counts runs, not pages: a range's ~N resident pages that used to need N slots (and
+/// overflow the batch to a full-address-space flush past the cap) now take one slot per contiguous
+/// run. A 1 MiB anonymous reuse's ~21 pages are one run.
+///
+/// The struct is still copied whole into each targeted cpu's shootdown slot
+/// ([`ArchTlbMgr::finish_send`] does `tlb_shootdown_info.insert(self.data.clone())`) and merged in
+/// place, so its footprint is a per-shootdown cost that wants cache-line boundaries rather than a
+/// straddle: the old 16-slot cap made it 144 bytes, 2.25 lines. Four cache lines hold 30 run-slots
+/// -- ample once runs coalesce -- while a batch that genuinely fragments past 30 runs still falls
+/// back to a full flush, which is correct, just coarser.
+const TLB_INV_CACHE_LINES: usize = 4;
+const CACHE_LINE_BYTES: usize = 64;
+/// The header is `target_cr3` (8 bytes) plus `len`/`flags`, which `repr(C)` tail-pads to an 8-byte
+/// boundary (16 bytes total); the rest of the four lines holds instructions.
+const MAX_INVALIDATION_INSTRUCTIONS: usize = (TLB_INV_CACHE_LINES * CACHE_LINE_BYTES - 16) / 8;
+
 #[derive(Clone, Debug, Copy)]
+#[repr(C)]
 pub struct TlbInvData {
     target_cr3: u64,
     instructions: [InvInstruction; MAX_INVALIDATION_INSTRUCTIONS],
     len: u8,
     flags: u8,
 }
+
+// The sizing above is the whole point; a straddling struct would defeat it. If a field is added
+// here, re-derive `MAX_INVALIDATION_INSTRUCTIONS` rather than letting this fire.
+const _: () = assert!(
+    core::mem::size_of::<TlbInvData>() == TLB_INV_CACHE_LINES * CACHE_LINE_BYTES,
+    "TlbInvData must fill a whole number of cache lines",
+);
 
 fn tlb_non_global_inv() {
     unsafe {
@@ -137,6 +164,7 @@ impl TlbInvData {
                 inst.is_global(),
                 inst.is_terminal(),
                 inst.level(),
+                inst.npages(),
             );
         }
         new_data
@@ -174,6 +202,26 @@ impl TlbInvData {
     fn enqueue(&mut self, inst: InvInstruction) {
         if inst.is_global() {
             self.set_global();
+        }
+
+        // Coalesce a contiguous run onto the previous instruction. `setup_zero_range` and `unmap`
+        // enqueue resident leaves in ascending address order, so a range's contiguous pages arrive
+        // back to back and collapse into one instruction instead of overflowing the batch to a full
+        // flush. Only same-level terminal runs coalesce: their page size is known (`step`), so the
+        // per-page `invlpg`s `execute` replays are exactly the ones the uncoalesced batch issued.
+        // Non-terminal (table-link) invalidations keep their single-`invlpg` semantics unchanged.
+        if inst.is_terminal() && self.len > 0 {
+            let last = &mut self.instructions[self.len as usize - 1];
+            if last.is_terminal()
+                && last.level() == inst.level()
+                && last.is_global() == inst.is_global()
+                && last.end_addr() == inst.addr().raw()
+                && last.npages() + inst.npages() <= InvInstruction::MAX_RUN
+            {
+                let n = last.npages() + inst.npages();
+                last.set_npages(n);
+                return;
+            }
         }
 
         if self.len as usize == MAX_INVALIDATION_INSTRUCTIONS {
@@ -326,6 +374,7 @@ impl TlbInvData {
                 false,
                 false,
                 0,
+                1,
             ); MAX_INVALIDATION_INSTRUCTIONS],
             len: 0,
             flags: 0,
@@ -349,12 +398,24 @@ impl core::fmt::Debug for InvInstruction {
 
 impl InvInstruction {
     const ADDR_MASK: u64 = !0xfff;
-    fn new(addr: VirtAddr, is_global: bool, is_terminal: bool, level: u8) -> Self {
+    const GLOBAL_BIT: u64 = 1 << 0;
+    const TERMINAL_BIT: u64 = 1 << 1;
+    const LEVEL_SHIFT: u64 = 2;
+    const LEVEL_MASK: u64 = 0x7; // bits 2-4: page-table level 0..=3
+    const NPAGES_SHIFT: u64 = 5;
+    const NPAGES_MASK: u64 = 0x7f; // bits 5-11: stores npages-1, so a run is 1..=128 pages
+    /// Longest contiguous run one instruction encodes. A longer run spills into the next
+    /// instruction, of which the batch holds many; see [`TlbInvData::enqueue`].
+    const MAX_RUN: usize = Self::NPAGES_MASK as usize + 1;
+
+    fn new(addr: VirtAddr, is_global: bool, is_terminal: bool, level: u8, npages: usize) -> Self {
+        debug_assert!(npages >= 1 && npages <= Self::MAX_RUN);
         let addr: u64 = addr.into();
         let val = (addr & Self::ADDR_MASK)
-            | if is_global { 1 << 0 } else { 0 }
-            | if is_terminal { 1 << 1 } else { 0 }
-            | (level as u64) << 2;
+            | if is_global { Self::GLOBAL_BIT } else { 0 }
+            | if is_terminal { Self::TERMINAL_BIT } else { 0 }
+            | ((level as u64 & Self::LEVEL_MASK) << Self::LEVEL_SHIFT)
+            | (((npages as u64 - 1) & Self::NPAGES_MASK) << Self::NPAGES_SHIFT);
         Self(val)
     }
 
@@ -364,21 +425,50 @@ impl InvInstruction {
     }
 
     fn is_global(&self) -> bool {
-        self.0 & 1 != 0
+        self.0 & Self::GLOBAL_BIT != 0
     }
 
     fn is_terminal(&self) -> bool {
-        self.0 & 2 != 0
+        self.0 & Self::TERMINAL_BIT != 0
     }
 
     fn level(&self) -> u8 {
-        (self.0 >> 2 & 0xff) as u8
+        ((self.0 >> Self::LEVEL_SHIFT) & Self::LEVEL_MASK) as u8
+    }
+
+    /// Number of contiguous same-level pages this instruction invalidates (>= 1).
+    fn npages(&self) -> usize {
+        ((self.0 >> Self::NPAGES_SHIFT) & Self::NPAGES_MASK) as usize + 1
+    }
+
+    fn set_npages(&mut self, npages: usize) {
+        debug_assert!(npages >= 1 && npages <= Self::MAX_RUN);
+        self.0 = (self.0 & !(Self::NPAGES_MASK << Self::NPAGES_SHIFT))
+            | (((npages as u64 - 1) & Self::NPAGES_MASK) << Self::NPAGES_SHIFT);
+    }
+
+    /// Bytes covered by one page at this instruction's level: `4096 * 512^level`, the same mapping
+    /// `Table::level_to_page_size` uses. Replicated here because `execute` runs without a `Table`.
+    fn step(&self) -> u64 {
+        1u64 << (12 + 9 * self.level() as u64)
+    }
+
+    /// First address past this run, for the contiguity test in [`TlbInvData::enqueue`].
+    fn end_addr(&self) -> u64 {
+        self.addr().raw() + self.npages() as u64 * self.step()
     }
 
     fn execute(&self) {
-        let addr: u64 = self.addr().into();
-        unsafe {
-            core::arch::asm!("invlpg [{addr}]", addr = in(reg) addr);
+        let base: u64 = self.addr().into();
+        let step = self.step();
+        // One `invlpg` per page in the run. `npages == 1` is byte-for-byte the old behaviour; a
+        // coalesced run replays exactly the per-page invalidations the uncoalesced batch would have
+        // issued, so coalescing is invalidation-equivalent, never a coarsening.
+        for i in 0..self.npages() as u64 {
+            let addr = base + i * step;
+            unsafe {
+                core::arch::asm!("invlpg [{addr}]", addr = in(reg) addr);
+            }
         }
     }
 }
@@ -549,6 +639,7 @@ impl ArchTlbMgr {
             is_global,
             is_terminal,
             level as u8,
+            1,
         ));
     }
 

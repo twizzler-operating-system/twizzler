@@ -1316,9 +1316,16 @@ impl ObjectPageTable {
         self.map_page_probed(offset, page, false)
     }
 
-    /// [`Self::map_page`], optionally tagging the entry for
-    /// [`zeroprobe`](crate::memory::pagetables::zeroprobe). Only the anonymous fill path passes
-    /// `true`; see that module for why it is safe there and nowhere else.
+    /// [`Self::map_page`], where `hw_dirty` asks for the entry's dirty bit to mean "the cpu wrote
+    /// this" rather than "may need writeback".
+    ///
+    /// [`Table::map`](crate::memory::pagetables) ordinarily ORs `DIRTY` into every new leaf, which
+    /// makes the bit useless as a record of writes. Pass `true` only for an object with no backing
+    /// store: a persistent object's dirty list drives writeback (`region.rs` gates both use sites
+    /// on `use_pager()`), and suppressing the bit there would drop a flush. For an anonymous
+    /// object the list is collected and discarded, so the hardware bit is free to mean what it
+    /// says -- which is what lets the unmap path recycle a never-written page without re-zeroing
+    /// it.
     pub fn map_page_probed(
         &mut self,
         offset: u64,
@@ -1837,7 +1844,15 @@ impl ObjectPageTable {
         Ok(())
     }
 
-    pub fn setup_zero_range(&mut self, offset: u64, len: usize) -> Result<(), TwzError> {
+    /// `anon`: the object has no backing store, so the swap may clear `DIRTY` and let a later
+    /// call recognise an untouched page. Same flag `map_page_probed` takes, and for the same
+    /// reason -- see `SKIP_CLEAN_SWAP`.
+    pub fn setup_zero_range(
+        &mut self,
+        offset: u64,
+        len: usize,
+        anon: bool,
+    ) -> Result<(), TwzError> {
         let cursor = MappingCursor::new(VirtAddr::new(offset).unwrap(), len);
         let mut fa = take_or_new_frame_allocator();
         fa.precharge(
@@ -1845,7 +1860,9 @@ impl ObjectPageTable {
             FrameAllocFlags::WAIT_OK,
         );
         let mut consist = Consistency::new_object_tables();
-        let ops = self.mapper.setup_zero_range(cursor, &mut consist, &mut fa);
+        let ops = self
+            .mapper
+            .setup_zero_range(cursor, &mut consist, &mut fa, anon);
         self.run_consistency(consist);
         ops
     }

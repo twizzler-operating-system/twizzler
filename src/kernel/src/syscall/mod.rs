@@ -257,6 +257,7 @@ fn debug_dump(verbose: bool) {
     );
 
     // Lock-free counters first.
+    crate::spinlock::spinstat::report();
     crate::thread::locktrack::diag::print_counters(true);
     crate::processor::sched::schedmon_dump(0);
     crate::processor::report_exited_backlog();
@@ -633,6 +634,7 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
                 crate::processor::sched::wakesrc::print();
                 crate::processor::sched::print_kernel_threads();
                 crate::memory::frame::politestats::print();
+                crate::interrupt::irqoff::print();
                 crate::memory::context::virtmem::mapprofile::print();
                 crate::memory::context::virtmem::unmapprofile::print();
                 crate::memory::context::virtmem::heapprofile::print();
@@ -648,6 +650,8 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
                 crate::memory::pagetables::table::ptcountdrift::print();
                 crate::memory::pagetables::table::zeroswap::print();
                 crate::memory::pagetables::zeroprobe::print();
+                crate::memory::framecache::stat::print();
+                crate::memory::pagetables::table::wbprobe::print();
                 crate::arch::debug_shutdown(context.arg1::<u64>() as u32);
             }
             logln!(
