@@ -36,6 +36,7 @@ use self::{
 use crate::init::InitDynlinkContext;
 
 pub(crate) mod compartment;
+pub mod handlesweep;
 pub mod library;
 pub(crate) mod space;
 pub mod stat;
@@ -237,6 +238,9 @@ impl Monitor {
     /// has been initialized.
     pub fn start_background_threads(&self) {
         crate::lockdiag::start_watchdog();
+        // The sweeper the reference runtime does not have: a compartment that goes quiet never
+        // expires its own cached handles, and each one pins a mapping. See `handlesweep`.
+        let _ = handlesweep::HandleSweeper::new();
         let cleaner = ThreadCleaner::new();
         self.unmapper.set(Unmapper::new()).ok().unwrap();
         self.thread_mgr

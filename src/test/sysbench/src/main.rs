@@ -17,8 +17,8 @@ mod benches {
         os::fd::AsRawFd,
         process::{Child, Command},
         sync::{
-            Arc,
             atomic::{AtomicBool, AtomicU64, Ordering},
+            Arc,
         },
         time::{Duration, Instant},
     };
@@ -26,13 +26,13 @@ mod benches {
     use test::Bencher;
     use twizzler::object::{Object, ObjectBuilder, RawObject};
     use twizzler_abi::{
-        object::{MAX_SIZE, NULLPAGE_SIZE, ObjID, Protections},
+        object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
         syscall::{
-            ClockSource, DeleteFlags, MapControlCmd, MapFlags, ObjectControlCmd, ObjectCreate,
-            ReadClockFlags, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
-            ThreadSyncSleep, ThreadSyncWake, UnmapFlags, sys_map_ctrl, sys_object_create,
-            sys_object_ctrl, sys_object_map, sys_object_unmap, sys_read_clock_info,
-            sys_thread_self_id, sys_thread_sync,
+            sys_map_ctrl, sys_object_create, sys_object_ctrl, sys_object_map, sys_object_unmap,
+            sys_read_clock_info, sys_thread_self_id, sys_thread_sync, ClockSource, DeleteFlags,
+            MapControlCmd, MapFlags, ObjectControlCmd, ObjectCreate, ReadClockFlags, ThreadSync,
+            ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
+            UnmapFlags,
         },
     };
     use twizzler_rt_abi::{
@@ -1953,19 +1953,12 @@ mod benches {
     /// Concurrent syncs of distinct persistent objects: contention on the kernel-pager queues
     /// and the pager itself. See [`pager_sync_dirty_page`] on the WARNs this provokes.
     ///
-    /// **Ignored on purpose, 2026-08-22.** This is where the pager `SyncRegion` wedge family lands:
-    /// every boot that hangs, hangs entering this bench, and it costs a full 5m22s timeout and the
-    /// whole round -- including every bench after it -- rather than just its own number. Measured
-    /// over one afternoon of sweeps it took 5 rounds of ~40, and 2 of the 8 in `many-gf-on` alone,
-    /// which is well above the "one per ~20 contended rounds" `sysbench.md` budgets for it.
-    ///
-    /// `#[ignore]` rather than deletion or a `return`, deliberately: the harness prints it as
-    /// `ignored`, so a reader of the log sees a bench that was skipped instead of a bench that
-    /// silently vanished -- which is indistinguishable from a scraper miss. Re-enable by deleting
-    /// the attribute once the wedge has its own session; it is a real defect and not a bench bug,
-    /// and nothing here should be read as having fixed it.
+    /// Was `#[ignore]`d 2026-08-22 because this is where the pager `SyncRegion` wedge family
+    /// landed: boots that hung, hung entering this bench (5 rounds of ~40 in one afternoon),
+    /// each costing a 5m22s timeout and the rest of its round. Re-enabled 2026-09-10 for the
+    /// wedge's own session; if a sweep wedges here again, that is the defect reproducing, not
+    /// a bench bug.
     #[bench]
-    #[ignore]
     fn pager_sync_dirty_page_contended(b: &mut Bencher) {
         if !bench_mode() {
             return;

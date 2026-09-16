@@ -5,13 +5,19 @@
 //! `unittest` runs its binaries one at a time, so `REQSTATS` reports a high-water mark of 1 and no
 //! amount of pager thread topology can be evaluated against it.
 //!
-//! Usage: `pagepar [dir] [threads] [max_files]`, defaults `/sysroot/lib`, available_parallelism,
-//! 2048.
+//! Usage: `pagepar [dir] [threads] [max_files] [wdir]`, defaults `/sysroot/lib`,
+//! available_parallelism, 2048, `/ext/pagepar-w`.
+//!
+//! The write passes (create/write/close/rewrite/close2/unlink into `wdir`) run after the read
+//! passes so the read numbers stay comparable with pre-write-bench runs. On Twizzler, dropping
+//! a written file blocks on a full durable pager sync (`RawFile::shutdown` issues
+//! `ObjectCmd::Sync` with `DURABLE|ASYNC_DURABLE`), so the close pass IS the durability
+//! measurement; a Linux twin pairs it against `fsync`+`close`.
 
 use std::{
     fs::File,
-    io::Read,
-    path::PathBuf,
+    io::{Read, Write},
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Barrier,
@@ -288,6 +294,75 @@ fn io_phase(files: &[PathBuf], nr_threads: usize) {
     );
 }
 
+/// Time a small warm `write` on an already-open file, alone and contended -- the write-side
+/// mirror of the IO phase. On Twizzler a 4 KiB overwrite of a resident page is a userspace
+/// copy plus dirty tracking; no sync happens until close, which this phase does not time.
+fn wio_phase(wdir: &Path, nr_threads: usize) {
+    use std::io::{Seek, SeekFrom};
+
+    const ITERS: u32 = 2048;
+    const WRITE_BYTES: usize = 4096;
+
+    fn write_loop(path: &Path) -> Option<Duration> {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .ok()?;
+        let buf = [0x5au8; WRITE_BYTES];
+        for _ in 0..64 {
+            f.seek(SeekFrom::Start(0)).ok()?;
+            f.write(&buf).ok()?;
+        }
+        let t = Instant::now();
+        for _ in 0..ITERS {
+            f.seek(SeekFrom::Start(0)).ok()?;
+            std::hint::black_box(f.write(&buf).ok()?);
+        }
+        Some(t.elapsed() / ITERS)
+    }
+
+    let Some(solo) = write_loop(&wdir.join("wio_solo.bin")) else {
+        println!(
+            "pagepar: WIO create failed under {}, skipping",
+            wdir.display()
+        );
+        return;
+    };
+
+    let barrier = Arc::new(Barrier::new(nr_threads));
+    let mut handles = Vec::new();
+    for tid in 0..nr_threads {
+        let barrier = barrier.clone();
+        let path = wdir.join(format!("wio_{}.bin", tid));
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            write_loop(&path)
+        }));
+    }
+    let par: Vec<Duration> = handles
+        .into_iter()
+        .filter_map(|h| h.join().ok().flatten())
+        .collect();
+    let par_max = par.iter().max().copied().unwrap_or_default();
+    let par_mean = par
+        .iter()
+        .sum::<Duration>()
+        .checked_div(par.len() as u32)
+        .unwrap_or_default();
+
+    println!(
+        "pagepar: WIO {}-byte write+seek x {} iters: solo {} ns, {} threads mean {} ns max {} ns",
+        WRITE_BYTES,
+        ITERS,
+        solo.as_nanos(),
+        nr_threads,
+        par_mean.as_nanos(),
+        par_max.as_nanos(),
+    );
+}
+
 /// Time a warm naming lookup with nothing else attached to it.
 ///
 /// `twz_rt_resolve_name` is one naming `get` gate call and nothing more -- no object map, no
@@ -377,6 +452,11 @@ fn main() {
         .next()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(64);
+    let wdir =
+        std::path::PathBuf::from(args.next().unwrap_or_else(|| "/ext/pagepar-w".to_string()));
+    if let Err(e) = std::fs::create_dir_all(&wdir) {
+        println!("pagepar: WDIR {} create failed: {}", wdir.display(), e);
+    }
 
     // Syscall floor. A warm cross-compartment gate call makes eight syscalls (frame's
     // active-sctx read, the callee's settls/sctx_attach/set-active-sctx/self-id/settls, and
@@ -409,6 +489,7 @@ fn main() {
 
     name_phase(&files, nr_threads);
     io_phase(&files, nr_threads);
+    wio_phase(&wdir, nr_threads);
     lock_phase(nr_threads);
 
     // Striped, not a shared cursor. A cursor looks fairer but is not: thread spawn is slow enough
@@ -454,6 +535,7 @@ fn main() {
         let barrier = barrier.clone();
         let total_bytes = total_bytes.clone();
         let total_files = total_files.clone();
+        let wdir = wdir.clone();
         handles.push(std::thread::spawn(move || {
             let mut buf = vec![0u8; BUF_BYTES];
 
@@ -477,19 +559,25 @@ fn main() {
                 (open_files, opens)
             };
 
+            // Also records per-file byte counts: the write passes reuse them as the size
+            // distribution, so writes mirror the reads without a stat round trip per file.
             let read_all = |open_files: &mut Vec<File>, buf: &mut [u8]| {
                 let mut bytes = 0u64;
+                let mut per_file = Vec::with_capacity(open_files.len());
                 let t = Instant::now();
                 for file in open_files.iter_mut() {
+                    let mut this = 0u64;
                     loop {
                         match file.read(buf) {
                             Ok(0) => break,
-                            Ok(n) => bytes += n as u64,
+                            Ok(n) => this += n as u64,
                             Err(_) => break,
                         }
                     }
+                    bytes += this;
+                    per_file.push(this);
                 }
-                (bytes, t.elapsed().as_nanos())
+                (bytes, t.elapsed().as_nanos(), per_file)
             };
 
             // Spawned. Everything above this is thread startup, which the spawn phase measures.
@@ -501,7 +589,7 @@ fn main() {
 
             // --- cold read ---
             let count = open_files.len() as u64;
-            let (cold_bytes, cold_read_ns) = read_all(&mut open_files, &mut buf);
+            let (cold_bytes, cold_read_ns, _) = read_all(&mut open_files, &mut buf);
             barrier.wait();
 
             // Closed before the warm pass, so the warm open is a real open -- naming lookup,
@@ -515,7 +603,101 @@ fn main() {
             barrier.wait();
 
             // --- warm read ---
-            let (warm_bytes, warm_read_ns) = read_all(&mut open_files, &mut buf);
+            let (warm_bytes, warm_read_ns, sizes) = read_all(&mut open_files, &mut buf);
+            barrier.wait();
+
+            // Patterned, not zeroed: the object store has zero-page fast paths, and a write
+            // bench that hands it zeros measures those instead of the write path.
+            for (i, b) in buf.iter_mut().enumerate() {
+                *b = (i as u8).wrapping_mul(31).wrapping_add(7);
+            }
+
+            // --- write: create + write ---
+            let mut wpaths: Vec<(std::path::PathBuf, u64)> = Vec::new();
+            let mut wfiles = Vec::new();
+            let mut creates = Vec::new();
+            let mut create_fails = 0u64;
+            let mut write_ns = 0u128;
+            let mut wbytes = 0u64;
+            for (j, sz) in sizes.iter().enumerate() {
+                let path = wdir.join(format!("pp{}_{}.bin", tid, j));
+                let t0 = Instant::now();
+                let f = File::create(&path);
+                creates.push(t0.elapsed().as_nanos());
+                match f {
+                    Ok(mut f) => {
+                        let t1 = Instant::now();
+                        let mut left = *sz;
+                        let mut ok = true;
+                        while left > 0 {
+                            let n = (left as usize).min(BUF_BYTES);
+                            if f.write_all(&buf[..n]).is_err() {
+                                ok = false;
+                                break;
+                            }
+                            left -= n as u64;
+                        }
+                        write_ns += t1.elapsed().as_nanos();
+                        if ok {
+                            wbytes += *sz;
+                        }
+                        wpaths.push((path, *sz));
+                        wfiles.push(f);
+                    }
+                    Err(_) => create_fails += 1,
+                }
+            }
+            barrier.wait();
+
+            // --- close: the durable sync, one blocking pager round trip per file ---
+            let mut closes = Vec::new();
+            for f in wfiles.drain(..) {
+                let t0 = Instant::now();
+                drop(f);
+                closes.push(t0.elapsed().as_nanos());
+            }
+            barrier.wait();
+
+            // --- rewrite: open existing + overwrite in place, no allocation or create ---
+            let mut reopens = Vec::new();
+            let mut rewrite_ns = 0u128;
+            let mut wfiles2 = Vec::new();
+            for (path, sz) in wpaths.iter() {
+                let t0 = Instant::now();
+                let f = std::fs::OpenOptions::new().write(true).open(path);
+                reopens.push(t0.elapsed().as_nanos());
+                if let Ok(mut f) = f {
+                    let t1 = Instant::now();
+                    let mut left = *sz;
+                    while left > 0 {
+                        let n = (left as usize).min(BUF_BYTES);
+                        if f.write_all(&buf[..n]).is_err() {
+                            break;
+                        }
+                        left -= n as u64;
+                    }
+                    rewrite_ns += t1.elapsed().as_nanos();
+                    wfiles2.push(f);
+                }
+            }
+            barrier.wait();
+
+            // --- close2: sync the rewritten pages ---
+            let mut closes2 = Vec::new();
+            for f in wfiles2.drain(..) {
+                let t0 = Instant::now();
+                drop(f);
+                closes2.push(t0.elapsed().as_nanos());
+            }
+            barrier.wait();
+
+            // --- unlink ---
+            let mut unlinks = Vec::new();
+            for (path, _) in &wpaths {
+                let t0 = Instant::now();
+                let _ = std::fs::remove_file(path);
+                unlinks.push(t0.elapsed().as_nanos());
+            }
             barrier.wait();
 
             total_bytes.fetch_add(cold_bytes, Ordering::Relaxed);
@@ -528,6 +710,15 @@ fn main() {
                 warm_opens,
                 warm_bytes,
                 warm_read_ns,
+                creates,
+                create_fails,
+                write_ns,
+                wbytes,
+                closes,
+                reopens,
+                rewrite_ns,
+                closes2,
+                unlinks,
             }
         }));
     }
@@ -552,6 +743,24 @@ fn main() {
     mark("warm read start");
     barrier.wait();
     mark("warm read end");
+    // Bracket the write phases separately; without this the write-phase faults would land in
+    // the "warm" fault count and silently change a pre-write-bench number.
+    let faults_after_warm = twizzler_abi::syscall::sys_memory_stats();
+    mark("wcw start");
+    barrier.wait();
+    mark("wcw end");
+    mark("wclose start");
+    barrier.wait();
+    mark("wclose end");
+    mark("rewrite start");
+    barrier.wait();
+    mark("rewrite end");
+    mark("close2 start");
+    barrier.wait();
+    mark("close2 end");
+    mark("unlink start");
+    barrier.wait();
+    mark("unlink end");
 
     // Aggregated across threads: the per-pass comparison is the point, and four threads' worth of
     // per-thread lines buries it.
@@ -561,9 +770,11 @@ fn main() {
     let mut cold_read_max = 0u128;
     let mut warm_read_max = 0u128;
     let mut warm_bytes = 0u64;
+    let mut w = WAgg::default();
     for (i, h) in handles.into_iter().enumerate() {
         match h.join() {
             Ok(p) => {
+                w.fold(i, &p);
                 // The first open on a thread is its first entry into the naming and monitor
                 // compartments and costs milliseconds; averaging it in hides both it and the rest.
                 cold_open_first = cold_open_first.max(p.cold_opens.first().copied().unwrap_or(0));
@@ -599,6 +810,12 @@ fn main() {
     let cold_faults = faults_after_cold
         .page_fault_count
         .saturating_sub(faults_before.page_fault_count);
+    let warm_faults = faults_after_warm
+        .page_fault_count
+        .saturating_sub(faults_after_cold.page_fault_count);
+    let write_faults = faults_after
+        .page_fault_count
+        .saturating_sub(faults_after_warm.page_fault_count);
     let bytes = total_bytes.load(Ordering::Relaxed);
 
     println!(
@@ -623,7 +840,7 @@ fn main() {
         bytes / 1024,
         warm_bytes / 1024,
         cold_faults,
-        nr_faults.saturating_sub(cold_faults),
+        warm_faults,
     );
     println!(
         "pagepar: FAULTS {} over the read phase ({} pages read, {:.2} faults/page); \
@@ -636,9 +853,33 @@ fn main() {
         (cold_faults as u128) * (faults_after.page_fault_stats.mean.as_nanos() / 1000),
         cold_elapsed.as_micros(),
     );
+    // The close columns are the durability story: on Twizzler every close of a written file
+    // is a blocking durable pager sync, so close mean x file count is the sync bill for the
+    // whole write pass. The Linux twin pairs these against fsync+close.
+    println!(
+        "pagepar: WPASSES create first {} us rest {} us mean / reopen {} us mean; \
+         write max {} ms / rewrite max {} ms; close mean {} us max {} us / \
+         close2 mean {} us max {} us; unlink mean {} us max {} us; \
+         wrote {} KB x2, {} create fails; faults write-phases {} (total {})",
+        w.create_first / 1000,
+        w.create_rest.0 / w.create_rest.1.max(1) / 1000,
+        w.reopens.0 / w.reopens.1.max(1) / 1000,
+        w.write_max_ns / 1_000_000,
+        w.rewrite_max_ns / 1_000_000,
+        w.closes.0 / w.closes.1.max(1) / 1000,
+        w.closes.2 / 1000,
+        w.closes2.0 / w.closes2.1.max(1) / 1000,
+        w.closes2.2 / 1000,
+        w.unlinks.0 / w.unlinks.1.max(1) / 1000,
+        w.unlinks.2 / 1000,
+        w.wbytes / 1024,
+        w.create_fails,
+        write_faults,
+        nr_faults,
+    );
 }
 
-/// One thread's two passes over its share of the files.
+/// One thread's read and write passes over its share of the files.
 struct Pass {
     count: u64,
     cold_opens: Vec<u128>,
@@ -647,4 +888,80 @@ struct Pass {
     warm_opens: Vec<u128>,
     warm_bytes: u64,
     warm_read_ns: u128,
+    creates: Vec<u128>,
+    create_fails: u64,
+    write_ns: u128,
+    wbytes: u64,
+    closes: Vec<u128>,
+    reopens: Vec<u128>,
+    rewrite_ns: u128,
+    closes2: Vec<u128>,
+    unlinks: Vec<u128>,
+}
+
+fn mean_us(v: &[u128]) -> u128 {
+    v.iter().sum::<u128>() / (v.len().max(1) as u128) / 1000
+}
+
+fn max_us(v: &[u128]) -> u128 {
+    v.iter().max().copied().unwrap_or(0) / 1000
+}
+
+/// Write-pass aggregation across threads, with the per-thread report line as a side effect.
+#[derive(Default)]
+struct WAgg {
+    create_first: u128,
+    create_rest: (u128, u128),
+    reopens: (u128, u128),
+    write_max_ns: u128,
+    rewrite_max_ns: u128,
+    closes: (u128, u128, u128),
+    closes2: (u128, u128, u128),
+    unlinks: (u128, u128, u128),
+    wbytes: u64,
+    create_fails: u64,
+}
+
+impl WAgg {
+    fn fold(&mut self, i: usize, p: &Pass) {
+        self.create_first = self
+            .create_first
+            .max(p.creates.first().copied().unwrap_or(0));
+        self.create_rest.0 += p.creates.iter().skip(1).sum::<u128>();
+        self.create_rest.1 += p.creates.len().saturating_sub(1) as u128;
+        self.reopens.0 += p.reopens.iter().sum::<u128>();
+        self.reopens.1 += p.reopens.len() as u128;
+        self.write_max_ns = self.write_max_ns.max(p.write_ns);
+        self.rewrite_max_ns = self.rewrite_max_ns.max(p.rewrite_ns);
+        for (agg, v) in [
+            (&mut self.closes, &p.closes),
+            (&mut self.closes2, &p.closes2),
+            (&mut self.unlinks, &p.unlinks),
+        ] {
+            agg.0 += v.iter().sum::<u128>();
+            agg.1 += v.len() as u128;
+            agg.2 = agg.2.max(v.iter().max().copied().unwrap_or(0));
+        }
+        self.wbytes += p.wbytes;
+        self.create_fails += p.create_fails;
+        println!(
+            "pagepar: wthread {} {} files ({} create fails); create first {} us rest {} us mean, \
+             write {} ms; close mean {} us max {} us; reopen {} us mean, rewrite {} ms; \
+             close2 mean {} us; unlink mean {} us",
+            i,
+            p.creates.len(),
+            p.create_fails,
+            p.creates.first().copied().unwrap_or(0) / 1000,
+            p.creates.iter().skip(1).sum::<u128>()
+                / (p.creates.len().saturating_sub(1).max(1) as u128)
+                / 1000,
+            p.write_ns / 1_000_000,
+            mean_us(&p.closes),
+            max_us(&p.closes),
+            mean_us(&p.reopens),
+            p.rewrite_ns / 1_000_000,
+            mean_us(&p.closes2),
+            mean_us(&p.unlinks),
+        );
+    }
 }

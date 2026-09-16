@@ -435,9 +435,21 @@ impl Request {
         drop(g);
     }
 
+    #[track_caller]
     pub fn setup_wait<'a>(&self, thread: &'a ThreadRef) -> Option<CriticalGuard<'a>> {
         if self.done() {
             return None;
+        }
+        // The completion thread must never wait on an inflight -- it is the only thing that can
+        // complete one, so this park is a deadlock the moment memory pressure makes it real.
+        // The known site (read_meta populating when a meta-page install failed) is fixed at the
+        // gate in queues.rs; this catches any other, loudly, with the caller to hunt.
+        if super::boost::is_completion_thread(thread) {
+            emerglogln!(
+                "PAGER-COMPLETION-WAIT: completion thread entering setup_wait for {:?} from {}",
+                self.reqkind(),
+                core::panic::Location::caller()
+            );
         }
         let critical = thread.enter_critical();
         self.waiters.lock().push_back(thread.clone());

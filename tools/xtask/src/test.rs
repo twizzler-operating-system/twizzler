@@ -23,14 +23,31 @@ pub enum Scenario {
 
 /// Default guest memory (in MB) for `--scenario lowmem`.
 ///
-/// Measured, not guessed, but the floor is still not established: at 1024 the *bootloader* dies
-/// before the kernel ever runs (`PANIC: High memory allocator: Out of memory`, loading the initrd),
-/// so no run at that size tested anything. 2048 boots and reaches the kernel test suite, then
-/// wedges in the frame allocator during `test_condvar` -- 5 free frames of 287 395, kernel holding
-/// 99% of them, one waiter, no forward progress and no panic (exit 36). That wedge is a real defect
-/// of its own, not a memory-size choice; see stabilitybugs.md. Bisecting the floor properly needs
-/// it fixed first.
-const LOWMEM_DEFAULT_MB: u32 = 2048;
+/// The tightest size the suite passes at, measured 2026-09-11 on release/kvm/smp4 (4/4 clean).
+/// The ladder below it, same build, is a cliff rather than a slope:
+///
+/// | MB | outcome |
+/// |------|--------------------------------------------------------------------------------|
+/// | 1536 | pass, and *zero* memory-pressure prints -- no page-cache pressure at all |
+/// | 1408 | pass, zero pressure |
+/// | 1280 | pass, zero pressure (this default) |
+/// | 1152 | wedge in the *pager*: `SyncRegion`/`ObjectEvict` time out, `kq submission stuck` |
+/// | 1024 | wedge in the frame allocator: page data 57%, kernel 40%, idle 1%, `r: 0`, 4 waiters |
+///
+/// So there is currently no size that both squeezes the page cache and completes: it goes from no
+/// pressure straight into one of two defects. That matters because squeezing the page cache is the
+/// point of this scenario -- the read-only test binaries are demand-paged from the data disk, and
+/// forcing the kernel to *replace* them is what it is meant to exercise. Reaching that needs both
+/// of the above fixed, and the 1024 one is a missing feature rather than a bug: `reclaim_main`'s
+/// steps 1-5 ("reclaim unused, backed object memory", "cache replacement clean objects") are still
+/// a `// TODO`, so nothing in the kernel can drop a clean backed page. 1024 is where to set this
+/// once they land.
+///
+/// A previous note here recorded the bootloader dying at 1024 (`PANIC: High memory allocator: Out
+/// of memory`) and a `test_condvar` wedge at 2048. Both are gone: the wedge was the thread reaper
+/// starting *after* `test_main()` (see `boot_sequence`), which left 500 of that test's spawns
+/// holding a 2 MiB kernel stack each, and with that fixed 1024 boots well past `pager ready`.
+const LOWMEM_DEFAULT_MB: u32 = 1280;
 
 /// Low-memory boots are much slower (heavier reclaim/pager traffic); give the suite roughly 3x the
 /// default run's wait budget before calling it a hang.

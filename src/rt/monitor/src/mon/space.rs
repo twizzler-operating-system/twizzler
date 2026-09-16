@@ -477,6 +477,44 @@ impl Space {
         (total, active, top)
     }
 
+    /// Who is holding the mappings, by `handle_count`.
+    ///
+    /// `handle_drop` unmaps only at zero, so a reclaim that drops one handle frees nothing if
+    /// anything else holds the same `MapInfo`. This says how often that is the case and on which
+    /// objects -- the question left open by a sweeper that reclaimed 136 handles, found a real
+    /// record for every one (`norecord=0`), and moved the pinned page count by nothing.
+    ///
+    /// Allocation-free: it runs from the reclaim path, where allocating is what must not happen.
+    pub fn dump_handle_counts(&self) {
+        let (mut total, mut single, mut multi, mut sum) = (0usize, 0usize, 0usize, 0usize);
+        let mut top: [(ObjID, usize); 6] = [(ObjID::new(0), 0); 6];
+        for (info, mo) in self.maps.iter() {
+            total += 1;
+            sum += mo.handle_count;
+            if mo.handle_count <= 1 {
+                single += 1;
+            } else {
+                multi += 1;
+            }
+            if mo.handle_count > top[5].1 {
+                top[5] = (info.id, mo.handle_count);
+                // Six entries: an insertion pass is cheaper than sorting and needs no allocation.
+                for i in (1..6).rev() {
+                    if top[i].1 > top[i - 1].1 {
+                        top.swap(i, i - 1);
+                    }
+                }
+            }
+        }
+        println!(
+            "[spacecensus] maps={} count<=1:{} count>1:{} sum={}",
+            total, single, multi, sum
+        );
+        for (id, c) in top.iter().filter(|t| t.1 > 1) {
+            println!("[spacecensus]   {} held by {}", id, c);
+        }
+    }
+
     pub fn handle_drop(&mut self, info: MapInfo) -> Option<UnmapOnDrop> {
         // Missing maps in unmap should be ignored.
         let Some(item) = self.maps.get_mut(&info) else {

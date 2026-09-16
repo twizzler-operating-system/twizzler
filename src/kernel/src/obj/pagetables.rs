@@ -1158,6 +1158,19 @@ impl ObjectPageTable {
         if !consist.tlb().has_pending() {
             return PendingShootdown::none();
         }
+        // A/B control arm (many-syncwedge20; raw logs pruned 2026-09-12, see
+        // target/results/PRUNED.md -- verdict preserved in syncwedge-0910.md): every
+        // object-table send goes machine-wide
+        // full+global, bypassing BOTH the tlbfix fast paths and the precise per-cursor path
+        // below. STALE-PARK collapsing to ~0 under this arm localizes the stale-translation
+        // source to this function's targeting; persistence exonerates all of it at once.
+        // Not a shippable state -- ~55k broadcasts/boot (tlbplan-INPROG.md).
+        const FORCE_FULL_GLOBAL_AB: bool = false;
+        if FORCE_FULL_GLOBAL_AB {
+            let mut tlb = ArchTlbMgr::new_full_global();
+            tlb.set_origin(TlbOrigin::Object);
+            return tlb.finish_send();
+        }
         // `add_invalidate` drops silently once its bounded lists fill, so past MAX_INVL_TARGETS
         // contexts (or MAX_INVLS cursors within one) this object no longer knows where all of its
         // mappings live. Retargeting precisely would then reach only the contexts that happened to
@@ -1592,6 +1605,160 @@ impl ObjectPageTable {
             acc.record(out);
             out.objects += 1;
         }
+    }
+
+    /// Does this object hold any dirty page? Non-destructive.
+    ///
+    /// [`Self::get_dirty_and_reset`] is the only existing dirty walk and it *clears* as it goes,
+    /// which is right for sync and wrong for an eviction decision -- asking the question would
+    /// destroy the answer for the pager. The callback returning `false` is what leaves the bits
+    /// alone.
+    pub fn has_dirty_pages(&mut self) -> bool {
+        let cursor = MappingCursor::new(VirtAddr::new(0).unwrap(), self.max_len());
+        let mut consist = Consistency::new_object_tables();
+        let mut dirty = false;
+        let _ = self.mapper.with_dirty_bits(
+            cursor,
+            |_mi| {
+                dirty = true;
+                false
+            },
+            &mut consist,
+        );
+        self.run_consistency(consist);
+        dirty
+    }
+
+    /// Drop up to `budget` *clean* pages of this object, leaving dirty ones in place.
+    ///
+    /// This is what object granularity could not do. Measured across four guest sizes, per-object
+    /// clean-only eviction found exactly one candidate object worth two pages every time, because
+    /// 62-111 backed objects per scan each held at least one dirty page and a single dirty page
+    /// disqualified the whole object. The clean pages behind those few dirty ones are the entire
+    /// prize, and only per-page selection reaches them.
+    ///
+    /// Returns pages dropped.
+    pub fn evict_clean_pages(&mut self, budget: usize) -> usize {
+        if budget == 0 {
+            return 0;
+        }
+        let max = self.max_len();
+        // Which pages are dirty. Non-clearing: the pager still needs these bits.
+        let mut dirty: heapless::Vec<PageNumber, 256> = heapless::Vec::new();
+        let mut overflowed = false;
+        {
+            let cursor = MappingCursor::new(VirtAddr::new(0).unwrap(), max);
+            let mut consist = Consistency::new_object_tables();
+            let _ = self.mapper.with_dirty_bits(
+                cursor,
+                |mi| {
+                    if !mi.is_empty() {
+                        let pn = PageNumber::from_address(mi.vaddr());
+                        for i in 0..(mi.len() / PageNumber::PAGE_SIZE) {
+                            if dirty.push(pn.offset(i)).is_err() {
+                                overflowed = true;
+                                break;
+                            }
+                        }
+                    }
+                    false
+                },
+                &mut consist,
+            );
+            self.run_consistency(consist);
+        }
+        // More dirty pages than the set can hold: skip the object rather than evict something
+        // whose dirty bit we failed to record. Conservative on purpose -- the cost of being wrong
+        // here is losing a write.
+        if overflowed {
+            crate::obj::reclaimstat::bump(&crate::obj::reclaimstat::SKIP_OVERFLOW, 1);
+            return 0;
+        }
+
+        // Collect victims before touching the mapper: the reader borrows it.
+        let mut victims: heapless::Vec<PageNumber, 64> = heapless::Vec::new();
+        {
+            let cursor = MappingCursor::new(VirtAddr::new(0).unwrap(), max);
+            for mi in self.mapper.readmap(cursor) {
+                if mi.is_empty() {
+                    continue;
+                }
+                let pn = PageNumber::from_address(mi.vaddr());
+                for i in 0..(mi.len() / PageNumber::PAGE_SIZE) {
+                    let p = pn.offset(i);
+                    if dirty.contains(&p) {
+                        continue;
+                    }
+                    if victims.len() >= budget || victims.push(p).is_err() {
+                        break;
+                    }
+                }
+                if victims.len() >= budget || victims.is_full() {
+                    break;
+                }
+            }
+        }
+        if victims.is_empty() {
+            return 0;
+        }
+
+        // One invalidation batch and one consistency pass for the whole set, not per page: each
+        // pass is a shootdown IPI round, and doing 64 of them serially on the reclaim thread is
+        // the kind of thing that made this thread a problem before.
+        let mut consist = Consistency::new_object_tables();
+        let mut fa = FrameAllocator::new(
+            FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
+            PHYS_LEVEL_LAYOUTS[0],
+        );
+        for p in victims.iter() {
+            let off = p.as_byte_offset();
+            self.invalidate(off as u64, PageNumber::PAGE_SIZE);
+            let Ok(va) = VirtAddr::new(off as u64) else {
+                continue;
+            };
+            let cursor = MappingCursor::new(va, PageNumber::PAGE_SIZE);
+            let _ = self.mapper.unmap(cursor, &mut consist, &mut fa, &mut None);
+        }
+        self.run_consistency(consist);
+        if let Some(ops) = self.deferred.take() {
+            ops.run_all();
+        }
+        victims.len()
+    }
+
+    /// Drop every page this object holds, invalidating it out of every context that maps it.
+    ///
+    /// Object granularity: the caller has already established that the object is pager-backed and
+    /// clean, so each page can be dropped outright and re-fetched on the next fault through
+    /// `ensure_in_core_pager`. Same sequence as `Drop for ObjectPageTable`, minus freeing the root
+    /// -- the object lives on, it just has nothing resident.
+    ///
+    /// Returns the number of pages dropped.
+    pub fn evict_all(&mut self) -> usize {
+        let pages = self.count_pages();
+        if pages == 0 {
+            return 0;
+        }
+        // Shoot the mappings down *before* the frames can be reused. `invalidate` is what reaches
+        // the other contexts: they alias these object tables, so the unmap below removes the entry
+        // for all of them and this is what makes it visible.
+        let max = self.max_len();
+        self.invalidate(0, max);
+        let cursor = MappingCursor::new(VirtAddr::new(0).unwrap(), max);
+        let mut consist = Consistency::new_object_tables();
+        // Deliberately *not* `WAIT_OK`, unlike the `Drop` this mirrors. This runs on the reclaim
+        // thread, where blocking to wait for memory is a deadlock: the thread that would free it
+        // is this one.
+        let mut fa = FrameAllocator::new(
+            FrameAllocFlags::KERNEL | FrameAllocFlags::ZEROED,
+            PHYS_LEVEL_LAYOUTS[0],
+        );
+        let _ = self.mapper.unmap(cursor, &mut consist, &mut fa, &mut None);
+        self.run_consistency(consist);
+        if let Some(ops) = self.deferred.take() {
+            ops.run_all();
+        }
+        pages
     }
 
     pub fn get_dirty_and_reset(&mut self) -> Result<DirtyList, TwzError> {

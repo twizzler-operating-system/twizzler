@@ -36,6 +36,20 @@ use crate::{
 /// zeroed pool ran dry, waiting for memory, and the reclaim thread being signalled (and spinning)
 /// on every allocation once `should_reclaim` latches true, which it does permanently because
 /// `reclaim_main` frees nothing.
+/// Whether clean-backed page reclaim runs at all.
+///
+/// `false` takes the mechanism out of a build without removing its code, so the A/B is one
+/// constant rather than a revert: same build shape, same call graph, one behaviour. The arm
+/// exists because this is the only frame-path change left unexamined in the uncommitted delta
+/// behind two open symptoms -- a net throughput regression (twizzler-0a) and the lowmem-768
+/// frame-exhaustion panics -- and one variable measured two ways is what tells "one root with
+/// two faces" from two unrelated roots.
+///
+/// If it is the cause, the fix is NOT leaving this false: llama's warm start is 80 ms because
+/// pages stay resident across compartments, so the retention is load-bearing. The bug would be
+/// over-retention under churn, and bounding that is what this mechanism was for.
+pub const RECLAIM_CLEAN_BACKED: bool = true;
+
 pub mod allocprofile {
     use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -1166,6 +1180,12 @@ pub fn tracker_snapshot() -> (usize, usize, usize, bool, usize) {
     )
 }
 
+/// Total frames the allocator manages, for callers sizing a budget as a share of the machine
+/// rather than a fixed count.
+pub fn total_frames() -> usize {
+    TRACKER.poll().map(|t| t.total()).unwrap_or(0)
+}
+
 /// Frames parked in per-cpu pools right now. Charged to `page_data`/`kernel_used` like any other
 /// allocated frame, so subtracting this is what separates pool occupancy from live use.
 pub fn pooled_frames() -> usize {
@@ -1201,6 +1221,7 @@ pub fn print_tracker_stats() {
     let kern = tracker.kernel_used();
     let page = tracker.page_data();
     let loan = tracker.pager_outstanding();
+    let pooled = pooled_frames();
     logln!("memory status (in frames):");
     logln!(
         "       total: {} -- a: {} f: {} r: {}, {} waiters",
@@ -1218,6 +1239,12 @@ pub fn print_tracker_stats() {
         (page * 100) / total,
         loan
     );
+    // `pooled` is charged to `kernel`/`page` above like any other allocated frame, and
+    // `pooled_frames` exists precisely so a reader can subtract it -- but this print, which is the
+    // only instrument available once the allocator is parking its callers, never showed it. So the
+    // largest bar in a wedge transcript (`kernel` at 40% of 845 MB / 71% of 333 MB in the lowmem
+    // ladder) could not be split into pool occupancy versus live use from the log alone.
+    logln!("      pooled: {} {}%", pooled, (pooled * 100) / total);
 }
 
 /// Allocate a physical frame. Flags specify zeroing, ownership tracking, and if waiting is okay.
@@ -1538,7 +1565,42 @@ fn reclaim_main() {
             rt.queued.store(state.len(), Ordering::Relaxed);
 
             if thisround < MAX_PER_ROUND {
-                // TODO
+                // Step 1: clean, pager-backed object memory. Object granularity and clean-only --
+                // a clean backed page can be dropped outright because the pager can produce it
+                // again, while a dirty one needs a write-back and anonymous memory needs swap,
+                // which does not exist. See `reclaim-design.md`.
+                //
+                // Intensity from the band, not from `should_reclaim()`: the latter is
+                // `page_cond() || kern_cond()` and `page_cond` latches true early in a boot and
+                // never recovers, so it is usable as "may I run" and useless as "how hard".
+                // A *page* budget now, not an object count: page-level eviction means the unit
+                // of work is a page, and the old 1/4/16 would have been 1/4/16 pages a round.
+                let budget = if RECLAIM_CLEAN_BACKED {
+                    match memory_state() {
+                        MemoryState::Plenty => 0,
+                        MemoryState::Loaded => 64,
+                        MemoryState::Tight => 256,
+                        MemoryState::Emergency => 1024,
+                    }
+                } else {
+                    0
+                };
+                if budget > 0 {
+                    // Outside the state lock: eviction takes object page-table locks and sends
+                    // shootdown IPIs, neither of which may happen under a spinlock.
+                    drop(state);
+                    let freed = crate::obj::reclaim_clean_backed(budget);
+                    state = rt.state.lock();
+                    // Printed whenever a scan ran, not only when it freed something. The
+                    // page-granularity ladder printed *nothing* at 896 and 768, which said zero
+                    // pages moved and nothing about why -- the skip breakdown is the whole value
+                    // of these counters and it was gated behind the success case.
+                    crate::obj::reclaimstat::print();
+                    if freed > 0 {
+                        count += freed;
+                        thisround += freed;
+                    }
+                }
             }
 
             // Nothing was reclaimable this round, so going around again cannot help: steps 1-5

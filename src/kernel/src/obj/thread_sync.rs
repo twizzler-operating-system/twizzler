@@ -21,6 +21,11 @@ use crate::{
     thread::{Thread, ThreadRef, current_thread_ref},
 };
 
+/// Object-instance pointer of the last wakeup_word walk at each pager-queue bell offset;
+/// compared against the sleeper's instance in the hang report's fork-check.
+pub static QWAKE_INST_1140: AtomicU64 = AtomicU64::new(0);
+pub static QWAKE_INST_12C0: AtomicU64 = AtomicU64::new(0);
+
 struct SleepLinkNode {
     link: RBTreeAtomicLink,
     owner: Arc<Thread>,
@@ -332,6 +337,14 @@ impl SleepInfo {
         }
     }
 
+    /// Diagnostic: is `id` linked at `offset`, and how many threads are linked there.
+    pub fn query(&mut self, offset: usize, id: twizzler_abi::object::ObjID) -> (bool, usize) {
+        match self.word(offset) {
+            Some(se) => (!se.threads.find(&id).is_null(), se.threads.iter().count()),
+            None => (false, 0),
+        }
+    }
+
     fn word(&mut self, offset: usize) -> Option<&mut SleepEntry> {
         if let Some(words) = self.more_words.as_mut() {
             words.get_mut(&offset)
@@ -513,6 +526,23 @@ impl Object {
                 // sleeper side can say. The offset is the join key against that side.
                 let n = WAKE_FASTSKIP.fetch_add(1, Ordering::Relaxed) + 1;
                 WAKE_LAST_SKIP_OFF.store(offset as u64, Ordering::Relaxed);
+                // Queue doorbells: the benign fast-skip (nobody parked) fires thousands of
+                // times per boot, so log only the impossible case -- sleepers==0 at the door
+                // while a thread is linked at exactly this offset. Costs a lock acquire, on
+                // these two offsets only.
+                if offset == 0x1140 || offset == 0x12c0 {
+                    if let Some(si) = self.sleep_info_if_present() {
+                        let (_, nlinked) = si.lock().query(offset, 0.into());
+                        if nlinked > 0 {
+                            logln!(
+                                "WAKESKIP-QBELL-LINKED {}+{:x} sleepers==0 but {} linked",
+                                self.id(),
+                                offset,
+                                nlinked
+                            );
+                        }
+                    }
+                }
                 if n.is_power_of_two() && crate::kdiag_wake() {
                     logln!(
                         "WAKESKIP off={:x} n={} (sleepers==0 at the door)",
@@ -556,6 +586,37 @@ impl Object {
                 break;
             }
         }
+        if crate::pager::queues::PAGER_QUEUE_DIAG
+            && crate::pager::is_pager_queue(self.id())
+            && (offset == 0x1140 || offset == 0x12c0)
+        {
+            crate::pager::queues::qtrail::record(
+                4,
+                offset as u32,
+                ((self.sleepers.load(Ordering::SeqCst) as u64) << 32)
+                    | ((woken as u64) << 16)
+                    | skipped as u64,
+                0,
+            );
+        }
+        // Last-waker identity for the two pager-queue bell words: which Object INSTANCE this
+        // wake walked, for comparison against the instance the sleeper is linked in (the
+        // fork-check's obj-inst). A wake resolving to a different instance walks an empty tree
+        // and is lost with no other symptom -- the earlier instance-split elimination compared
+        // the scan's instance against its own regions, which could not catch this.
+        if crate::pager::queues::PAGER_QUEUE_DIAG
+            && crate::pager::is_pager_queue(self.id())
+            && (offset == 0x1140 || offset == 0x12c0)
+        {
+            let inst = self as *const Self as usize as u64;
+            if offset == 0x1140 {
+                QWAKE_INST_1140.store(inst, Ordering::Relaxed);
+            } else {
+                QWAKE_INST_12C0.store(inst, Ordering::Relaxed);
+            }
+            // (Per-event NOENT logging removed after syncwedge26: the walk-empty case is benign
+            // whenever only the OTHER bell has a sleeper, which is thousands of times a round.)
+        }
         // A wake that claimed nobody while threads sat linked on exactly this word is the
         // lost-wake fingerprint: each such thread's SYNC_SLEEP flag was already consumed, so no
         // wake can ever claim it again and it sleeps until something re-files it. Split from the
@@ -572,6 +633,14 @@ impl Object {
         } else {
             let n = WAKE_NOCLAIM.fetch_add(1, Ordering::Relaxed) + 1;
             WAKE_LAST_NOCLAIM_OFF.store(offset as u64, Ordering::Relaxed);
+            if (offset == 0x1140 || offset == 0x12c0) && skipped > 0 {
+                logln!(
+                    "WAKE-QBELL-NOCLAIM {}+{:x} skipped={} (linked but unclaimable)",
+                    self.id(),
+                    offset,
+                    skipped
+                );
+            }
             if skipped == 0 && n.is_power_of_two() && crate::kdiag_wake() {
                 logln!(
                     "WAKENOENT off={:x} n={} (wake found nothing linked at this offset)",
@@ -660,6 +729,37 @@ impl Object {
             }
         };
         let res = op.check(cur, val, flags);
+        if (offset == 0x1140 || offset == 0x12c0) && crate::pager::is_pager_queue(self.id()) {
+            crate::pager::queues::qtrail::record(if res { 5 } else { 3 }, offset as u32, val, cur);
+            // An ACCEPTED park on a queue bell with consumer_waiting==0 at the authoritative
+            // frame is impossible protocol state: the consumer stores the flag immediately
+            // before parking, only a ring clears it, and a ring follows a bump that would have
+            // refused this park. Observed (syncwedge25 qtrail): four post-park submits read the
+            // flag as 0 and skipped their rings -- the arm store never landed. The kernel is a
+            // party to this protocol, so repair the arm through the tree: the next submit then
+            // rings, the claim lands, and a stale consumer re-check is healed by the refused
+            // re-park + invlpg path. The log line is the direct evidence of each lost store.
+            if res {
+                let cwoff = offset - 0x40;
+                if let Ok((phys, w, _)) = self.read_word_with_phys(cwoff) {
+                    if w as u32 == 0 {
+                        let prev = self.swap_atomic_32(cwoff, 1).ok();
+                        static ARM_REPAIRS: AtomicU64 = AtomicU64::new(0);
+                        let n = ARM_REPAIRS.fetch_add(1, Ordering::Relaxed) + 1;
+                        if n.is_power_of_two() {
+                            emerglogln!(
+                                "ARM-REPAIR {}+{:x}: accepted park, consumer_waiting==0 at tree (phys {:x}, prev {:x?}); restored (n={})",
+                                self.id(),
+                                offset,
+                                phys,
+                                prev,
+                                n
+                            );
+                        }
+                    }
+                }
+            }
+        }
         log::trace!(
             "thread {} ({}) setting sleep word on {} (did sleep? {})",
             thread.id(),
@@ -668,6 +768,7 @@ impl Object {
             res,
         );
         if res {
+            thread.bump_park_seq();
             if first_sleep {
                 thread.set_sync_sleep();
             }
@@ -718,6 +819,7 @@ impl Object {
         };
         let res = op.check(cur, val, flags);
         if res {
+            thread.bump_park_seq();
             if first_sleep {
                 thread.set_sync_sleep();
             }
@@ -729,6 +831,16 @@ impl Object {
         }
         Ok(res)
     }
+
+    // Park-path stale-read validation (authoritative_word64/32) REMOVED 2026-09-13: it did a
+    // read_word_with_phys (page-table walk + object PT lock) on EVERY sys_thread_sync park to
+    // cross-check the mapped word against the object tree, added during the pager SyncRegion
+    // wedge hunt as hardening. It is redundant with the ARM-REPAIR fix (setup_sleep_word, above):
+    // the wedge repro (pager_sync_dirty_page_contended, --diag=all, 10 rounds) wedged 0/10 with
+    // this validation gated off, against a 30-75% pre-fix rate. It cost ~25us per park, which the
+    // net rate instrument (syncwedge-0910.md) measured directly as net fd_wait latency. flush_-
+    // stale_translation went with it (its only caller). read_word_with_phys stays (ARM-REPAIR,
+    // hang report, queue slot_diag use it).
 
     pub fn remove_from_sleep_word(&self, offset: usize) {
         let thread = current_thread_ref().unwrap();

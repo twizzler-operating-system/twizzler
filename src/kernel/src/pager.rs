@@ -1,5 +1,5 @@
 use alloc::{collections::BTreeMap, vec::Vec};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use inflight::{Inflight, InflightManager};
 use itertools::Itertools;
@@ -41,7 +41,7 @@ use crate::{
 mod boost;
 mod inflight;
 pub(crate) mod profile;
-mod queues;
+pub(crate) mod queues;
 mod request;
 
 pub use profile::{print_pager_profile, totals as pager_totals};
@@ -51,11 +51,73 @@ pub fn live_requests() -> usize {
     inflight::live_requests()
 }
 
-pub use queues::init_pager_queue;
+pub use queues::{
+    init_pager_queue, is_pager_queue, sender_kview, sender_occupancy, sender_slot_diag,
+};
 pub use request::Request;
 
+/// Ceiling on frames loaned to the pager, and the level the top-up paths steer toward, on a
+/// machine with memory to spare. Both are absolute counts and so are only meaningful next to the
+/// size of the machine: 65536 frames is 256 MB, which is most of a 333 MB guest. See
+/// [`max_pager_outstanding_frames`] for what is actually enforced.
 pub const MAX_PAGER_OUTSTANDING_FRAMES: usize = 65536;
 pub const DEFAULT_PAGER_OUTSTANDING_FRAMES: usize = 1024 * 16;
+
+/// Largest share of the machine the loan may occupy, as a divisor of total frames.
+const PAGER_LOAN_SHARE_DIV: usize = 8;
+
+/// Frames the pager keeps however tight memory gets.
+///
+/// Cutting the loan to zero under pressure is self-defeating: the pager is the only path by which
+/// object pages leave memory, so a pager with no frames cannot complete the work that would end
+/// the pressure. The floor is what keeps it able to make progress; the bands below throttle growth
+/// above it, they do not starve it.
+const PAGER_LOAN_FLOOR: usize = 1024;
+
+/// Band the last donation refusal was reported at, so the refusal logs on transitions only.
+static LAST_REFUSAL_BAND: AtomicU8 = AtomicU8::new(u8::MAX);
+
+/// Scale a loan budget by how much free memory there is.
+///
+/// [`memory_state`](crate::memory::tracker::memory_state) rather than
+/// [`is_low_mem`](crate::memory::tracker::is_low_mem): the latter is `should_reclaim()`, which
+/// latches true early in a boot and never comes back down, so a budget keyed on it would be
+/// permanently at its floor instead of tracking the machine. The band is hysteretic and
+/// recovers.
+fn band_scaled(cap: usize) -> usize {
+    use crate::memory::tracker::MemoryState;
+    match crate::memory::tracker::memory_state() {
+        MemoryState::Plenty => cap,
+        MemoryState::Loaded => cap / 2,
+        MemoryState::Tight => cap / 8,
+        // Not zero: see `PAGER_LOAN_FLOOR`. Refusing further *growth* is the lever the kernel has
+        // once it is starving, but taking the pager to nothing removes the only mechanism that
+        // can end the starvation.
+        MemoryState::Emergency => PAGER_LOAN_FLOOR,
+    }
+    .max(PAGER_LOAN_FLOOR)
+}
+
+/// Frames the pager may hold at once, right now.
+pub fn max_pager_outstanding_frames() -> usize {
+    let total = crate::memory::tracker::total_frames();
+    let ceiling = if total == 0 {
+        MAX_PAGER_OUTSTANDING_FRAMES
+    } else {
+        MAX_PAGER_OUTSTANDING_FRAMES.min(total / PAGER_LOAN_SHARE_DIV)
+    };
+    band_scaled(ceiling)
+}
+
+/// The level the top-up paths steer the loan toward, right now.
+///
+/// Every "should I ask for more?" test is written against this, so shrinking it is what makes the
+/// requests stop: the callers compare against `target` or `target / 2`, and at a target of zero
+/// each of those comparisons is false and `needed_additional` is zero. No caller needs its own
+/// memory-pressure check.
+pub fn default_pager_outstanding_frames() -> usize {
+    DEFAULT_PAGER_OUTSTANDING_FRAMES.min(max_pager_outstanding_frames())
+}
 
 /// A/B: shard the inflight manager by object id. `false` routes every selection to shard 0, which
 /// reproduces the single-mutex behaviour with the sharded code compiled in -- one tree state, both
@@ -1168,10 +1230,9 @@ pub fn ensure_in_core<'a>(
     }
 
     let avail_pager_mem = crate::memory::tracker::get_outstanding_pager_pages();
-    let needed_additional = DEFAULT_PAGER_OUTSTANDING_FRAMES
-        .saturating_sub(avail_pager_mem.saturating_sub(total_pages));
-    let wait_for_additional =
-        avail_pager_mem.saturating_sub(total_pages) < DEFAULT_PAGER_OUTSTANDING_FRAMES / 2;
+    let loan_target = default_pager_outstanding_frames();
+    let needed_additional = loan_target.saturating_sub(avail_pager_mem.saturating_sub(total_pages));
+    let wait_for_additional = avail_pager_mem.saturating_sub(total_pages) < loan_target / 2;
     let low_mem = crate::memory::tracker::is_low_mem();
 
     log::debug!(
@@ -1192,7 +1253,7 @@ pub fn ensure_in_core<'a>(
         return Ok(guard);
     }
 
-    if needed_additional > DEFAULT_PAGER_OUTSTANDING_FRAMES / 8 && !low_mem {
+    if needed_additional > loan_target / 8 && !low_mem {
         drop(guard);
         // Never block a thread donating memory on behalf of speculation. The caller here is on its
         // way to map the object, not to read these pages; making it wait for the pager to ack a
@@ -1258,16 +1319,37 @@ fn get_memory_for_pager(min_frames: usize) -> Vec<PhysRange> {
     let mut ranges = Vec::new();
     let mut count = 0;
     let outstanding = crate::memory::tracker::get_outstanding_pager_pages();
-    if outstanding + min_frames >= MAX_PAGER_OUTSTANDING_FRAMES {
+    let cap = max_pager_outstanding_frames();
+    // Clamp the ask to what is left under the cap rather than refusing it whole. Refusing an ask
+    // that merely *exceeds* the headroom turned the boundary into a cliff: the steering target is
+    // `min(DEFAULT, cap)`, so once the cap fell below DEFAULT the two became the same number, the
+    // first `0 outstanding + N asked >= N` refused, and the pager ran the whole boot on zero
+    // frames -- measured at 512 MB, where it produced PageData timeouts and a watchdog reporting
+    // "no registered work pickup" instead of the allocator wedge that size used to give.
+    let headroom = cap.saturating_sub(outstanding);
+    let min_frames = min_frames.min(headroom);
+    if headroom == 0 || min_frames == 0 {
         // Loud, not silent: this refusal is a hang sentence for a pager that is out of memory
         // and cannot evict (pagerwedge.md §3.7) -- an unexplained quiet round with an OOM'd
         // pager is exactly this line not existing.
-        log::warn!(
-            "pager memory donation refused at cap: {} outstanding + {} asked >= {}",
-            outstanding,
-            min_frames,
-            MAX_PAGER_OUTSTANDING_FRAMES
-        );
+        //
+        // Once per band transition, though, not once per refusal. The cap used to be a constant
+        // that a healthy boot never reached, so every occurrence was news; a cap that tracks the
+        // band is *expected* to refuse for as long as memory is tight, and the top-up paths retry
+        // on every completion. A wedged boot already writes thousands of pressure blocks to the
+        // same serial line, and that logging is not free -- see the lowmem ladder.
+        if LAST_REFUSAL_BAND.swap(
+            crate::memory::tracker::memory_state() as u8,
+            Ordering::SeqCst,
+        ) != crate::memory::tracker::memory_state() as u8
+        {
+            log::warn!(
+                "pager memory donation refused at cap: {} outstanding + {} asked >= {}",
+                outstanding,
+                min_frames,
+                cap
+            );
+        }
         return Vec::new();
     }
     while count < min_frames {

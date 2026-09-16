@@ -769,8 +769,8 @@ pub unsafe extern "C-unwind" fn twz_rt_release_handle(
 }
 check_ffi_type!(twz_rt_release_handle, _, _);
 
-/// Object control. Only `Delete` is implemented: this runtime has no per-handle runtime info to
-/// mark, and `Sync`/`Update` exist for a mapping cache it does not keep.
+/// Object control. `Delete` and `Preload` are implemented: this runtime has no per-handle runtime
+/// info to mark, and `Sync`/`Update` exist for a mapping cache it does not keep.
 ///
 /// It has to exist at all because mlibc's anonymous-mmap arena deletes its arena objects through
 /// this call, and `libc.a` is linked into the static collection -- `bootstrap` fails to link
@@ -797,6 +797,38 @@ pub unsafe extern "C-unwind" fn twz_rt_object_cmd(
             Ok(_) => 0,
             Err(e) => e.raw(),
         },
+        // Sized from the object's own length rather than issuing `Preload`, which asks for
+        // `MAX_SIZE` pages whatever the object holds. Same reasoning as the reference runtime's
+        // arm; kept in step with it deliberately, since a caller cannot tell which runtime it is
+        // linked against.
+        ObjectCmd::Preload => {
+            let len = unsafe { handle.as_ref() }
+                .map(|h| twizzler_rt_abi::object::ObjectHandle::from_raw(*h))
+                .and_then(|oh| {
+                    let len = oh
+                        .find_meta_ext(twizzler_rt_abi::object::MEXT_SIZED)
+                        .map(|me| me.value.load(core::sync::atomic::Ordering::SeqCst));
+                    core::mem::forget(oh);
+                    len
+                });
+            let res = match len {
+                Some(len) if len > 0 => twizzler_abi::syscall::sys_object_preload_range(
+                    id,
+                    &[twizzler_abi::syscall::PreloadRangeSpec::from_bytes(0, len)],
+                ),
+                _ => twizzler_abi::syscall::sys_object_ctrl(
+                    id,
+                    twizzler_abi::syscall::ObjectControlCmd::Preload,
+                    0,
+                    0,
+                )
+                .map(|_| ()),
+            };
+            match res {
+                Ok(_) => 0,
+                Err(e) => e.raw(),
+            }
+        }
         ObjectCmd::Sync | ObjectCmd::Update => TwzError::NOT_SUPPORTED.raw(),
     }
 }

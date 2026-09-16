@@ -108,17 +108,26 @@ fn symlink_target_len(node: &NsNode) -> u64 {
     node.readlink().map(|link| link.len() as u64).unwrap_or(0)
 }
 
-fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) -> Result<FdImpl> {
-    let t_start = std::time::Instant::now();
-    let session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
-    let lock_ns = t_start.elapsed().as_nanos() as u64;
-
+/// Truncate without write is an error, whichever `OpenKind` asked for it.
+///
+/// Shared so that `OPEN_FLAG_TRUNCATE` cannot come to mean different things depending on which
+/// kind reached `open()`.
+fn check_truncate(open_opt: OperationOptions) -> Result<()> {
     if open_opt.contains(OperationOptions::OPEN_FLAG_TRUNCATE)
         && !open_opt.contains(OperationOptions::OPEN_FLAG_WRITE)
     {
         return Err(TwzError::INVALID_ARGUMENT);
     }
-    let flags = match (
+    Ok(())
+}
+
+/// The map flags an open's read/write bits ask for.
+///
+/// All four cases stay spelled out rather than collapsing to a `READ` default: the two that
+/// produce `READ` do so for different reasons, and collapsing them makes the first added flag
+/// silently inherit the wrong one.
+fn map_flags_for(open_opt: OperationOptions) -> MapFlags {
+    match (
         open_opt.contains(OperationOptions::OPEN_FLAG_READ),
         open_opt.contains(OperationOptions::OPEN_FLAG_WRITE),
     ) {
@@ -126,7 +135,16 @@ fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) 
         (true, false) => MapFlags::READ,
         (false, true) => MapFlags::WRITE,
         (false, false) => MapFlags::READ,
-    };
+    }
+}
+
+fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) -> Result<FdImpl> {
+    let t_start = std::time::Instant::now();
+    let session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
+    let lock_ns = t_start.elapsed().as_nanos() as u64;
+
+    check_truncate(open_opt)?;
+    let flags = map_flags_for(open_opt);
     let get_flags = if open_opt.contains(OperationOptions::OPEN_FLAG_SYMLINK) {
         GetFlags::empty()
     } else {
@@ -347,6 +365,23 @@ pub fn open(
         }
         OpenKind::KernelConsole => Some(Arc::new(KernelConsoleFile::new())),
         OpenKind::Kqueue => Some(Arc::new(super::KqueueFile::new())),
+        // An fd bound straight to an object id, with no name. The caller wants the length the
+        // mapping does not carry (`MEXT_SIZED`, which `RawFile` resolves), so this ends the same
+        // way `open_path` does for `NsNodeKind::Object`.
+        //
+        // `RawFile::open` reads the meta page, so a write-only open is not useful here even though
+        // the flag combination is accepted. Parity with `open_path` is deliberate anyway: the
+        // alternative is one `OpenKind` reading the flags differently from another.
+        OpenKind::Object => {
+            check_truncate(opts)?;
+            let info =
+                binding_ref::<twizzler_rt_abi::bindings::object_bind_info>(binding, binding_len)?;
+            let file = RawFile::open(ObjID::new(info.id), map_flags_for(opts))?;
+            if opts.contains(OperationOptions::OPEN_FLAG_TRUNCATE) {
+                file.truncate(0)?;
+            }
+            Some(Arc::new(file))
+        }
         _ => Err(ErrorKind::Unsupported)?,
     })
 }

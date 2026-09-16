@@ -8,8 +8,9 @@ use fotcache::FotCache;
 use handlecache::HandleCache;
 use tracing::warn;
 use twizzler_abi::syscall::{
-    sys_map_ctrl, sys_object_create, sys_object_ctrl, sys_object_read_map, CreateTieFlags,
-    CreateTieSpec, DeleteFlags, MapControlCmd, ObjectControlCmd, ObjectCreate, ObjectCreateFlags,
+    sys_map_ctrl, sys_object_create, sys_object_ctrl, sys_object_preload_range,
+    sys_object_read_map, CreateTieFlags, CreateTieSpec, DeleteFlags, MapControlCmd,
+    ObjectControlCmd, ObjectCreate, ObjectCreateFlags, PreloadRangeSpec,
 };
 use twizzler_rt_abi::{
     bindings::{
@@ -17,7 +18,8 @@ use twizzler_rt_abi::{
     },
     error::{ObjectError, ResourceError, TwzError},
     object::{
-        FotEntry, FotFlags, MapFlags, ObjID, ObjectCmd, ObjectHandle, MAX_SIZE, NULLPAGE_SIZE,
+        FotEntry, FotFlags, MapFlags, ObjID, ObjectCmd, ObjectHandle, MAX_SIZE, MEXT_SIZED,
+        NULLPAGE_SIZE,
     },
     Result,
 };
@@ -396,6 +398,28 @@ impl ReferenceRuntime {
             ),
             ObjectCmd::Update => {
                 sys_map_ctrl(handle.start.cast(), MAX_SIZE, MapControlCmd::Update, 0)
+            }
+            // Whole-object preload, sized to the object rather than to `MAX_SIZE`.
+            //
+            // `ObjectControlCmd::Preload` submits one range of `MAX_SIZE / PAGE_SIZE` pages
+            // whatever the object's real size is -- 1% of over-ask on a segment filling its
+            // object, 66x on a 15 MiB one. The length is right here on the handle, so ask for
+            // what exists. Without `MEXT_SIZED` no length is knowable and the whole extent is
+            // the only honest request.
+            ObjectCmd::Preload => {
+                let oh = ObjectHandle::from_raw(*handle);
+                let len = oh
+                    .find_meta_ext(MEXT_SIZED)
+                    .map(|me| me.value.load(Ordering::SeqCst));
+                std::mem::forget(oh);
+                match len {
+                    Some(len) if len > 0 => sys_object_preload_range(
+                        handle.id.into(),
+                        &[PreloadRangeSpec::from_bytes(0, len)],
+                    ),
+                    _ => sys_object_ctrl(handle.id.into(), ObjectControlCmd::Preload, 0, 0)
+                        .map(|_| ()),
+                }
             }
         }
     }

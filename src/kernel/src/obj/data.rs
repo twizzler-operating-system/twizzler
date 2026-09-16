@@ -134,6 +134,16 @@ impl Object {
         let r = pt.with_frame(offset as u64, flags, &mut did_cow, |frame_offset, frame| {
             f(frame_offset, frame)
         });
+        if crate::pager::queues::PAGER_QUEUE_DIAG
+            && did_cow
+            && crate::pager::is_pager_queue(self.id())
+        {
+            logln!(
+                "QPAGE-COW {} offset {:x} (kernel-side WRITE lookup forked the frame)",
+                self.id(),
+                offset
+            );
+        }
         r
     }
 
@@ -216,6 +226,44 @@ impl Object {
                 f(unsafe { &*ptr })
             },
         )
+    }
+
+    /// Diagnostic: the word at `offset` together with the physical frame backing it in this
+    /// object's page tree, so a hang report can tell a forked frame from a lost wake.
+    pub fn read_word_with_phys(
+        self: &ObjectRef,
+        offset: usize,
+    ) -> Result<(u64, u64, usize), TwzError> {
+        let aoffset = offset & !(core::mem::size_of::<u64>() - 1);
+        self.with_frame(aoffset, FindFrameFlags::empty(), |po, frame| {
+            let val = unsafe {
+                frame
+                    .virtaddr()
+                    .as_ptr::<u64>()
+                    .byte_add(po)
+                    .read_volatile()
+            };
+            (frame.start_address().raw(), val, frame.size())
+        })
+    }
+
+    /// Diagnostic: `read_atomic_64`'s exact lookup (POPULATE|WRITE) but reporting the backing
+    /// frame too, so a stale value can be attributed to a stale frame rather than argued about.
+    pub fn read_word_with_phys_rw(
+        self: &ObjectRef,
+        offset: usize,
+    ) -> Result<(u64, u64, usize), TwzError> {
+        let aoffset = offset & !(core::mem::size_of::<u64>() - 1);
+        self.with_frame(aoffset, FindFrameFlags::WRITE, |po, frame| {
+            let val = unsafe {
+                frame
+                    .virtaddr()
+                    .as_ptr::<u64>()
+                    .byte_add(po)
+                    .read_volatile()
+            };
+            (frame.start_address().raw(), val, frame.size())
+        })
     }
 
     pub fn read_atomic_64(self: &ObjectRef, offset: usize) -> Result<u64, TwzError> {

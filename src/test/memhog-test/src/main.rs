@@ -3,9 +3,25 @@ use twizzler_abi::syscall::sys_memory_stats;
 /// Chunks are allocated and touched individually so a failure partway through a round still
 /// leaves the chunks allocated so far in a checkable state.
 const CHUNK_BYTES: usize = 1 << 20; // 1 MiB
-/// Bounded per-round target: small and fast under the default (~12 GiB) scenario, but a large
-/// fraction of guest memory under `lowmem`'s much smaller `-m` -- which is the point.
-const TARGET_BYTES: usize = 256 * (1 << 20); // 256 MiB
+/// Ceiling on the per-round target. Under the default (~12 GiB) scenario the fraction below is
+/// far larger than this, so the cap is what keeps the test small and fast there.
+const TARGET_MAX_BYTES: usize = 256 * (1 << 20); // 256 MiB
+/// Floor, so the test still exercises something on a guest too small for the fraction to matter.
+const TARGET_MIN_BYTES: usize = 16 * (1 << 20); // 16 MiB
+/// Share of *free* memory to take per round, as a divisor.
+///
+/// A fixed 256 MiB was a fraction of guest memory chosen for one guest size and then applied to
+/// all of them. Measured at `--scenario lowmem --memory 1024`: this compartment held **46,698
+/// pages -- 182 MiB, 77% of every pending-delete page in the system** -- and the suite wedged in
+/// the frame allocator. It was not a leak and not the read-only test binaries; it was this test
+/// taking a fixed bite out of a guest a twelfth the size of the one the constant was picked for.
+///
+/// Taking a quarter of what is actually free keeps the test a real stressor at every size while
+/// leaving the rest of the system room to run -- which is what lets `lowmem` measure the system
+/// instead of measuring this program. Note the kernel cannot yet reclaim clean object pages
+/// (`reclaim_main` steps 1-5 are unimplemented), so memory this test takes is memory nothing can
+/// get back; that is exactly why the bite has to scale.
+const TARGET_FREE_DIV: usize = 4;
 const ROUNDS: usize = 3;
 const PAGE: usize = 4096;
 
@@ -364,10 +380,16 @@ fn report_damage(chunk: &[u8], round: usize, idx: usize, bad: usize, spans: &[(u
 
 /// Allocate chunks up to `TARGET_BYTES` (fewer if memory runs out), write a per-chunk record
 /// pattern over every byte, verify every chunk still holds it, then free everything.
-fn hog_round(round: usize) -> bool {
+/// Per-round target, as a share of free memory at the time of the call.
+fn target_bytes() -> usize {
+    let free = sys_memory_stats().free_bytes();
+    (free / TARGET_FREE_DIV).clamp(TARGET_MIN_BYTES, TARGET_MAX_BYTES)
+}
+
+fn hog_round(round: usize, target: usize) -> bool {
     let mut chunks: Vec<Vec<u8>> = Vec::new();
     let mut early: Vec<(usize, usize)> = Vec::new();
-    for i in 0..(TARGET_BYTES / CHUNK_BYTES) {
+    for i in 0..(target / CHUNK_BYTES) {
         let mut chunk = Vec::new();
         // `try_reserve_exact` surfaces allocation failure as a `Result` instead of aborting the
         // process -- under real memory pressure, running out of room here is expected.
@@ -431,16 +453,20 @@ fn hog_round(round: usize) -> bool {
 #[cfg_attr(test, test)]
 fn memhog_rounds() {
     let stats = sys_memory_stats();
+    // Fixed for the whole run, from the state before any round has taken anything. Re-reading it
+    // per round would shrink the target as the system filled up, which is precisely the effect
+    // this test exists to expose -- it would hide a failure to return memory rather than show it.
+    let target = target_bytes();
     println!(
         "memhog-test: total={} free={} target_per_round={}",
         stats.total_bytes(),
         stats.free_bytes(),
-        TARGET_BYTES,
+        target,
     );
     let mut ok = true;
     for round in 0..ROUNDS {
         println!("memhog-test: round {round}");
-        ok &= hog_round(round);
+        ok &= hog_round(round, target);
     }
     assert!(ok, "memory corruption detected (see DAMAGE lines above)");
 }

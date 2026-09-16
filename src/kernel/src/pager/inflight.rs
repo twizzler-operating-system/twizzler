@@ -373,7 +373,15 @@ impl InflightManager {
     pub fn check_timed_out_requests(&self) {
         for req in self.req_map.iter() {
             if req.is_timed_out() {
-                log::warn!("request timed out: {:?}", req.reqkind());
+                // `findable` false on a node this iteration is standing on means the tree key
+                // was mutated after linking: lookups (and `remove_request`) miss it even
+                // though it is right here -- the retirement then silently no-ops forever.
+                let findable = !self.req_map.find(req.reqkind()).is_null();
+                log::warn!(
+                    "request timed out (findable-by-key: {}): {:?}",
+                    findable,
+                    req.reqkind()
+                );
             }
         }
     }
@@ -526,6 +534,7 @@ impl InflightManager {
         }
     }
 
+    #[track_caller]
     pub fn setup_wait<'a>(
         &mut self,
         inflight: &Inflight,

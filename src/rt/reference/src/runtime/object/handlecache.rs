@@ -48,7 +48,7 @@ pub struct HandleCache {
     ///
     /// The sequence is monotonic, so iteration order is still release order: the first entry is
     /// the least recently released, which is what expiry and eviction both need.
-    queued: BTreeMap<u64, (Mapping, object_handle, Instant)>,
+    queued: BTreeMap<u64, (Mapping, object_handle, Instant, Option<(usize, u32)>)>,
     /// Where each queued mapping sits, so `activate` is two lookups rather than a scan.
     queued_at: BTreeMap<Mapping, u64>,
     next_seq: u64,
@@ -75,13 +75,50 @@ impl HandleCache {
         }
     }
 
+    /// This compartment's published-handle table, if the config pointer is already resolved.
+    ///
+    /// Deliberately `try_get_comp_config`: see its doc. A `None` here costs nothing -- publish is
+    /// skipped and the cache behaves exactly as it did before the table existed.
+    fn table() -> Option<&'static monitor_api::CachedHandleTable> {
+        monitor_api::try_get_comp_config().map(|c| &c.handle_table)
+    }
+
+    /// Milliseconds since an arbitrary fixed origin, for the table's stamp.
+    ///
+    /// The monitor compares these against its own clock, so both sides must read the same one;
+    /// `Instant` is not shareable across the boundary.
+    fn stamp_ms() -> u64 {
+        twizzler_rt_abi::time::twz_rt_get_monotonic_time().as_millis() as u64
+    }
+
+    /// Give up the local records for a handle the *monitor* has taken.
+    ///
+    /// Deliberately not `do_remove`: the monitor owns the unmap once it wins the slot, and issuing
+    /// ours as well would take its handle count for the key down past the mapping -- the same
+    /// double-unmap `cancel_pending_unmap` exists to prevent.
+    fn forget_reclaimed(&mut self, item: &object_handle) {
+        let slot = (item.start as usize) / MAX_SIZE;
+        free_runtime_info(item.runtime_info.cast());
+        self.slotmap.remove(&slot);
+    }
+
     /// If map is present in either the active or the inactive lists, return a mutable reference to
     /// it. If the handle was inactive, move it to the active list.
     pub fn activate(&mut self, map: Mapping) -> Option<object_handle> {
         if let Some(seq) = self.queued_at.remove(&map) {
             trace!("activate {:?} from queue seq {}", map, seq);
             // Unwrap-Ok: `queued_at` and `queued` gain and lose an entry together.
-            let (_, handle, _) = self.queued.remove(&seq).unwrap();
+            let (_, handle, _, published) = self.queued.remove(&seq).unwrap();
+            // Take the slot back before touching the mapping. Losing this CAS means the monitor
+            // reclaimed it and the mapping is already gone, so this becomes a cache miss: drop our
+            // records without queueing an unmap and let the caller map afresh.
+            if let (Some((idx, gen)), Some(table)) = (published, Self::table()) {
+                if !table.try_reclaim_rt(idx, gen) {
+                    tracing::debug!("activate {:?}: reclaimed by monitor", map);
+                    self.forget_reclaimed(&handle);
+                    return None;
+                }
+            }
             if MapFlags::from_bits_truncate(handle.map_flags).contains(MapFlags::INDIRECT)
                 && sys_map_ctrl(handle.start.cast(), MAX_SIZE, MapControlCmd::Update, 0).is_err()
             {
@@ -136,6 +173,15 @@ impl HandleCache {
         self.pending_unmaps.push(map);
     }
 
+    /// Reclaim a published slot for a locally-driven removal. `true` if the entry is still ours
+    /// (including the case where it was never published), `false` if the monitor took it.
+    fn claim_back(&self, published: Option<(usize, u32)>) -> bool {
+        match (published, Self::table()) {
+            (Some((idx, gen)), Some(table)) => table.try_reclaim_rt(idx, gen),
+            _ => true,
+        }
+    }
+
     /// Take the unmaps queued by any operation since the last drain.
     pub fn take_pending_unmaps(&mut self) -> Vec<Mapping> {
         core::mem::take(&mut self.pending_unmaps)
@@ -170,10 +216,14 @@ impl HandleCache {
                 break;
             }
             // Unwrap-Ok: `first_key_value` just returned this key.
-            let (map, handle, _) = self.queued.remove(&seq).unwrap();
+            let (map, handle, _, published) = self.queued.remove(&seq).unwrap();
             self.queued_at.remove(&map);
             tracing::debug!("expire {:?}", map);
-            self.do_remove(&handle);
+            if self.claim_back(published) {
+                self.do_remove(&handle);
+            } else {
+                self.forget_reclaimed(&handle);
+            }
         }
     }
 
@@ -205,15 +255,24 @@ impl HandleCache {
                 // Unwrap-Ok: the length check says it is non-empty, and `first_key_value` then
                 // returns the key `remove` is given.
                 let seq = *self.queued.first_key_value().unwrap().0;
-                let (oldmap, old, _) = self.queued.remove(&seq).unwrap();
+                let (oldmap, old, _, published) = self.queued.remove(&seq).unwrap();
                 self.queued_at.remove(&oldmap);
                 tracing::debug!("evict {:?}", oldmap);
-                self.do_remove(&old);
+                if self.claim_back(published) {
+                    self.do_remove(&old);
+                } else {
+                    self.forget_reclaimed(&old);
+                }
             }
             tracing::debug!("queuing");
             let seq = self.next_seq;
             self.next_seq += 1;
-            self.queued.insert(seq, (map, handle, now));
+            // Publish for monitor-side reclaim. `pages` is left for the monitor to fill from its
+            // own records: the runtime does not track it, and finding it here would mean a syscall
+            // on every release. A full table just means this entry is not reclaimable centrally.
+            let published =
+                Self::table().and_then(|t| t.publish(map.0, map.1.bits(), 0, Self::stamp_ms()));
+            self.queued.insert(seq, (map, handle, now, published));
             self.queued_at.insert(map, seq);
         } else if self.queued_at.contains_key(&map) {
             // Already released and sitting in the cache. Reachable only via the resurrect path:

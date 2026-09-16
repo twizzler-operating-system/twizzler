@@ -526,6 +526,14 @@ pub struct Workers {
 }
 
 impl Workers {
+    /// Per-lane queued+in-progress counts, for the watchdog's stuck-lane report.
+    pub(crate) fn depths(&self) -> Vec<usize> {
+        self.threads
+            .iter()
+            .map(|t| t.depth.load(Ordering::Relaxed))
+            .collect()
+    }
+
     fn new() -> Self {
         let nr_threads = nr_workers();
         // One reserved lane keeps cheap requests moving; a second only starts paying once there are
@@ -635,6 +643,21 @@ impl Workers {
     }
 }
 
+/// Watchdog-readable view of the lane depth counters, for spotting items parked in a lane
+/// channel whose worker never woke -- the window `watchdog::begin` cannot see.
+pub(crate) static WORKERS_FOR_DIAG: std::sync::OnceLock<Arc<Workers>> = std::sync::OnceLock::new();
+
+/// The kernel-request queue, for the watchdog's stuck-submission probe: entries present but
+/// turn-invisible (`pending_parts`) wedge silently with the consumer validly parked.
+pub(crate) static KQ_FOR_DIAG: std::sync::OnceLock<
+    &'static twizzler_queue::Queue<RequestFromKernel, CompletionToKernel>,
+> = std::sync::OnceLock::new();
+
+/// Items kq_handler has taken off the queue, counted in this process's own memory. Against the
+/// queue's tail at wedge time this splits "never consumed" (consumed == tail) from "consumed
+/// but the tail writes were destroyed" (consumed == bell).
+pub(crate) static KQ_CONSUMED: AtomicUsize = AtomicUsize::new(0);
+
 pub struct PagerThreadPool {
     _workers: Arc<Workers>,
     _kq_handler: JoinHandle<()>,
@@ -645,6 +668,8 @@ impl PagerThreadPool {
         queue: &'static twizzler_queue::Queue<RequestFromKernel, CompletionToKernel>,
     ) -> Self {
         let pool = Arc::new(Workers::new());
+        let _ = WORKERS_FOR_DIAG.set(pool.clone());
+        let _ = KQ_FOR_DIAG.set(queue);
         PagerThreadPool {
             _workers: pool.clone(),
             _kq_handler: std::thread::Builder::new()
@@ -696,6 +721,7 @@ fn kq_handler_main(
         }
 
         DISPATCH_STATS.batch(tmp.len());
+        KQ_CONSUMED.fetch_add(tmp.len(), Ordering::Relaxed);
         for (id, req, dequeued) in tmp {
             DISPATCH_STATS.transit(req.submit_ns(), dequeued);
             if matches!(req.cmd(), KernelCommand::ObjectInfoReq(_)) {

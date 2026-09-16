@@ -464,6 +464,16 @@ extern "C" fn background_worker() {
 /// REALTIME to preserve the old property that threads a test spawns do not preempt the test thread,
 /// and the order below is the order the idle thread ran these in.
 extern "C" fn boot_sequence() {
+    // Ahead of the tests, not after them: the kernel-test phase is the heaviest thread-churn
+    // window in a boot (`test_condvar` alone spawns 500), and it is the one phase where every
+    // other reap path is structurally blind -- the stattick reap is gated on `is_in_user()` and
+    // no userspace exists yet, and the idle loop reaps one thread per hundred passes per cpu.
+    // With the reaper started below the tests instead, `reaper::notify()` found `REAPER` unset for
+    // the whole phase and 500 exited threads held their 2 MiB kernel stacks to the end of it:
+    // ~1 GB, absorbed invisibly at the default 12000 MB and fatal under `--scenario lowmem`.
+    if reap_thread_enabled() {
+        crate::thread::reaper::start();
+    }
     #[cfg(test)]
     if is_test_mode() {
         test_main();
@@ -475,9 +485,6 @@ extern "C" fn boot_sequence() {
         0,
         "background-worker",
     );
-    if reap_thread_enabled() {
-        crate::thread::reaper::start();
-    }
     crate::thread::exit(0);
 }
 

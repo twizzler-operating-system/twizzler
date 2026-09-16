@@ -87,6 +87,15 @@ pub(super) fn register_completion_thread(thread: ThreadRef) {
     COMPLETION.call_once(|| thread);
 }
 
+/// Is `thread` the pager completion thread? The completion thread must never wait on an
+/// inflight -- it is the only thing that can complete one -- so `Request::setup_wait` uses
+/// this to make any violation loud instead of a silent lowmem deadlock.
+pub(super) fn is_completion_thread(thread: &ThreadRef) -> bool {
+    COMPLETION
+        .poll()
+        .is_some_and(|c| alloc::sync::Arc::ptr_eq(c, thread))
+}
+
 fn class_of(idx: usize) -> PriorityClass {
     match idx {
         0 => PriorityClass::Idle,

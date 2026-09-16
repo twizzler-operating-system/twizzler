@@ -271,6 +271,8 @@ fn sampler_main() {
     let mut last_diag = Instant::now();
     let mut last_phase = Instant::now();
     let mut last_work = Instant::now();
+    let mut lane_stuck_since: Option<(Vec<usize>, Instant)> = None;
+    let mut kq_stuck_since: Option<(u64, u64, Instant)> = None;
     loop {
         // Park rather than sample once nothing has been in flight for a while: `begin` unparks,
         // and an unpark that lands before the park leaves a token, so no work can register
@@ -296,6 +298,62 @@ fn sampler_main() {
             last_phase = now;
             if let Some(delta) = phase_delta_report() {
                 tracing::info!("PHASETICK: {}", delta);
+            }
+        }
+
+        // Items charged to a lane but not yet picked up are invisible to the registry (`begin`
+        // runs at pickup), so a lane whose worker lost its wake wedges silently. Depth held
+        // nonzero and unchanged across consecutive samples for 2s+ is that signature.
+        if let Some(workers) = crate::threads::WORKERS_FOR_DIAG.get() {
+            let depths = workers.depths();
+            if depths.iter().any(|d| *d > 0) {
+                last_work = now;
+                match &lane_stuck_since {
+                    Some((prev, since)) if *prev == depths => {
+                        if since.elapsed() >= Duration::from_secs(2) {
+                            tracing::warn!(
+                                "pager watchdog: lane depths {:?} unchanged for {}ms with no \
+                                 registered work pickup",
+                                depths,
+                                since.elapsed().as_millis()
+                            );
+                            lane_stuck_since = Some((depths, now));
+                        }
+                    }
+                    _ => lane_stuck_since = Some((depths, now)),
+                }
+            } else {
+                lane_stuck_since = None;
+            }
+        }
+
+        // Entries sitting in the kernel-request submission queue while its consumer is parked:
+        // `pending_parts` separates "present but turn-invisible" (unfixable by any wake) from a
+        // plain lost wake. Nonempty and unchanged across 2s+ is the wedge signature either way.
+        if let Some(q) = crate::threads::KQ_FOR_DIAG.get() {
+            let (bell, tail, nonempty, turn_ok) = q.submission_pending_parts();
+            if nonempty {
+                last_work = now;
+                match &kq_stuck_since {
+                    Some((pb, pt, since)) if *pb == bell && *pt == tail => {
+                        if since.elapsed() >= Duration::from_secs(2) {
+                            tracing::warn!(
+                                "pager watchdog: kq submission stuck: bell {:x} tail {:x} \
+                                 turn_ok {} consumed {:x} for {}ms",
+                                bell,
+                                tail,
+                                turn_ok,
+                                crate::threads::KQ_CONSUMED
+                                    .load(std::sync::atomic::Ordering::Relaxed),
+                                since.elapsed().as_millis()
+                            );
+                            kq_stuck_since = Some((bell, tail, now));
+                        }
+                    }
+                    _ => kq_stuck_since = Some((bell, tail, now)),
+                }
+            } else {
+                kq_stuck_since = None;
             }
         }
 

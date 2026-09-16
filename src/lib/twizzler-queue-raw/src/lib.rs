@@ -516,6 +516,17 @@ impl RawQueueHdr {
         !self.is_full(h, t)
     }
 
+    /// Diagnostic: the tail slot's location and its `cmd_slot` as read through `raw_buf` — the
+    /// exact word `is_turn` judges readiness by. The byte offset lets a caller re-read the same
+    /// word through a different mapping of the buffer and compare.
+    pub fn diag_tail_slot<T>(&self, raw_buf: *mut QueueEntry<T>) -> (u64, usize, u32) {
+        let t = self.tail.load(Ordering::SeqCst) & 0x7fffffff;
+        let idx = (t as usize) & (self.len() - 1);
+        let item = unsafe { raw_buf.add(idx) };
+        let cmd = unsafe { QueueEntry::get_cmd_slot(item) };
+        (t, idx * core::mem::size_of::<QueueEntry<T>>(), cmd)
+    }
+
     #[inline]
     fn get_next_ready<W: Fn(&AtomicU64, u64), T>(
         &self,
@@ -544,9 +555,18 @@ impl RawQueueHdr {
                 continue;
             }
 
+            // Capture BEFORE arming, mirroring `setup_rec_sleep_simple` -- and for the same
+            // one-ring hole, which this path retained when that one was fixed: a producer
+            // ringing between the arm and a post-arm load consumes the arm (its wake lands on
+            // a consumer that has not parked) while its bump is included in the captured
+            // value, so the kernel accepts the park and the sleeper starves behind
+            // RING_NO_WAITER forever after. With the pre-arm value, that ring leaves the bell
+            // past `b` and the kernel refuses the park -- a spurious return this loop absorbs.
+            // (Found via the pager SyncRegion wedge, syncwedge-0910.md: both queue consumers
+            // parked over visible turn-valid entries, healed by any single wake.)
+            let b = self.bell.load(Ordering::SeqCst);
             self.consumer_set_waiting(true);
             sc_fence();
-            let b = self.bell.load(Ordering::SeqCst);
             if self.is_empty(b, t) || !self.is_turn(t, item) {
                 wait(&self.bell.0, b);
             }
@@ -837,6 +857,11 @@ impl<T: Copy> RawQueue<T> {
     /// See [`RawQueueHdr::pending_parts`].
     pub fn pending_parts(&self) -> (u64, u64, bool, bool) {
         self.hdr().pending_parts(unsafe { *self.buf.get() })
+    }
+
+    /// See [`RawQueueHdr::diag_tail_slot`].
+    pub fn diag_tail_slot(&self) -> (u64, usize, u32) {
+        self.hdr().diag_tail_slot(unsafe { *self.buf.get() })
     }
 
     pub fn has_space(&self) -> bool {

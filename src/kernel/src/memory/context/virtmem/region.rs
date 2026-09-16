@@ -471,6 +471,15 @@ impl MapRegion {
                 record_stage(FaultStage::EnsureCore, t);
                 let mut clone = PtGuard::new(stable);
                 let offset = page_number.as_byte_offset() as u64;
+                if crate::pager::queues::PAGER_QUEUE_DIAG
+                    && crate::pager::is_pager_queue(self.object().id())
+                {
+                    logln!(
+                        "QPAGE-STABLE-SHARE {} offset {:x} (stable-region fill re-shared a queue page)",
+                        self.object().id(),
+                        offset
+                    );
+                }
                 pt.setup_cow_range(&mut clone, offset, offset, PageNumber::PAGE_SIZE)?;
                 // Unavoidably nested, unlike the two-guard sites that use `release_two`: `clone` is
                 // this block's value and has to outlive `pt`, so `pt`'s shootdown wait runs with
@@ -767,6 +776,16 @@ impl MapRegion {
                     // Conservative: the stable shadow is not the region's own object and its
                     // backing is not established here, so it keeps the inherited DIRTY and behaves
                     // exactly as before.
+                    if crate::pager::queues::PAGER_QUEUE_DIAG
+                        && crate::pager::is_pager_queue(self.object().id())
+                    {
+                        logln!(
+                            "QPAGE-DISCARD-SHARE {} offset {:x} len {:x}",
+                            self.object().id(),
+                            self.offset,
+                            len
+                        );
+                    }
                     stable.setup_zero_range(self.offset, len, false)?;
                     pt.setup_cow_range(&mut *stable, self.offset, self.offset, len)?;
                     // Both locks off before either one's shootdown wait runs. Letting these drop

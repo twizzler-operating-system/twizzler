@@ -266,6 +266,157 @@ pub struct SharedCompConfig {
     pub root_library_id: Option<LoadedImageId>,
     pub posted_signals: AtomicU64,
     pub loader_config: CompartmentLoaderConfig,
+    /// Released-but-still-mapped handles this compartment has published for reclaim.
+    ///
+    /// The one field written by the *compartment* rather than the monitor. That is only sound
+    /// because every monitor write to this struct is field-granular (see `set_tls_template` and
+    /// `set_config_controller`): a whole-struct `write_config` after the compartment starts would
+    /// copy and rewrite the table non-atomically and lose concurrent publishes.
+    pub handle_table: CachedHandleTable,
+}
+
+/// State of one [CachedSlot]. The only transitions are EMPTY -> CACHED (publish, by the runtime),
+/// CACHED -> CLAIMED_RT (rewarm, by the runtime), CACHED -> CLAIMED_MON (reclaim, by the monitor),
+/// and CLAIMED_* -> EMPTY by whoever claimed it.
+pub const SLOT_EMPTY: u32 = 0;
+pub const SLOT_CACHED: u32 = 1;
+pub const SLOT_CLAIMED_RT: u32 = 2;
+pub const SLOT_CLAIMED_MON: u32 = 3;
+
+/// Slots per compartment. Matches the reference runtime's `QUEUE_LEN`, which bounds the
+/// released-but-cached population that this table exists to expose.
+pub const CACHED_SLOTS: usize = 96;
+
+/// One released-but-still-mapped object handle, published by a compartment's runtime so the
+/// monitor can reclaim it under memory pressure.
+#[repr(C)]
+pub struct CachedSlot {
+    /// One of the `SLOT_*` constants.
+    pub state: AtomicU32,
+    /// `MapFlags` bits of the mapping.
+    pub flags: AtomicU32,
+    /// Cost hint: pages mapped. Reclaim orders by this, because an item count is a bad proxy when
+    /// one entry can pin 16 MB and another 4 KB.
+    pub pages: AtomicU32,
+    /// Monotonic release stamp in milliseconds, for TTL and LRU.
+    pub stamp_ms: AtomicU64,
+    /// The mapped object, split because ObjID is 128-bit and there is no AtomicU128.
+    pub id_lo: AtomicU64,
+    pub id_hi: AtomicU64,
+    /// Bumped on every publish, so a stale rewarm cannot claim a slot that has since been reused.
+    /// Without it: the monitor reclaims slot 5, the runtime publishes a *different* handle into
+    /// slot 5, and the first entry's rewarm then steals the second one's slot -- classic ABA, and
+    /// the entry it steals is one whose mapping is still live.
+    pub gen: AtomicU32,
+}
+
+impl CachedSlot {
+    pub const fn new() -> Self {
+        Self {
+            state: AtomicU32::new(SLOT_EMPTY),
+            flags: AtomicU32::new(0),
+            pages: AtomicU32::new(0),
+            stamp_ms: AtomicU64::new(0),
+            id_lo: AtomicU64::new(0),
+            id_hi: AtomicU64::new(0),
+            gen: AtomicU32::new(0),
+        }
+    }
+
+    pub fn id(&self) -> ObjID {
+        let lo = self.id_lo.load(Ordering::Relaxed) as u128;
+        let hi = self.id_hi.load(Ordering::Relaxed) as u128;
+        ObjID::from((hi << 64) | lo)
+    }
+
+    pub fn set_id(&self, id: ObjID) {
+        let raw: u128 = id.raw();
+        self.id_lo.store(raw as u64, Ordering::Relaxed);
+        self.id_hi.store((raw >> 64) as u64, Ordering::Relaxed);
+    }
+}
+
+/// A compartment's table of released-but-still-mapped handles.
+///
+/// Laid out at offset 0 of the object named by [SharedCompConfig::handle_table]. Fixed size: the
+/// monitor scans it from a reclaim path, where allocating is exactly what must not happen.
+#[repr(C)]
+pub struct CachedHandleTable {
+    pub slots: [CachedSlot; CACHED_SLOTS],
+}
+
+impl CachedHandleTable {
+    pub const fn new() -> Self {
+        Self {
+            slots: [const { CachedSlot::new() }; CACHED_SLOTS],
+        }
+    }
+
+    /// Publish a released handle. Returns the slot index on success, or None if the table is full
+    /// -- in which case the caller keeps today's behaviour and unmaps locally.
+    ///
+    /// The fields are written before the state store, and that store is `Release`, so a claimant
+    /// that reads `CACHED` with `Acquire` sees all of them.
+    /// Returns the slot index and the generation stamped into it; both are needed to take it back.
+    pub fn publish(
+        &self,
+        id: ObjID,
+        flags: u32,
+        pages: u32,
+        stamp_ms: u64,
+    ) -> Option<(usize, u32)> {
+        for (i, slot) in self.slots.iter().enumerate() {
+            if slot
+                .state
+                .compare_exchange(
+                    SLOT_EMPTY,
+                    SLOT_CLAIMED_RT,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                let gen = slot.gen.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+                slot.set_id(id);
+                slot.flags.store(flags, Ordering::Relaxed);
+                slot.pages.store(pages, Ordering::Relaxed);
+                slot.stamp_ms.store(stamp_ms, Ordering::Relaxed);
+                slot.state.store(SLOT_CACHED, Ordering::Release);
+                return Some((i, gen));
+            }
+        }
+        None
+    }
+
+    /// Take a published slot back for reuse. `true` if we won it; `false` means the monitor
+    /// reclaimed it first and the caller must treat the handle as gone.
+    /// The generation check is what makes a stale index harmless. Winning the state CAS on a
+    /// reused slot is possible, so the generation is re-checked afterwards and the slot put back
+    /// if it does not match -- a monitor claim racing that window simply loses its own CAS and
+    /// retries on its next pass.
+    pub fn try_reclaim_rt(&self, index: usize, gen: u32) -> bool {
+        let Some(slot) = self.slots.get(index) else {
+            return false;
+        };
+        if slot
+            .state
+            .compare_exchange(
+                SLOT_CACHED,
+                SLOT_CLAIMED_RT,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            return false;
+        }
+        if slot.gen.load(Ordering::Relaxed) != gen {
+            slot.state.store(SLOT_CACHED, Ordering::Release);
+            return false;
+        }
+        slot.state.store(SLOT_EMPTY, Ordering::Release);
+        true
+    }
 }
 
 struct CompConfigFinder {
@@ -290,6 +441,19 @@ pub fn get_comp_config() -> &'static SharedCompConfig {
             .as_ref()
             .unwrap()
     }
+}
+
+/// Get this compartment's [SharedCompConfig] *only if it is already known*.
+///
+/// [get_comp_config] resolves the pointer with a cross-compartment gate call on first use. That is
+/// fine from ordinary code and unsafe from inside the runtime's object-manager lock, where the
+/// gate call re-enters object mapping -- the same shape as the
+/// `get_compartment_handle -> HandleMgr::insert -> gc_handles -> twz_rt_gc` cycle that had to be
+/// broken. Callers on such a path use this and treat `None` as "not available yet".
+pub fn try_get_comp_config() -> Option<&'static SharedCompConfig> {
+    COMP_CONFIG
+        .get()
+        .map(|c| unsafe { c.config.as_ref().unwrap() })
 }
 
 /// Tries to set the comp config pointer. May fail, as this can only be set once.
@@ -390,6 +554,7 @@ impl SharedCompConfig {
             root_library_id: None,
             posted_signals: AtomicU64::new(0),
             loader_config,
+            handle_table: CachedHandleTable::new(),
         }
     }
 

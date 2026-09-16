@@ -393,6 +393,16 @@ impl RunComp {
     }
 
     /// Unmap and object from this compartment.
+    /// How many objects this compartment currently has mapped.
+    ///
+    /// These are the *active* handles -- references the compartment still holds open, as opposed
+    /// to the released ones it publishes for reclaim. The lowmem census showed 127 pending-delete
+    /// regions owned by live security contexts, pinning ~60,000 pages, which the handle sweeper
+    /// provably never touches; this is what says whose they are.
+    pub fn mapped_object_count(&self) -> usize {
+        self.mapped_objects.lock().unwrap().len()
+    }
+
     pub fn unmap_object(&self, info: MapInfo) -> Option<MapHandle> {
         let x = self.mapped_objects.lock().unwrap().remove(&info);
         match &x {
@@ -672,9 +682,14 @@ impl RunComp {
         let template: TlsTemplateInfo = region.into();
         let tls_template = self.monitor_new(template).ok()?;
 
-        let config = self.comp_config_object.read_comp_config();
-        config.set_tls_template(tls_template);
-        self.comp_config_object.write_config(config);
+        // Field-granular, for the same reason `set_config_controller` is: `write_config` copies
+        // and rewrites the *whole* struct, so a read-modify-write here races every atomic in it
+        // -- it can lose a concurrent `post_signal` fetch_or, and it would clobber the
+        // compartment-written `handle_table` wholesale.
+        //
+        // Safety: the config lives in an object this monitor mapped, and `set_tls_template` is a
+        // single atomic store -- no other field is touched.
+        unsafe { &*self.comp_config_object.get_comp_config() }.set_tls_template(tls_template);
         Some(())
     }
 

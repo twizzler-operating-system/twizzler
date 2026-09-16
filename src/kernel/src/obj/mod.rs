@@ -513,6 +513,16 @@ impl Object {
     /// The wake path never reaches here on an object with no sleepers: `wakeup_word` returns at its
     /// `sleepers == 0` check, which is the same guard that already existed to keep an uncontended
     /// futex release out of this mutex.
+    /// Diagnostic for the hang report: is `id` linked at `offset` in THIS instance's sleep
+    /// tree, and how many threads are. A parked thread absent here while claiming to sleep on
+    /// this (id, offset) is sleeping on a different Object instance.
+    pub fn sleep_query(&self, offset: usize, id: ObjID) -> (bool, usize) {
+        match self.sleep_info_if_present() {
+            Some(si) => si.lock().query(offset, id),
+            None => (false, 0),
+        }
+    }
+
     pub(crate) fn sleep_info(&self) -> &Mutex<SleepInfo> {
         self.sleep_slot.call_once(|| {
             coldfieldstats::SLEEP_INITS.fetch_add(1, Ordering::Relaxed);
@@ -1636,6 +1646,160 @@ pub fn clear_no_exist(id: ObjID) {
 /// and whether it is concentrated or diffuse. Allocation-free ([omap::ShardedOmap::
 /// for_each_chunked]) because it runs while allocation is failing; `count_pages` is O(1) with
 /// the mapper's exact counter.
+/// Clean-object eviction, off by default.
+///
+/// **Off because it is implicated in a panic.** At `--scenario lowmem --memory 768` the guest went
+/// from a pager stall (rc=34, no panic) to `unrecoverable, halting processor` / `TEST MODE PANIC`
+/// (rc=36) after evicting one object worth two pages. Not yet root-caused; the transcript is
+/// interleaved with a concurrent pressure census. Candidate causes, in order: pages are evicted
+/// with no pin check (pins are not tracked at all), and with no check that a mapping is not in
+/// active use -- the design assumes a re-fault, which needs a pager that is answering, and 768 is
+/// a size where the pager is already stalling.
+///
+/// **Also measured to be nearly useless at this granularity**, which is the more interesting half:
+/// `scanned 653 skip(vol 572 empty 0 dirty 80 del 0) evicted 1 objs / 2 pages`. 87% of objects are
+/// volatile, and 80 of the 81 pager-backed ones hold at least one dirty page -- and one dirty page
+/// disqualifies a whole object here. Page granularity is not an optimization over this, it is the
+/// difference between reclaiming something and reclaiming nothing.
+pub const RECLAIM_CLEAN_OBJ: bool = true;
+
+/// Round-robin position for [`reclaim_clean_backed`]'s scan. See its use site.
+static SCAN_CURSOR: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// Counters for the reclaim scan, printed unconditionally by the reclaim thread.
+///
+/// Every wrong turn in the lowmem investigation was settled by a counter in the transcript and
+/// none by an argument. A reclaimer whose skip reasons are invisible cannot be tuned: "it freed
+/// nothing" and "it found nothing it was allowed to free" look identical from outside.
+pub mod reclaimstat {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    pub static SCANNED: AtomicUsize = AtomicUsize::new(0);
+    pub static SKIP_VOLATILE: AtomicUsize = AtomicUsize::new(0);
+    pub static SKIP_EMPTY: AtomicUsize = AtomicUsize::new(0);
+    pub static SKIP_DIRTY: AtomicUsize = AtomicUsize::new(0);
+    pub static SKIP_DELETED: AtomicUsize = AtomicUsize::new(0);
+    pub static EVICTED_OBJS: AtomicUsize = AtomicUsize::new(0);
+    pub static EVICTED_PAGES: AtomicUsize = AtomicUsize::new(0);
+    /// Objects skipped because their dirty set did not fit the bounded scratch buffer. Counted
+    /// because a fail-closed bail and "nothing was evictable" are indistinguishable from outside,
+    /// and the first page-granularity run printed nothing at all -- which told me only that zero
+    /// pages moved, not which of the two reasons applied.
+    pub static SKIP_OVERFLOW: AtomicUsize = AtomicUsize::new(0);
+    /// Dirty backed objects handed to `obj-bgsync`. This is what refills the clean pool: a
+    /// pager-backed page is born dirty, so nothing is evictable until a writeback cycle resets the
+    /// bits, and `queue_background_sync` had exactly one caller (slot unmap with ASYNC_DURABLE).
+    pub static QUEUED_SYNC: AtomicUsize = AtomicUsize::new(0);
+
+    pub fn bump(c: &AtomicUsize, n: usize) {
+        c.fetch_add(n, Ordering::Relaxed);
+    }
+
+    pub fn print() {
+        logln!(
+            "[reclaim] scanned {} skip(vol {} empty {} dirty {} del {} overflow {}) synced {} evicted {} objs / {} pages",
+            SCANNED.load(Ordering::Relaxed),
+            SKIP_VOLATILE.load(Ordering::Relaxed),
+            SKIP_EMPTY.load(Ordering::Relaxed),
+            SKIP_DIRTY.load(Ordering::Relaxed),
+            SKIP_DELETED.load(Ordering::Relaxed),
+            SKIP_OVERFLOW.load(Ordering::Relaxed),
+            QUEUED_SYNC.load(Ordering::Relaxed),
+            EVICTED_OBJS.load(Ordering::Relaxed),
+            EVICTED_PAGES.load(Ordering::Relaxed),
+        );
+    }
+}
+
+/// Drop the resident pages of up to `budget` clean, pager-backed objects. Returns pages freed.
+///
+/// Object granularity, clean only -- step 1 of `reclaim_main`'s plan. A clean pager-backed page can
+/// be dropped outright because the pager can produce it again; a dirty one would need a write-back
+/// first, and anonymous memory would need swap, which does not exist. See `reclaim-design.md`.
+///
+/// **Pinning is not consulted, because it is not tracked** (`PinInfo::pins` is read in three places
+/// and written in none). A pinned page's physical address is held by a device, so evicting one lets
+/// that device DMA into a reused frame. This is therefore a development path, not a shippable one,
+/// until `Object::pin`/`release_pin` record ranges.
+///
+/// Candidates are collected before any is evicted: eviction takes page-table locks and sends
+/// shootdown IPIs, and doing that inside the omap scan would run it under the shard lock.
+pub fn reclaim_clean_backed(budget: usize) -> usize {
+    if !RECLAIM_CLEAN_OBJ || !OMAP_SHARDED || budget == 0 {
+        return 0;
+    }
+    use reclaimstat as rs;
+    // Fixed capacity: this runs when allocation is failing.
+    let mut cands: heapless::Vec<(ObjectRef, bool), 32> = heapless::Vec::new();
+    // Round-robin start, so successive rounds do not keep picking the same head of the map.
+    // `for_each_chunked` iterates in a stable order and the cap stops the walk early, so without
+    // this the first 32 backed objects would be the only ones ever synced or evicted -- the other
+    // 160 would starve forever.
+    let start = SCAN_CURSOR.load(Ordering::Relaxed);
+    let mut index = 0usize;
+    let mut skipped_to_start = false;
+    obj_manager().sharded.for_each_chunked(|obj| {
+        if cands.is_full() {
+            return;
+        }
+        rs::bump(&rs::SCANNED, 1);
+        if !obj.use_pager() {
+            rs::bump(&rs::SKIP_VOLATILE, 1);
+            return;
+        }
+        if obj.is_pending_delete() {
+            rs::bump(&rs::SKIP_DELETED, 1);
+            return;
+        }
+        // Position within the *eligible* population, which is what the cursor indexes.
+        index += 1;
+        if index <= start && !skipped_to_start {
+            return;
+        }
+        skipped_to_start = true;
+        let mut tables = obj.lock_page_tables();
+        if tables.count_pages() == 0 {
+            rs::bump(&rs::SKIP_EMPTY, 1);
+            return;
+        }
+        // No longer a skip: an object holding dirty pages is still worth visiting, because the
+        // clean pages behind them are now individually evictable. Counted so the two granularities
+        // stay comparable in a transcript.
+        let dirty = tables.has_dirty_pages();
+        if dirty {
+            rs::bump(&rs::SKIP_DIRTY, 1);
+        }
+        drop(tables);
+        let _ = cands.push((obj.clone(), dirty));
+    });
+    // Wrap when the walk ran out of population before filling up.
+    SCAN_CURSOR.store(if cands.is_full() { index } else { 0 }, Ordering::Relaxed);
+
+    // Pages, not objects: `budget` is now a page budget spread across the candidates, so one
+    // enormous object cannot consume a whole round and starve the rest.
+    const PAGES_PER_OBJ: usize = 64;
+    let mut pages = 0;
+    for (obj, dirty) in cands.iter() {
+        // Refill the clean pool. Outside the omap scan: this takes the bgsync lock, and taking it
+        // under the shard lock is the ordering hazard the candidate collection exists to avoid.
+        // Idempotent (`pending` is a map keyed by id), so re-queueing across rounds coalesces.
+        if *dirty {
+            crate::pager::queue_background_sync(obj);
+            rs::bump(&rs::QUEUED_SYNC, 1);
+        }
+        if pages >= budget {
+            continue;
+        }
+        let want = PAGES_PER_OBJ.min(budget - pages);
+        let n = obj.lock_page_tables().evict_clean_pages(want);
+        if n > 0 {
+            rs::bump(&rs::EVICTED_OBJS, 1);
+            rs::bump(&rs::EVICTED_PAGES, n);
+            pages += n;
+        }
+    }
+    pages
+}
+
 pub fn pressure_census() {
     if !OMAP_SHARDED {
         return;
@@ -1671,6 +1835,8 @@ pub fn pressure_census() {
     let mut pg_sctx0 = 0usize;
     let mut pg_live = 0usize;
     let mut pg_dead = 0usize;
+    /// Pending-delete pages per live security context, so the aggregate can be attributed.
+    let mut top_sctx: heapless::Vec<(ObjID, usize), 12> = heapless::Vec::new();
     let mut pd_stuck_mapcount = 0usize;
     let mut pg_stuck_mapcount = 0usize;
     let mut mc_sum = 0usize;
@@ -1711,6 +1877,25 @@ pub fn pressure_census() {
                     } else if live_sctxs.contains(&sctx) {
                         r_live += 1;
                         pg_live += pages;
+                        // Attribute the live-sctx share by *which* context, not just how much.
+                        // `pg_live` alone says 60,360 pages are held by live compartments and
+                        // nothing about whose they are, which is the one thing needed to act on
+                        // it: the monitor prints each compartment's sctx beside its name.
+                        let mut placed = false;
+                        for e in top_sctx.iter_mut() {
+                            if e.0 == sctx {
+                                e.1 += pages;
+                                placed = true;
+                                break;
+                            }
+                        }
+                        if !placed && top_sctx.push((sctx, pages)).is_err() {
+                            // Full: fold into whichever tracked context is smallest, so the big
+                            // holders stay visible and the tail is not silently dropped.
+                            if let Some(min) = top_sctx.iter_mut().min_by_key(|e| e.1) {
+                                min.1 += pages;
+                            }
+                        }
                         false
                     } else {
                         r_dead += 1;
@@ -1830,6 +2015,9 @@ pub fn pressure_census() {
         crate::thread::THREAD_NEWS.load(core::sync::atomic::Ordering::Relaxed),
         crate::thread::THREAD_DROPS.load(core::sync::atomic::Ordering::Relaxed)
     );
+    for (sctx, pages) in top_sctx.iter() {
+        logln!("  pd-by-sctx: sctx {} pages {}", sctx, pages);
+    }
     for (pages, id, b, d, refs, maps) in &top {
         logln!(
             "  top: {} pages obj {} {}{} refs {} maps {}",
