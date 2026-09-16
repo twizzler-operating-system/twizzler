@@ -528,9 +528,11 @@ impl Object {
                 WAKE_LAST_SKIP_OFF.store(offset as u64, Ordering::Relaxed);
                 // Queue doorbells: the benign fast-skip (nobody parked) fires thousands of
                 // times per boot, so log only the impossible case -- sleepers==0 at the door
-                // while a thread is linked at exactly this offset. Costs a lock acquire, on
-                // these two offsets only.
-                if offset == 0x1140 || offset == 0x12c0 {
+                // while a thread is linked at exactly this offset. Net sockets SHARE these two
+                // offsets, so the lock acquire + query is not free on the net wake path
+                // (measured ~4600x/round, confounding a net throughput bench); gate behind
+                // PAGER_QUEUE_DIAG so it is dead code unless a pager-queue hunt turns it on.
+                if crate::pager::queues::PAGER_QUEUE_DIAG && (offset == 0x1140 || offset == 0x12c0) {
                     if let Some(si) = self.sleep_info_if_present() {
                         let (_, nlinked) = si.lock().query(offset, 0.into());
                         if nlinked > 0 {
@@ -633,7 +635,12 @@ impl Object {
         } else {
             let n = WAKE_NOCLAIM.fetch_add(1, Ordering::Relaxed) + 1;
             WAKE_LAST_NOCLAIM_OFF.store(offset as u64, Ordering::Relaxed);
-            if (offset == 0x1140 || offset == 0x12c0) && skipped > 0 {
+            // Net sockets share these offsets; this printed ~4600x/round and confounded a net
+            // throughput bench. Gate behind PAGER_QUEUE_DIAG (dead code unless a hunt enables it).
+            if crate::pager::queues::PAGER_QUEUE_DIAG
+                && (offset == 0x1140 || offset == 0x12c0)
+                && skipped > 0
+            {
                 logln!(
                     "WAKE-QBELL-NOCLAIM {}+{:x} skipped={} (linked but unclaimable)",
                     self.id(),
