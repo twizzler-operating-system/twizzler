@@ -516,17 +516,6 @@ impl RawQueueHdr {
         !self.is_full(h, t)
     }
 
-    /// Diagnostic: the tail slot's location and its `cmd_slot` as read through `raw_buf` — the
-    /// exact word `is_turn` judges readiness by. The byte offset lets a caller re-read the same
-    /// word through a different mapping of the buffer and compare.
-    pub fn diag_tail_slot<T>(&self, raw_buf: *mut QueueEntry<T>) -> (u64, usize, u32) {
-        let t = self.tail.load(Ordering::SeqCst) & 0x7fffffff;
-        let idx = (t as usize) & (self.len() - 1);
-        let item = unsafe { raw_buf.add(idx) };
-        let cmd = unsafe { QueueEntry::get_cmd_slot(item) };
-        (t, idx * core::mem::size_of::<QueueEntry<T>>(), cmd)
-    }
-
     #[inline]
     fn get_next_ready<W: Fn(&AtomicU64, u64), T>(
         &self,
@@ -857,11 +846,6 @@ impl<T: Copy> RawQueue<T> {
     /// See [`RawQueueHdr::pending_parts`].
     pub fn pending_parts(&self) -> (u64, u64, bool, bool) {
         self.hdr().pending_parts(unsafe { *self.buf.get() })
-    }
-
-    /// See [`RawQueueHdr::diag_tail_slot`].
-    pub fn diag_tail_slot(&self) -> (u64, usize, u32) {
-        self.hdr().diag_tail_slot(unsafe { *self.buf.get() })
     }
 
     pub fn has_space(&self) -> bool {

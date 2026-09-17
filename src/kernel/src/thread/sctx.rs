@@ -20,14 +20,6 @@ type SwitchTarget = <Context as UserContext>::SwitchTarget;
 /// calls into, so a handful covers the steady state.
 const CACHE_LEN: usize = 4;
 
-/// A/B switch for the refcount work removed from [`SctxCache::switch`] (pagerperf.md). `true`
-/// restores the per-switch `active_count` maintenance and the outgoing-context upgrade that went
-/// with it, so the two arms are one rebuild apart rather than one revert apart.
-///
-/// With it `false`, `SctxStats::nr_active` is derived at stats time instead; see
-/// [`crate::security::get_sctx_stats`].
-const TRACK_ACTIVE_COUNT: bool = false;
-
 struct Entry {
     id: ObjID,
     tls: u64,
@@ -201,43 +193,21 @@ impl SctxCache {
             });
             match hit {
                 Some(hit) => {
-                    let old = if TRACK_ACTIVE_COUNT {
-                        hit.ctx.inc_active_count();
-                        core::mem::replace(&mut cache.active_ctx, Arc::downgrade(&hit.ctx))
-                            .upgrade()
-                    } else {
-                        cache.active_ctx = Arc::downgrade(&hit.ctx);
-                        None
-                    };
+                    cache.active_ctx = Arc::downgrade(&hit.ctx);
                     cache.active_id = to;
-                    (Switch::Hit(hit), old)
+                    Switch::Hit(hit)
                 }
-                None => (Switch::Miss { from }, None),
+                None => Switch::Miss { from },
             }
         };
-        // Outside the lock: dropping the last reference to a context runs `SecurityContext::drop`,
-        // which walks every memory context in the system and takes mutexes.
-        let (result, dropped) = result;
-        if let Some(old) = dropped {
-            old.dec_active_count();
-        }
         result
     }
 
     /// Record a context as active without a cache entry for it, for the slow path.
     pub fn set_active(&self, id: ObjID, ctx: &SecurityContextRef) {
-        if TRACK_ACTIVE_COUNT {
-            ctx.inc_active_count();
-        }
-        let old = {
-            let mut cache = self.cache.lock();
-            cache.active_id = id;
-            let old = core::mem::replace(&mut cache.active_ctx, Arc::downgrade(ctx));
-            TRACK_ACTIVE_COUNT.then(|| old.upgrade()).flatten()
-        };
-        if let Some(old) = old {
-            old.dec_active_count();
-        }
+        let mut cache = self.cache.lock();
+        cache.active_id = id;
+        cache.active_ctx = Arc::downgrade(ctx);
     }
 
     /// Record what a slow-path switch had to look up.

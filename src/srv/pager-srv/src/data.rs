@@ -30,7 +30,6 @@ use twizzler_rt_abi::{
 use crate::{
     handle::PagerClient,
     helpers::{page_in, page_in_many, page_out_many, EXTERNAL_META, PAGE},
-    stats::RecentStats,
     PagerContext,
 };
 
@@ -423,23 +422,12 @@ impl PagerData {
             self.mem_waiters.clone(),
         ))
     }
-
-    pub fn print_stats(&self) {
-        let inner = self.inner.lock().unwrap();
-        inner.print_stats();
-    }
-
-    pub fn reset_stats(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.reset_stats();
-    }
 }
 
 pub struct PagerDataInner {
     memory: Memory,
     pub per_obj: HashMap<ObjID, PerObject>,
     pub handles: HandleMgr<PagerClient>,
-    pub recent_stats: RecentStats,
 }
 
 /// What an allocator hands back when the pool is empty: block on this until it is not.
@@ -640,7 +628,6 @@ impl PagerDataInner {
             per_obj: HashMap::with_capacity(0),
             memory: Memory::default(),
             handles: HandleMgr::new(None),
-            recent_stats: RecentStats::new(),
         }
     }
 
@@ -660,42 +647,6 @@ impl PagerDataInner {
 
     pub fn get_per_object(&mut self, id: ObjID) -> &PerObject {
         self.per_obj.entry(id).or_insert_with(|| PerObject::new(id))
-    }
-
-    pub fn print_stats(&self) {
-        let dt = self.recent_stats.dt();
-        let mut total_read_kbps = 0.;
-        let mut total_write_kbps = 0.;
-        let mut count = 0;
-        for (id, stats) in self.recent_stats.recorded_stats() {
-            let read = crate::stats::pages_to_kbytes_per_sec(stats.pages_read, dt);
-            let write = crate::stats::pages_to_kbytes_per_sec(stats.pages_written, dt);
-            tracing::debug!(
-                "{}: read {:3.3} KB/s ({:8.8} pages), write {:3.3} KB/s ({:8.8} pages)",
-                id,
-                read,
-                stats.pages_read,
-                write,
-                stats.pages_written
-            );
-
-            count += 1;
-            total_read_kbps += read;
-            total_write_kbps += write;
-        }
-        if true || self.recent_stats.had_activity() {
-            tracing::info!(
-                "PAGER STATS: Available memory: {:10.10} KB, r {:3.3} KB/s w {:3.3} KB/s c {:2.2} (dt: {:2.2}s)",
-                self.memory.available_memory() / 1024,
-                total_read_kbps,total_write_kbps,
-                count,
-                dt.as_secs_f32(),
-            );
-        }
-    }
-
-    pub fn reset_stats(&mut self) {
-        self.recent_stats.reset();
     }
 }
 
@@ -809,14 +760,7 @@ impl PagerData {
                 .collect());
         }
 
-        let pages = self.do_fill_pages(ctx, id, obj_range, true)?;
-
-        {
-            let mut inner = self.inner.lock().unwrap();
-            inner.recent_stats.read_pages(id, pages.len());
-        }
-
-        Ok(pages)
+        self.do_fill_pages(ctx, id, obj_range, true)
     }
 
     /// Allocate a memory page and associate it with an object and range.
@@ -855,23 +799,14 @@ impl PagerData {
         // TODO: remove this restriction
         assert_eq!(obj_range.len(), 0x1000);
 
-        let phys_range = page_in(ctx, id, obj_range)?;
-
-        {
-            let mut inner = self.inner.lock().unwrap();
-            inner
-                .recent_stats
-                .read_pages(id, obj_range.len() / PAGE as usize);
-        }
-
-        return Ok(phys_range);
+        page_in(ctx, id, obj_range)
     }
 
     /// Answer the kernel's "does this object exist, and what is it" question -- and settle its
     /// metadata while we are here.
     ///
     /// The kernel reads the meta page on the first `check_id` of every object, which without this
-    /// is a second round trip back to us, charged to whoever is mapping (mapperf.md: half of
+    /// is a second round trip back to us, charged to whoever is mapping (half of
     /// `insert_object`).
     ///
     /// The two backings need opposite things. An external file's metadata is invented, so we can
@@ -897,7 +832,7 @@ impl PagerData {
             // [EXTERNAL_META] plus the file's length -- so the length is the only thing the kernel
             // needs to build the page for itself. Filling one here instead would mean
             // `fill_physical_pages`, i.e. a `CopyUserPhys` on the strictly single-outstanding
-            // pager->kernel channel (pagerperf.md 5), to hand over bytes we already know.
+            // pager->kernel channel, to hand over bytes we already know.
             let info = ObjectInfo::new(
                 LifetimeType::Persistent,
                 BackingType::Normal,
@@ -906,17 +841,12 @@ impl PagerData {
                 EXTERNAL_META.default_prot,
             )
             .validated();
-            let len_start = crate::dispatch_stats::DispatchStats::now_ns();
             // Deliberately not `?`: this path never checked existence, and returning an error here
             // would make the kernel cache the ID in `no_exist` permanently. Without a length we
             // just skip the synthesis and the meta page gets faulted in later, as it used to be.
             let len = ctx.paged_ostore(None)?.len_mtime_nlink(id.raw());
             // The segment now covers mtime as well, which used to sit outside it while costing a
             // whole fs-lock acquisition. `store-len` figures are not comparable across this change.
-            crate::dispatch_stats::DISPATCH_STATS.info_lookup(
-                crate::dispatch_stats::DispatchStats::now_ns() - len_start,
-                None,
-            );
             return Ok(match len {
                 Ok((len, mtime, nlink)) => info.synth_meta(len).with_mtime(mtime).with_nlink(nlink),
                 Err(e) => {
@@ -929,12 +859,10 @@ impl PagerData {
         // This length was previously computed purely as an existence check and discarded. Stating
         // it lets the kernel answer faults past the end of the object without a round trip at all;
         // leaving it unstated is what made every stored object look zero-length to the kernel.
-        let len_start = crate::dispatch_stats::DispatchStats::now_ns();
         let base = match ctx.paged_ostore(None)?.len(id.raw()) {
             Ok(len) => base.with_size(len),
             Err(_) => return Err(ObjectError::NoSuchObject.into()),
         };
-        let meta_start = crate::dispatch_stats::DispatchStats::now_ns();
 
         // Best-effort: a failure here costs the kernel a page-in later, which is what it did
         // before, so it is not worth failing the lookup over.
@@ -942,10 +870,6 @@ impl PagerData {
             ctx,
             id,
             ObjectRange::new(MAX_SIZE as u64 - PAGE, MAX_SIZE as u64),
-        );
-        crate::dispatch_stats::DISPATCH_STATS.info_lookup(
-            meta_start - len_start,
-            Some(crate::dispatch_stats::DispatchStats::now_ns() - meta_start),
         );
         match meta {
             // Asserted unconditionally: the pager vouches for every object it serves, so the
@@ -971,12 +895,7 @@ impl PagerData {
             inner.get_per_object(info.obj_id).clone()
         };
 
-        let (count, compl) = po.sync_region(ctx, info, work);
-        if count > 0 {
-            let mut inner = self.inner.lock().unwrap();
-            inner.recent_stats.write_pages(info.obj_id, count);
-        }
-        compl
+        po.sync_region(ctx, info, work).1
     }
 
     pub fn with_handle<R>(

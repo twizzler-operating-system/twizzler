@@ -15,7 +15,7 @@
 //! or blocked for nearly all of its time, so the ticks that would reap keep landing somewhere that
 //! skips, and an idle cpu never satisfies `is_in_user()` at all. Measured: ~11% of spawns left
 //! unreaped, each pinning its `Thread` allocation and a 2 MiB kernel stack, ~130 MiB per 660
-//! spawn+joins and never returned (leakcheck.md, leak29).
+//! spawn+joins and never returned.
 //!
 //! This thread has neither constraint. It is an ordinary kernel thread, so it may block, and it
 //! drains without a per-pass bound. It runs at BACKGROUND so an idle machine does not pay for it,

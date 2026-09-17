@@ -2,8 +2,7 @@
 //!
 //! Runs each operation N times, samples every leak-relevant counter after each iteration, and fits
 //! a line to the tail. The design centre is that most reclamation in this system is deferred,
-//! cached, or both: a before/after delta around one operation measures caching, not leaking. See
-//! `leakplan.md` for the deferral mechanisms and their cadences.
+//! cached, or both: a before/after delta around one operation measures caching, not leaking.
 //!
 //! Output goes through the kernel console (not stdout) so a serial log always has it, one line per
 //! sample and one per fit, both machine-readable. `tools/leakplot.py` turns a log into graphs.
@@ -16,10 +15,6 @@ mod sample;
 mod uheap;
 
 use sample::{COUNTERS, Kind, NR_COUNTERS, Sample};
-use twizzler_abi::syscall::{
-    KALLOC_NR_BUCKETS, KALLOC_TRACK_ARM, KALLOC_TRACK_DUMP, KALLOC_TRACK_OFF, KallocCensus,
-    sys_kalloc_census, sys_kalloc_track,
-};
 
 pub fn console(s: &str) {
     twizzler_abi::syscall::sys_kernel_console_write(
@@ -42,22 +37,6 @@ struct Config {
     ops: Vec<String>,
     samples: bool,
     census: bool,
-    /// `--track lo:hi`: arm the kernel's live-block tracker over this size range for the duration
-    /// of each op, and dump whatever is still live once the post-quiesce has run.
-    track: Option<(u64, u64)>,
-    /// How many times to run each op when tracking. **Two by default, and the second pass is the
-    /// point.** A tracked window reports the blocks allocated inside it and not freed, which a
-    /// one-time fill -- a cache, a lazily-populated table, a high-water reserve -- produces just
-    /// as readily as a leak does. Repeating the identical op in the same boot separates them:
-    /// a per-iteration leak must retain at the same rate every time, and a fill cannot.
-    /// Measured on `l3-thread-x10`: 42 blocks on the first pass, 9 on the second.
-    ///
-    /// This is deliberately a repeat rather than a statistic computed inside one window. A
-    /// heuristic over the age spread was tried first and rejected: it labels correctly on a fill
-    /// that lands in a tight burst (`oldest=33 newest=233` of 6651) and mislabels the same
-    /// mechanism when the fill converges slowly (`oldest=33 newest=3887` of 6642), which is the
-    /// same op on a different boot. No single window separates them; two do.
-    track_passes: usize,
     /// `--utrack lo:hi`: the userspace analogue of `--track`. Records every *userspace* heap block
     /// in this size range allocated during an op and not freed, and prints the first 32 bytes of
     /// each. A size class from `LEAKCHECK-UHEAP` says what is retained; this says what is in it.
@@ -78,9 +57,7 @@ impl Default for Config {
             ops: ops::DEFAULT_OPS.iter().map(|s| s.to_string()).collect(),
             samples: true,
             census: false,
-            track: None,
             utrack: None,
-            track_passes: 2,
         }
     }
 }
@@ -115,22 +92,9 @@ fn parse_args() -> Config {
             }
             "--no-samples" => cfg.samples = false,
             "--census" => cfg.census = true,
-            "--track-passes" => {
-                cfg.track_passes = next().parse().unwrap_or(cfg.track_passes).max(1)
-            }
-            "--track" => {
-                let v = next();
-                let mut it = v.split(':');
-                let lo = it.next().and_then(|s| s.trim().parse::<u64>().ok());
-                let hi = it.next().and_then(|s| s.trim().parse::<u64>().ok());
-                cfg.track = match (lo, hi) {
-                    (Some(lo), Some(hi)) => Some((lo, hi)),
-                    _ => None,
-                };
-            }
             "--help" | "-h" => {
                 out!(
-                    "leakcheck [-n N] [--warmup W] [--quiesce-ms MS] [--ops a,b|all] [--no-samples] [--census] [--track lo:hi] [--track-passes N]\n"
+                    "leakcheck [-n N] [--warmup W] [--quiesce-ms MS] [--ops a,b|all] [--no-samples] [--census] [--utrack lo:hi]\n"
                 );
                 out!("ops: ");
                 for o in ops::OPS {
@@ -216,17 +180,7 @@ fn main() {
             out!("LEAKCHECK-SKIP {} unknown-op\n", name);
             continue;
         };
-        let passes = if cfg.track.is_some() {
-            cfg.track_passes
-        } else {
-            1
-        };
-        for pass in 1..=passes {
-            if passes > 1 {
-                out!("LEAKCHECK-PASS {} {}/{}\n", op.name, pass, passes);
-            }
-            run_op(op, &cfg, &mut series, pass);
-        }
+        run_op(op, &cfg, &mut series);
     }
 
     out!("LEAKCHECK-END\n");
@@ -260,7 +214,7 @@ fn dump_self_map(tag: &str) {
     out!("LEAKCHECK-SELFMAP-END {} count={}\n", tag, n);
 }
 
-fn run_op(op: &ops::Op, cfg: &Config, series: &mut Vec<Sample>, pass: usize) {
+fn run_op(op: &ops::Op, cfg: &Config, series: &mut Vec<Sample>) {
     let mut state = (op.setup)();
     series.clear();
 
@@ -271,18 +225,11 @@ fn run_op(op: &ops::Op, cfg: &Config, series: &mut Vec<Sample>, pass: usize) {
     // After the quiesce, so anything the previous op deferred is already reclaimed and does not
     // read as this op's growth.
     let census_before = cfg.census.then(census::take);
-    let kalloc_before = sys_kalloc_census();
     // Unconditional: the counters are always collected, and a per-op readout costs one line. The
     // op that needs it most is whichever one turns out to leak, which is not known in advance.
     let uheap_before = uheap::take();
     if let Some((lo, hi)) = cfg.utrack {
         uheap::track_arm(lo, hi);
-    }
-    // Armed after the pre-quiesce so the table holds this op's allocations and nothing else: the
-    // residual is scale-triggered, and a table that also held the boot's live set would overflow
-    // long before the op ran.
-    if let Some((lo, hi)) = cfg.track {
-        sys_kalloc_track(KALLOC_TRACK_ARM, lo, hi);
     }
 
     for _ in 0..cfg.iters {
@@ -299,26 +246,6 @@ fn run_op(op: &ops::Op, cfg: &Config, series: &mut Vec<Sample>, pass: usize) {
     // ordering, which is why only the after-side leaked in.
     let uheap_after = uheap::take();
     let census_after = cfg.census.then(census::take);
-    let kalloc_after = sys_kalloc_census();
-    // After the post-quiesce, so every deferred free has run: what is left is retained, not in
-    // flight. The dump itself prints from the kernel (KALLOC-TRACK-*), out of the alloc path.
-    if cfg.track.is_some() {
-        let t = sys_kalloc_track(KALLOC_TRACK_DUMP, 0, 0);
-        // `pass` is on this line and not on the others so that every existing line keeps its
-        // format and `leakplot.py` keeps parsing; the pass number only ever matters here.
-        out!(
-            "LEAKCHECK-TRACK {}#{} live={} inserted={} removed={} overflow={} free_miss={}\n",
-            op.name,
-            pass,
-            t.live,
-            t.inserted,
-            t.removed,
-            t.overflow,
-            t.free_miss
-        );
-        sys_kalloc_track(KALLOC_TRACK_OFF, 0, 0);
-    }
-
     let failed = ops::failures(&state);
     if failed > 0 {
         out!(
@@ -413,8 +340,6 @@ fn run_op(op: &ops::Op, cfg: &Config, series: &mut Vec<Sample>, pass: usize) {
             f.n
         );
     }
-
-    report_kalloc(op.name, &kalloc_before, &kalloc_after, cfg.iters);
 
     if let (Some(b), Some(a)) = (census_before.as_ref(), census_after.as_ref()) {
         report_census(op.name, b, a, cfg.iters);
@@ -611,61 +536,4 @@ fn pthread_dtor_probe() {
         N,
         DTOR_RUNS.load(SeqCst)
     );
-}
-
-/// Kernel-heap allocation deltas by size class, per operation.
-///
-/// `mem.kalloc_bytes` is net-live kernel heap, so a slope on it is bytes the kernel never freed;
-/// this says which size class holds them. Gross alloc/free counts are printed alongside the net
-/// because they answer different questions: a class with 8,800 allocations and 8,580 frees is a
-/// churny path retaining a few, and a class with 220 allocations and 0 frees is a per-iteration
-/// leak. Only classes that moved are printed.
-fn report_kalloc(op: &str, before: &KallocCensus, after: &KallocCensus, iters: usize) {
-    let mut rows: Vec<(usize, u64, u64, i64, i64)> = Vec::new();
-    let mut total_net_bytes = 0i64;
-    for b in 0..KALLOC_NR_BUCKETS {
-        let (x, y) = (&before.buckets[b], &after.buckets[b]);
-        let ac = y.alloc_count.saturating_sub(x.alloc_count);
-        let fc = y.free_count.saturating_sub(x.free_count);
-        let ab = y.alloc_bytes.saturating_sub(x.alloc_bytes) as i64;
-        let fb = y.free_bytes.saturating_sub(x.free_bytes) as i64;
-        if ac == 0 && fc == 0 {
-            continue;
-        }
-        let nb = ab - fb;
-        total_net_bytes += nb;
-        rows.push((b, ac, fc, ac as i64 - fc as i64, nb));
-    }
-    out!(
-        "LEAKCHECK-KALLOC-TOTAL {} net_bytes={} per_iter={:.1} classes={} unbalanced={}\n",
-        op,
-        total_net_bytes,
-        total_net_bytes as f64 / iters as f64,
-        rows.len(),
-        rows.iter().filter(|r| r.3 != 0).count()
-    );
-    // Every class whose count did not balance, not the top N by bytes. The top-N form lost the
-    // finding it was built for: a boot whose trap symbolized in-window retained 878 KB of DWARF
-    // context, which occupied the whole table and truncated the 800-byte class being hunted. A
-    // class that allocated and freed in equal numbers is the uninteresting case and stays cut.
-    rows.sort_by_key(|r| -(r.4.abs()));
-    let unbalanced = rows.iter().filter(|r| r.3 != 0).count();
-    for (b, ac, fc, nc, nb) in rows
-        .into_iter()
-        .filter(|r| r.3 != 0)
-        .take(40)
-        .collect::<Vec<_>>()
-    {
-        let _ = unbalanced;
-        out!(
-            "LEAKCHECK-KALLOC {} size={} alloc={} free={} net_count={} net_bytes={} per_iter={:.2}\n",
-            op,
-            KallocCensus::bucket_size(b),
-            ac,
-            fc,
-            nc,
-            nb,
-            nb as f64 / iters as f64
-        );
-    }
 }

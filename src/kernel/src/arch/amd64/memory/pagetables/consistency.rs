@@ -26,24 +26,6 @@ use crate::{
     thread::current_thread_ref,
 };
 
-/// A/B knob for acknowledging a shootdown without taking the target's lock.
-///
-/// `is_finished` used to take the target cpu's [`TlbShootdownInfo::lock`], so a sender spinning in
-/// [`PendingShootdown::do_wait`] issued a cli and a `lock xchg` on the very cache line that target
-/// must acquire in `complete` to acknowledge -- ~100 times per pause, since `spin_wait_until` polls
-/// the condition that often between pauses. A failed swap also read as "not finished", so colliding
-/// with the acknowledger lengthened the wait that was waiting on it.
-///
-/// The knock-on is likely the larger half and is not on the shootdown path at all: `complete` gets
-/// the same lock-free early-out, and it runs from `spin_wait_iteration` -- i.e. inside *every*
-/// contended spinlock acquisition in the kernel -- where the common case is an empty queue that
-/// otherwise costs a cli and a locked RMW to discover.
-///
-/// `false` restores the lock-taking readers. [`TlbShootdownInfo::has_work`] is maintained in both
-/// arms so that only the read path differs; its stores are to a line the writer already holds
-/// exclusively under the lock.
-pub const TLB_LOCKFREE_ACK: bool = true;
-
 /// Instruction capacity, sized so [`TlbInvData`] fills a whole number of cache lines.
 ///
 /// Each *instruction* now describes a contiguous *run* of same-level pages ([`InvInstruction`]
@@ -323,22 +305,15 @@ impl TlbInvData {
             logln!("   -> {:x} {}", inst.addr().raw(), inst.level());
         }
         */
-        use crate::memory::pagetables::invl_census::{self, Outcome};
         // If none of the commands are global, and it's targeting a different set of
         // page tables than is active, then we can ignore it.
         let ours = our_cr3 == self.target();
         if !ours && !self.global() {
-            invl_census::record(Outcome::Skipped);
             self.drop_claim_here();
             return;
         }
 
         if self.full() {
-            invl_census::record(if self.global() {
-                Outcome::FullGlobal
-            } else {
-                Outcome::FullLocal
-            });
             if self.global() {
                 tlb_global_inv();
             } else {
@@ -353,7 +328,6 @@ impl TlbInvData {
             return;
         }
 
-        invl_census::record(Outcome::Precise(self.instructions().len()));
         for inst in self.instructions() {
             inst.execute();
         }
@@ -473,75 +447,19 @@ impl InvInstruction {
     }
 }
 
-/// Issue `clflush` for page-table entries as they are written.
+/// Cache-line maintenance for page-table writes: a no-op on this architecture.
 ///
-/// **Off**, because on this architecture nothing reads those lines out of memory. Three facts,
-/// each checkable rather than argued:
-///
-/// 1. **The x86 page-table walker is coherent with the data caches.** It snoops, so an entry
-///    written and left dirty in L1 is seen by the next walk. This is the whole of what
-///    `update_entry`'s flush was doing on the hot path -- and it pays twice, once for the flush and
-///    again for the miss the *next* walk takes on the line it just evicted.
-/// 2. **No page-table frame is in persistent memory.** `MemoryRegionKind` has exactly three
-///    variants -- `UsableRam`, `Reserved`, `BootloaderReserved` -- and `Table::populate` allocates
-///    through the ordinary frame allocator, so the durability motivation for flushing a page table
-///    has no instance in this tree. **This is the precondition to re-check**: if a persistent
-///    region kind is ever added and page tables can land in it, this must come back on for those
-///    tables.
-/// 3. **The one ordering argument that names `clflush`** -- `Table::do_cow_copy`'s comment about
-///    the downgrade loop being ordered before the entry update below -- **does not need it on
-///    x86.** x86-TSO does not reorder stores with stores, so the loop's writes are already visible
-///    before the later entry write, to other cpus and to their page walkers alike. The `clflush`
-///    leg of that argument was redundant on this architecture. It is *not* redundant on aarch64,
-///    where the walker may not be coherent and the equivalent manager issues `dc cvac; dsb ishst;
-///    isb` -- so this const is deliberately amd64-local rather than a change to the generic
-///    `add_cache_line` call sites, which aarch64 still needs.
-///
-/// Kept as a switch rather than deleted so the cost is measurable in both directions and so fact 2
-/// has somewhere to be re-read when it stops being true.
-const PT_CLFLUSH: bool = false;
-
+/// The x86 page-table walker snoops the data caches, so an entry left dirty in L1 is seen by the
+/// next walk, and no page-table frame lives in persistent memory (`MemoryRegionKind` has no
+/// persistent variant; re-check this if one is added). aarch64's walker may not be coherent, which
+/// is why the generic `add_cache_line` call sites stay and this is amd64-local.
 #[derive(Default)]
-/// An object that manages cache line invalidations during page table updates.
-pub struct ArchCacheLineMgr {
-    dirty: Option<u64>,
-}
+pub struct ArchCacheLineMgr;
 
-const CACHE_LINE_SIZE: u64 = 64;
 impl ArchCacheLineMgr {
-    /// Flush a given cache line when this [ArchCacheLineMgr] is dropped. Subsequent flush requests
-    /// for the same cache line will be batched. Flushes for different cache lines will cause
-    /// older requests to flush immediately, and the new request will be flushed when this
-    /// object is dropped.
-    pub fn add_cache_line(&mut self, line: VirtAddr) {
-        if !PT_CLFLUSH {
-            return;
-        }
-        let addr: u64 = line.into();
-        let addr = addr & !(CACHE_LINE_SIZE - 1);
-        if let Some(dirty) = self.dirty {
-            if dirty != addr {
-                self.flush();
-                self.dirty = Some(addr);
-            }
-        } else {
-            self.dirty = Some(addr);
-        }
-    }
+    pub fn add_cache_line(&mut self, _line: VirtAddr) {}
 
-    pub fn flush(&mut self) {
-        if let Some(addr) = self.dirty.take() {
-            unsafe {
-                core::arch::asm!("clflush [{addr}]", addr = in(reg) addr);
-            }
-        }
-    }
-}
-
-impl Drop for ArchCacheLineMgr {
-    fn drop(&mut self) {
-        self.flush();
-    }
+    pub fn flush(&mut self) {}
 }
 
 /// A management object for TLB invalidations that occur during a page table operation.
@@ -670,7 +588,6 @@ impl ArchTlbMgr {
     /// the wait moves: the revoke, the fence, the target selection and the send all stay here, so
     /// the ordering argument below holds exactly as it did when this was one function.
     pub fn finish_send(&mut self) -> PendingShootdown {
-        use crate::memory::context::virtmem::unmapprofile as up;
         if !tls_ready() {
             self.reset();
             return PendingShootdown::none();
@@ -717,7 +634,6 @@ impl ArchTlbMgr {
         // of active_cr3 -- so we see it and IPI it. Both sides' AcqRel is load-bearing: the same
         // edge, read the other way, is what publishes our page-table writes to a processor that
         // flushes instead of being IPI'd.
-        let t_st = up::start();
         let pcid = self.data.pcid();
         if pcid != 0 {
             let ours = unsafe { x86::controlregs::cr3() } == self.data.target();
@@ -738,8 +654,6 @@ impl ArchTlbMgr {
         // pair, the one reordering x86 permits, so without this fence we could observe a
         // processor's pre-switch cr3 while it observes our pre-unmap PTEs -- and we would skip
         // it. Pairs with the SeqCst store in `ArchContext::switch_to_target`.
-        up::record(up::Stage::SendRevoke, t_st);
-        let t_st = up::start();
         core::sync::atomic::fence(Ordering::SeqCst);
         // Distribute the invalidation commands, recording exactly who we sent to. `should_target`
         // reads each processor's active cr3, which can change underneath us, so the wait below has
@@ -773,8 +687,6 @@ impl ArchTlbMgr {
             }
         });
         tlb_shootdown_inc_count(count, self.origin, self.data.full() && self.data.global());
-        up::record(up::Stage::SendTarget, t_st);
-        let t_st = up::start();
         if count > 0 {
             trace_tlb_shootdown();
             // Send the IPI, and then do local invalidations.
@@ -804,11 +716,8 @@ impl ArchTlbMgr {
                 super::super::super::apic::send_ipi(Destination::AllButSelf, TLB_SHOOTDOWN_VECTOR);
             }
         }
-        up::record(up::Stage::SendIpi, t_st);
-        let t_st = up::start();
         trace_tlb_invalidation();
         self.data.do_invalidation();
-        up::record(up::Stage::SendLocal, t_st);
 
         // Released before the wait, not after it. It is load-bearing for everything above -- the
         // revoke, the target selection and the local invalidation all have to happen on one
@@ -1017,8 +926,7 @@ pub struct TlbShootdownInfo {
     // global invalidation.
     data: UnsafeCell<[Option<TlbInvData>; NUM_TLB_SHOOTDOWN_ENTRIES]>,
     full_invl: AtomicBool,
-    /// Whether this cpu still owes anyone a drain, readable without the lock. See
-    /// [`TLB_LOCKFREE_ACK`] for why that matters.
+    /// Whether this cpu still owes anyone a drain, readable without the lock.
     ///
     /// Set by `insert` with Release *after* the slot write, so a reader that sees `true` sees the
     /// slot. Cleared by `complete` with Release only once every invalidation has been applied and
@@ -1087,26 +995,9 @@ impl TlbShootdownInfo {
     }
 
     /// Whether this cpu has applied everything sent to it. Called from a *remote* cpu's wait spin,
-    /// so under [`TLB_LOCKFREE_ACK`] it is two plain loads and takes neither the lock nor a cli.
+    /// so it is two plain loads and takes neither the lock nor a cli.
     pub fn is_finished(&self) -> bool {
-        if TLB_LOCKFREE_ACK {
-            return !self.has_work.load(Ordering::Acquire)
-                && !self.full_invl.load(Ordering::Acquire);
-        }
-        interrupt::with_disabled(|| {
-            let full_invl = self.full_invl.load(Ordering::Acquire);
-            if full_invl {
-                return false;
-            }
-            // In this case, we don't actually need to grab the lock
-            if self.lock.swap(true, Ordering::Acquire) {
-                return false;
-            }
-            let data = unsafe { self.data.get().as_mut().unwrap() };
-            let ret = data.iter().all(Option::is_none);
-            self.lock.store(false, Ordering::Release);
-            ret
-        })
+        !self.has_work.load(Ordering::Acquire) && !self.full_invl.load(Ordering::Acquire)
     }
 
     pub fn complete(&self) {
@@ -1115,10 +1006,7 @@ impl TlbShootdownInfo {
         // overwhelmingly common case is an empty queue -- previously paying a cli and a locked RMW
         // to find that out. An `insert` still mid-flight is not a miss: it has not sent its IPI
         // yet, so nobody is waiting on us for it, and it publishes before releasing the lock.
-        if TLB_LOCKFREE_ACK
-            && !self.has_work.load(Ordering::Acquire)
-            && !self.full_invl.load(Ordering::Acquire)
-        {
+        if !self.has_work.load(Ordering::Acquire) && !self.full_invl.load(Ordering::Acquire) {
             return;
         }
         interrupt::with_disabled(|| {
@@ -1178,25 +1066,4 @@ impl TlbShootdownInfo {
             data[i] = None;
         }
     }
-}
-
-/// How many processors could still be using a translation for any of `targets`.
-///
-/// The frame-reuse question asked directly. [`DeferredUnmappingOps::run_all`] waits on the pending
-/// before returning frames to the allocator, so a path that skips the shootdown must know whether
-/// any cpu can still reach those frames. This is [`TlbInvData::should_target`]'s predicate lifted
-/// out and asked about a set of targets rather than one.
-///
-/// `CR3_IN_TRANSITION` **must** count as a match: a cpu midway through a switch may hold entries
-/// for either root, which is exactly why `should_target` treats it as matching every target. A
-/// version that skipped it would report zero while the hazard was live.
-pub fn count_reachable(targets: impl Iterator<Item = ArchContextTarget> + Clone) -> usize {
-    let mut n = 0;
-    with_each_active_processor(|p| {
-        let active = p.arch.active_cr3.load(Ordering::Acquire);
-        if active == CR3_IN_TRANSITION || targets.clone().any(|t| t.raw() == active) {
-            n += 1;
-        }
-    });
-    n
 }

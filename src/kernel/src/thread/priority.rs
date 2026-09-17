@@ -181,7 +181,7 @@ impl Thread {
             // A queued target must be re-filed, not just poked: the queues bucket by insert-time
             // priority, and a donation that crosses classes -- the priority-inversion case this
             // mechanism exists for -- otherwise leaves the owner stranded in the lower class's
-            // structure, starved behind any spinning donor (round357, smp1hang.md).
+            // structure, starved behind any spinning donor.
             if !crate::processor::sched::reprioritize_queued_thread(self) {
                 self.maybe_reschedule_thread();
             }

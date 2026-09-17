@@ -517,15 +517,13 @@ impl Library {
         if self.secgate_info.num == 0 {
             return false;
         }
-        // Prefix-stripped (reconstruction of twizzler-8b's stage-1 hunk, plans/namerplan.md):
+        // Prefix-stripped:
         // the gate-info set records bare names, but a weak-bound gate import references the
         // literal trampoline symbol `__TWIZZLER_SECURE_GATE_<name>`. Both spellings name the
         // same gate, so the permission check must accept both.
         let name = name.strip_prefix(GATE_PREFIX).unwrap_or(name);
-        let build = || {
-            let _start = std::time::Instant::now();
-            let set: std::collections::HashSet<Box<str>> = self
-                .iter_secgates()
+        let build = || -> std::collections::HashSet<Box<str>> {
+            self.iter_secgates()
                 .map(|gates| {
                     gates
                         .iter()
@@ -533,14 +531,7 @@ impl Library {
                         .map(Box::from)
                         .collect()
                 })
-                .unwrap_or_default();
-            secgate::statlog::record_on_anon(
-                crate::context::SGNAME_STATS,
-                "SGNAMES",
-                _start.elapsed().as_nanos() as u64 / 1000,
-                &[set.len() as u64],
-            );
-            set
+                .unwrap_or_default()
         };
         self.secgate_names.get_or_init(build).contains(name)
     }

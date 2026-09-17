@@ -31,9 +31,6 @@ use crate::mon::get_monitor;
 /// is cheaper than an unwatched thread.
 const WAKE_DEPTH: usize = 8;
 
-/// A/B switch: `false` issues the wake syscall on every queued op, the way this used to.
-const COALESCE_WAKES: bool = true;
-
 /// Tracks threads that do not exit cleanly, so their monitor-internal resources can be cleaned up.
 pub(crate) struct ThreadCleaner {
     _thread: std::thread::JoinHandle<()>,
@@ -63,7 +60,7 @@ struct Waits {
     /// Rebuilding this from scratch made every wakeup O(tracked threads) in userspace on top of
     /// the O(tracked threads) the kernel already pays inserting the sleep entries -- and the
     /// cleaner wakes once per spawn. The kernel half is inherent to waiting on N words with
-    /// one syscall (`sysperf.md` lead 3); this half was not.
+    /// one syscall; this half was not.
     ops: Vec<ThreadSync>,
 }
 
@@ -134,7 +131,7 @@ impl ThreadCleanerData {
     /// syscall.
     fn notify(&self, force: bool) {
         self.notify.store(1, Ordering::SeqCst);
-        if COALESCE_WAKES && !force && !self.parked.load(Ordering::SeqCst) {
+        if !force && !self.parked.load(Ordering::SeqCst) {
             return;
         }
         let mut ops = [ThreadSync::new_wake(ThreadSyncWake::new(

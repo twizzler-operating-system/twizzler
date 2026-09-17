@@ -106,12 +106,6 @@ const REQUIRED_SEGMENT_LIMIT: u64 = 16;
 /// Bytes covered by one large page, i.e. the granularity the kernel merges 4 KiB frames at.
 const LARGE_REGION: u64 = 2 * 1024 * 1024;
 
-/// Whether a required range whose whole large-page region is being requested is served as that
-/// region entire, instead of as a short urgent segment. Trading the early wake for the merge, but
-/// only where a merge is actually possible; see `largepager.md`. `false` restores the unconditional
-/// short segment.
-const WHOLE_REGION_FOR_LARGE: bool = true;
-
 /// The large-page region containing `offset`, if serving it whole could produce a large page.
 ///
 /// Two ways it could not, and both fall back to the short urgent segment:
@@ -125,7 +119,7 @@ const WHOLE_REGION_FOR_LARGE: bool = true;
 ///   no longer merge whatever the pager does, so rounding out would buy latency and nothing else.
 fn whole_region(req_range: ObjectRange, offset: u64) -> Option<ObjectRange> {
     let start = offset - offset % LARGE_REGION;
-    if !WHOLE_REGION_FOR_LARGE || start == 0 {
+    if start == 0 {
         return None;
     }
     let region = ObjectRange::new(start, start + LARGE_REGION);
@@ -324,8 +318,8 @@ fn handle_page_data_request_task(
     // `known_len` says (that is what its `max(asked_end)` is for, since an object's metadata lives
     // past the data length), so "a later fault asks again for a range that does exist" is false --
     // the later fault is the *same* fault, asks the same range, and gets the same empty answer.
-    // Nothing else fills the page: `ZERO_FILL_PAST_EOF` is off on the kernel side, deliberately,
-    // which leaves serving a hole to this side. Observed as an unbounded refault loop on a write
+    // Nothing else fills the page: the kernel zero-fills only a fault past an exact EOF, which
+    // leaves serving a hole to this side. Observed as an unbounded refault loop on a write
     // into a sparse region -- 2.1M identical page-data requests, the store never read once, the
     // faulting thread never advancing.
     //
@@ -383,8 +377,8 @@ fn handle_page_data_request_task(
     //
     // The kernel widens a one-page touch to a whole large-page region, so most of a page-data
     // request is speculative and nobody waits on it -- but it all used to arrive as a single
-    // completion, so the faulting thread slept through the entire transfer to get its one page
-    // (`pagerperf.md` 11). Transferring the required subrange as its own batch lets the kernel wake
+    // completion, so the faulting thread slept through the entire transfer to get its one page.
+    // Transferring the required subrange as its own batch lets the kernel wake
     // it after tens of kilobytes instead.
     //
     // The segments are disjoint, so no page moves twice. The required range is by construction
@@ -433,7 +427,7 @@ fn handle_page_data_request(
     );
     // Speculation must never crowd out a demand fault. A prefetch occupies a worker for its whole
     // transfer, so an unbounded burst of them can take every bulk lane and put real faults behind
-    // work nobody has asked for yet (pagerplan.md, stage 3). Over the cap we simply decline: the
+    // work nobody has asked for yet. Over the cap we simply decline: the
     // kernel never waits on a prefetch, so acking it is a complete answer, and the pages get read
     // on demand if they are ever actually wanted.
     if flags.contains(PagerFlags::PREFETCH)
@@ -459,7 +453,7 @@ fn object_info_req(ctx: &'static PagerContext, id: ObjID) -> Result<ObjectInfo> 
 
 /// Detached, for the same reason page-data requests are.
 ///
-/// `lookup_object` now fills the object's meta page (mapperf.md), which means this request does
+/// `lookup_object` now fills the object's meta page, which means this request does
 /// real I/O and a physrw round trip. Run inline it holds a whole worker lane for its duration --
 /// and that lane is one of the ones page-data requests need, during a read phase that is mostly
 /// page-data. Handing the kernel its completion from a task instead frees the lane immediately.
@@ -471,7 +465,6 @@ fn handle_object_info_request(
 ) -> Option<CompletionToKernel> {
     // Its own `Work`, for the same reason page-data requests take one.
     let _work = watchdog::begin("info-task", qid, req);
-    let start = crate::dispatch_stats::DispatchStats::now_ns();
     {
         let data = match object_info_req(ctx, obj_id) {
             Ok(info) => KernelCompletionData::ObjectInfoCompletion(obj_id, info),
@@ -481,8 +474,6 @@ fn handle_object_info_request(
             qid,
             CompletionToKernel::new(data, KernelCompletionFlags::DONE),
         );
-        crate::dispatch_stats::DISPATCH_STATS
-            .info_task(crate::dispatch_stats::DispatchStats::now_ns() - start);
     }
     None
 }
@@ -522,23 +513,6 @@ fn handle_sync_region(
     }
 }
 
-/// Whether `ObjectCreate` unlinks the id before creating it.
-///
-/// It used to, unconditionally, to guarantee a create lands on a clean object. For a *fresh* id --
-/// which is what the kernel sends almost every time -- that unlink is a global-fs-lock acquisition
-/// and a full directory lookup whose only possible outcome is `NotFound`, i.e. one of the six store
-/// round trips per create doing no work but paying for block reads. `create` now implies `O_TRUNC`
-/// (see `Ext4Store::do_get_object_as_file`), so the clean-object guarantee comes from the lookup
-/// the create was already doing.
-///
-/// Kept as a constant rather than deleted so the two can be A/B'd from one build: this sits on the
-/// path of a 2x regression that is not yet explained, and being able to put the probe back without
-/// a source change is worth one `if`.
-const CREATE_PROBE_DELETE: bool = false;
-
-/// Restore the redundant post-delete flush. See the note at its site.
-const DEL_EXTRA_FLUSH: bool = false;
-
 pub fn handle_kernel_request(
     ctx: &'static PagerContext,
     qid: u32,
@@ -559,13 +533,7 @@ pub fn handle_kernel_request(
                 work.phase("del:delete");
                 match po.delete_object(obj_id.raw()) {
                     Ok(_) => {
-                        // `delete_object` flushes internally after `remove_file`, so this second
-                        // flush re-took the global fs lock for an already-empty dirty list.
-                        // Measured at 891us mean, 6.0% of `pager_create_delete_persistent`.
-                        if DEL_EXTRA_FLUSH {
-                            work.phase("del:flush");
-                            let _ = po.flush();
-                        }
+                        // `delete_object` flushes internally after `remove_file`; no second flush.
                         KernelCompletionData::Okay
                     }
                     Err(e) => KernelCompletionData::Error(TwzError::from(e).into()),
@@ -575,10 +543,6 @@ pub fn handle_kernel_request(
         },
         KernelCommand::ObjectCreate(id, object_info) => match ctx.paged_ostore(None) {
             Ok(po) => {
-                if CREATE_PROBE_DELETE {
-                    work.phase("create:delete-existing");
-                    let _ = po.delete_object(id.raw());
-                }
                 work.phase("create:create");
                 match po.create_object(id.raw()) {
                     Ok(_) => {
@@ -617,7 +581,7 @@ pub fn handle_kernel_request(
                         // kuid/nonce/def_prot fields and we have just written them into the meta
                         // page, so `check_id` would read back exactly what it already knows.
                         // Without this the first map of every pager-backed object pays a meta-page
-                        // page-in for an answer nobody had to look up (mapperf.md).
+                        // page-in for an answer nobody had to look up.
                         KernelCompletionData::ObjectInfoCompletion(id, object_info.validated())
                     }
                     Err(e) => {

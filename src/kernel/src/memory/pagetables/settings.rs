@@ -9,8 +9,8 @@ bitflags::bitflags! {
         /// The mapping is accessible by userspace.
         const USER = 2;
         const WIRED = 4;
-        /// Suppress the map-time `DIRTY` bit and tag the entry for
-        /// [`zeroprobe`](super::zeroprobe). Anonymous fills only -- see that module.
+        /// Suppress the map-time `DIRTY` bit and mark the entry `PROBED`, so the hardware bit
+        /// records whether the page was ever written. Anonymous objects only.
         const PROBE = 8;
     }
 }

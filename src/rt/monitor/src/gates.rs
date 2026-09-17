@@ -102,7 +102,6 @@ pub fn monitor_rt_compartment_dynamic_gate_inline(
     let info = secgate::get_caller().ok_or(TwzError::NOT_SUPPORTED)?;
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
-    crate::mon::ptstats::record(crate::mon::ptstats::Site::GateAddrInline);
     monitor.gate_address_named(caller, desc, name.as_str()?)
 }
 
@@ -143,7 +142,6 @@ pub fn monitor_rt_lookup_compartment_inline(
     let info = secgate::get_caller().ok_or(TwzError::NOT_SUPPORTED)?;
     let monitor = crate::mon::get_monitor();
     let caller = info.source_context().unwrap_or(MONITOR_INSTANCE_ID);
-    crate::mon::ptstats::record(crate::mon::ptstats::Site::LookupCompInline);
     monitor.lookup_compartment_named(caller, name.as_str()?)
 }
 
@@ -307,8 +305,6 @@ pub fn monitor_rt_comp_ctrl(cmd: MonitorCompControlCmd) -> Result<Option<i32>, T
 
 #[secgate::entry(lib = "monitor-api")]
 pub fn monitor_rt_stats() -> Result<MonitorStats, TwzError> {
-    // Before taking the monitor: `tick` prints, and `stats()` holds the lock collection.
-    crate::heapdiag::tick();
     let monitor = crate::mon::get_monitor();
     Ok(monitor.stats())
 }

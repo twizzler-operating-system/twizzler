@@ -85,7 +85,6 @@ use std::{
     ffi::{c_void, CStr},
 };
 
-use tracing::warn;
 use twizzler_abi::{
     object::{ObjID, MAX_SIZE},
     syscall::ObjectCreate,
@@ -214,16 +213,12 @@ pub unsafe extern "C-unwind" fn twz_rt_malloc(
         // `ensure_sufficient_stack` and touches almost none of it -- 81,136 such mappings and
         // 85.7 GB of `rep stosq` in one measured `cargo build`, 99.5% of all runtime zeroing.
         if sz >= LAZY_ZERO_MIN && align >= PAGE && sz % PAGE == 0 {
-            crate::runtime::alloc::ferroc::zbump(0, 1);
-            crate::runtime::alloc::ferroc::zbump(1, sz as u64);
             // Whole pages out of a dedicated arena: already zero, so nothing is written and no
             // syscall is made. Declines (not ready, too big, table full) fall through to the
             // heap-backed path below, which still beats a memset.
             if let Some(p) = crate::runtime::alloc::anon::alloc(sz) {
                 return p.cast();
             }
-            crate::runtime::alloc::ferroc::zbump(2, 1);
-            crate::runtime::alloc::ferroc::zbump(3, sz as u64);
             let ptr = OUR_RUNTIME.alloc(layout);
             if ptr.is_null() {
                 return core::ptr::null_mut();
@@ -234,8 +229,6 @@ pub unsafe extern "C-unwind" fn twz_rt_malloc(
             }
             return ptr.cast();
         }
-        crate::runtime::alloc::ferroc::zbump(4, 1);
-        crate::runtime::alloc::ferroc::zbump(5, sz as u64);
         OUR_RUNTIME.alloc_zeroed(layout).cast()
     } else {
         OUR_RUNTIME.alloc(layout).cast()
@@ -1419,19 +1412,6 @@ pub unsafe extern "C-unwind" fn __monitor_get_slot_pair(one: *mut usize, two: *m
 #[no_mangle]
 pub unsafe extern "C-unwind" fn __monitor_ready() {
     OUR_RUNTIME.set_runtime_ready();
-    // Arm identity from the artifact, not the source (the ANON_FAULT_AROUND pattern): every
-    // monitor transcript names which allocator routing it actually booted with. Behind
-    // `--diag=monitor`, read from argv like the monitor's own gate — this runs in the monitor's
-    // process, whose environment predates init's TWZ_DIAG export.
-    if std::env::args().any(|a| {
-        a.strip_prefix("--diag=")
-            .is_some_and(|l| l.split(',').any(|c| c == "monitor" || c == "all"))
-    }) {
-        twizzler_abi::klog_println!(
-            "[monitor] alloc tunables: MONITOR_FERROC={}",
-            crate::runtime::alloc::MONITOR_FERROC
-        );
-    }
 }
 
 #[no_mangle]

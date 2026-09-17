@@ -222,15 +222,26 @@ impl Pipe {
         self.bump_events(false);
     }
 
-    fn do_sleep(&self, sync: ThreadSyncSleep, intr_gen: u64) -> std::io::Result<()> {
-        let readers = self.readers();
+    /// `readers`/`writers` are the counts the caller *decided* on, not fresh reads.
+    ///
+    /// Arming on a fresher value loses the wake: `read` tests a count sampled before its attempt,
+    /// so a close landing between that sample and this one is neither reported as EOF (the test
+    /// used the stale count) nor waited for (the sleep would hold on the post-close value, whose
+    /// wake already fired). Arming on the caller's snapshot makes that case a no-sleep return
+    /// instead, and the retry loop then reads the new count and reports EOF.
+    fn do_sleep(
+        &self,
+        sync: ThreadSyncSleep,
+        intr_gen: u64,
+        readers: u64,
+        writers: u64,
+    ) -> std::io::Result<()> {
         let reader_sync = ThreadSync::new_sleep(ThreadSyncSleep::new(
             ThreadSyncReference::Virtual(&self.pipe.base().readers),
             readers,
             ThreadSyncOp::Equal,
             ThreadSyncFlags::empty(),
         ));
-        let writers = self.writers();
         let writer_sync = ThreadSync::new_sleep(ThreadSyncSleep::new(
             ThreadSyncReference::Virtual(&self.pipe.base().writers),
             writers,
@@ -265,8 +276,10 @@ impl Pipe {
         let intr_gen = interrupt_gen();
         loop {
             // Before the read, so a writer closing during the attempt is not mistaken for EOF
-            // on data that was already drained.
+            // on data that was already drained. Both counts are also what `do_sleep` arms on --
+            // see there for why it must not re-read them.
             let writers = self.writers();
+            let readers = self.readers();
             let sync = self.pipe.base().buffer.sync_for_pending_data();
             let count = self.pipe.base().buffer.read_bytes(buf)?;
             if count > 0 {
@@ -283,7 +296,7 @@ impl Pipe {
             if interrupted_since(intr_gen) {
                 return Err(ErrorKind::Interrupted.into());
             }
-            self.do_sleep(sync, intr_gen)?;
+            self.do_sleep(sync, intr_gen, readers, writers)?;
         }
     }
 }
@@ -292,7 +305,10 @@ impl Pipe {
     pub fn write(&self, buf: &[u8], nb: bool) -> std::io::Result<usize> {
         let intr_gen = interrupt_gen();
         loop {
+            // Same pairing as `read`: these are the counts the BrokenPipe test below decides on,
+            // and the ones `do_sleep` arms on.
             let readers = self.readers();
+            let writers = self.writers();
             let sync = self.pipe.base().buffer.sync_for_avail_space();
             if readers == 0 {
                 return Err(ErrorKind::BrokenPipe.into());
@@ -311,7 +327,7 @@ impl Pipe {
             if interrupted_since(intr_gen) {
                 return Err(ErrorKind::Interrupted.into());
             }
-            self.do_sleep(sync, intr_gen)?;
+            self.do_sleep(sync, intr_gen, readers, writers)?;
         }
     }
 

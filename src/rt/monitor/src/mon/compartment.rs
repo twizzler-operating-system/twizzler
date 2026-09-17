@@ -11,16 +11,10 @@ use monitor_api::{
     MONITOR_INSTANCE_ID,
 };
 use secgate::util::Descriptor;
-use twizzler_abi::{
-    object::{MAX_SIZE, NULLPAGE_SIZE},
-    syscall::{
-        sys_object_preload_range, sys_thread_change_state, sys_thread_sync, PreloadRangeSpec,
-        ThreadSync, MAX_PRELOAD_RANGES,
-    },
-};
+use twizzler_abi::syscall::{sys_thread_change_state, sys_thread_sync, ThreadSync};
 use twizzler_rt_abi::{
     error::{ArgumentError, GenericError, NamingError, ResourceError, TwzError},
-    object::{MapFlags, ObjID},
+    object::ObjID,
 };
 
 use super::thread::ThreadMgr;
@@ -33,97 +27,6 @@ mod runcomp;
 pub use compconfig::*;
 pub(crate) use compthread::StackObject;
 pub use runcomp::*;
-
-/// Switch for prefaulting the root object before a compartment load (`COMPNEW.md` plan A).
-///
-/// **Off because it was measured and does not pay.** release-kvm-smp4, 3 rounds each, ~200
-/// compartment loads per arm, this switch the only difference: whole-load median 16.31 ms on vs
-/// 16.47 ms off. The root-load phase does move the predicted way (7.04 vs 7.75 ms median), but
-/// relocation moves back by about the same (7.63 vs 6.93), so nothing reaches the whole load. The
-/// tail got worse, not better: worst root-load 121.8 ms with it on against 18.6 ms with it off,
-/// which is the "prefetch of a superset" risk the plan flagged.
-///
-/// Left in place, switched off, alongside the counters that measured it: the premise (relocation
-/// waits on source-object COW faults) is only half-refuted, and the next attempt needs this.
-/// Switch for the per-spawn phase counter (`SPAWNPHA`): parse / load / start.
-///
-/// `start_compartment` **blocks until the new compartment signals `COMP_READY`**, so
-/// `monitor_rt_load_compartment` -- and therefore `Command::spawn` -- does not return until the
-/// child's runtime has come up. That makes "the load" and "the child booting" two different costs
-/// inside one number, and `LOAD_PHASE_STATS` can only see the first of them. Off by default; the
-/// values are microseconds.
-pub(crate) const SPAWN_PHASE_STATS: bool = false;
-
-/// Monitor half of the spawn-latency join (`SPAWNGO`); the child half is `CHILDTOP`, behind
-/// `twz_rt`'s `SPAWN_LAT_STATS`. **Flip both together** -- two crates, one measurement. One
-/// record per side per spawn, deliberately not folded into [`SPAWN_PHASE_STATS`] so the window
-/// can be read without arming the higher-volume phase counters around it.
-pub(crate) const SPAWN_LAT_STATS: bool = false;
-
-const PREFAULT_ROOT: bool = false;
-
-/// Prefault the PT_LOAD ranges of a compartment's root object, outside the dynlink lock.
-///
-/// Best-effort throughout: every failure here just leaves the pages to be demand-faulted later,
-/// which is what happened before this existed.
-///
-/// **The returned handle must be held until the load finishes.** `Space::map` refcounts by
-/// `MapInfo`, and this asks for exactly the mapping dynlink's `load_object` asks for moments later.
-/// Dropping it here first takes the count to zero, which removes the cache entry and hands the slot
-/// to the background unmapper -- which then races dynlink's fresh map of the same object onto a
-/// recycled slot and unmaps it underneath. Holding it keeps the count above zero, so dynlink's map
-/// is a cache hit rather than a second syscall.
-#[must_use = "dropping the handle early unmaps the object out from under the load"]
-fn prefault_root_object(root_object: ObjID) -> Option<super::space::MapHandle> {
-    if !PREFAULT_ROOT {
-        return None;
-    }
-    let handle = super::space::Space::map(
-        &super::get_monitor().space,
-        super::space::MapInfo {
-            id: root_object,
-            flags: MapFlags::READ,
-        },
-        ObjID::new(0),
-    )
-    .ok()?;
-
-    // The ELF image starts at the data base, not the slot base: `monitor_data_start` is the
-    // object's null page, which is unmapped by design. This mirrors `dynlink::engines::Backing`,
-    // which stores the slot base and adds NULLPAGE_SIZE in `data()`.
-    let data = unsafe {
-        core::slice::from_raw_parts(
-            handle.monitor_data_base() as *const u8,
-            MAX_SIZE - NULLPAGE_SIZE * 2,
-        )
-    };
-
-    // Every path from here returns the handle, including the failure paths: once the map exists,
-    // dropping it before dynlink takes its own reference is the race described above.
-    match dynlink::library::pt_load_ranges(data) {
-        Err(e) => {
-            tracing::debug!(
-                "prefault {}: could not read program headers: {}",
-                root_object,
-                e
-            );
-        }
-        Ok(ranges) => {
-            // File offset N lives at object offset NULLPAGE_SIZE + N; see `engines::twizzler`.
-            let specs: Vec<_> = ranges
-                .iter()
-                .take(MAX_PRELOAD_RANGES)
-                .map(|(off, len)| PreloadRangeSpec::from_bytes(NULLPAGE_SIZE as u64 + off, *len))
-                .collect();
-            if !specs.is_empty() {
-                let _ = sys_object_preload_range(root_object, &specs)
-                    .inspect_err(|e| tracing::debug!("prefault {} failed: {}", root_object, e));
-            }
-        }
-    }
-
-    Some(handle)
-}
 
 /// Manages compartments.
 #[derive(Default)]
@@ -498,7 +401,6 @@ impl super::Monitor {
                     instance
                 );
             }
-            super::ptstats::record(super::ptstats::Site::CompInfo);
             let pt = comps.get(instance)?.get_per_thread(thread);
             let name_len = pt.lock().unwrap().write_bytes(name.as_bytes());
             Ok(Ok(CompartmentInfoRaw {
@@ -546,12 +448,7 @@ impl super::Monitor {
         desc: Option<Descriptor>,
         name_len: usize,
     ) -> Result<usize, TwzError> {
-        let name = self.read_thread_simple_buffer(
-            instance,
-            thread,
-            name_len,
-            super::ptstats::Site::GateAddr,
-        )?;
+        let name = self.read_thread_simple_buffer(instance, thread, name_len)?;
         let name = String::from_utf8(name)
             .ok()
             .ok_or(TwzError::INVALID_ARGUMENT)?;
@@ -670,12 +567,7 @@ impl super::Monitor {
         thread: ObjID,
         name_len: usize,
     ) -> Result<Descriptor, TwzError> {
-        let name = self.read_thread_simple_buffer(
-            instance,
-            thread,
-            name_len,
-            super::ptstats::Site::LookupComp,
-        )?;
+        let name = self.read_thread_simple_buffer(instance, thread, name_len)?;
         let name = String::from_utf8(name)
             .ok()
             .ok_or(TwzError::INVALID_ARGUMENT)?;
@@ -736,7 +628,7 @@ impl super::Monitor {
         let dep = {
             // Reads `comps` and `comphandles` and nothing else, so it takes those two rather than
             // a read of the whole collection -- which includes `dynlink`, held for a write across a
-            // median 31 ms compartment load (`sysperf.md` round 8).
+            // median 31 ms compartment load.
             let (ref comps, ref comphandles) =
                 *crate::lockdiag::watched(self.comp_lookup.read(super::reentrant_key()?));
             let comp_id = desc
@@ -761,7 +653,7 @@ impl super::Monitor {
         let dep = {
             // Reads `comps` and `comphandles` and nothing else, so it takes those two rather than
             // a read of the whole collection -- which includes `dynlink`, held for a write across a
-            // median 31 ms compartment load (`sysperf.md` round 8).
+            // median 31 ms compartment load.
             let (ref comps, ref comphandles) =
                 *crate::lockdiag::watched(self.comp_lookup.read(super::reentrant_key()?));
             let comp_id = desc
@@ -792,12 +684,7 @@ impl super::Monitor {
         let _start_1 = Instant::now();
         let config = unsafe { config.read() };
         let total_bytes = name_len + args_len + env_len;
-        let str_bytes = self.read_thread_simple_buffer(
-            caller,
-            thread,
-            total_bytes,
-            super::ptstats::Site::LoadComp,
-        )?;
+        let str_bytes = self.read_thread_simple_buffer(caller, thread, total_bytes)?;
         let name_bytes = &str_bytes[0..name_len];
         let arg_bytes = &str_bytes[name_len..(name_len + args_len)];
         let env_bytes = &str_bytes[(name_len + args_len)..total_bytes];
@@ -859,31 +746,13 @@ impl super::Monitor {
         // installs the new text/data objects as COW copy-specs of this object, so the first write
         // during relocation faults through to here -- and that used to be a disk read taken under
         // the dynlink write lock. The root binary is the only library this matters for: the shared
-        // ones are resident after the first compartment (`sysperf.md` round 8).
-        // Held until the end of this function: see `prefault_root_object`.
-        let _prefault = prefault_root_object(root_object);
-
+        // ones are resident after the first compartment.
         let _start_2 = Instant::now();
-        // Spawn-side lock *wait* probe (`LCKWAIT`, vals = [site]): MONHOLD names holders, but the
-        // tail question is whether a spawn queues behind them at all. Sites: 1 = dynlink.write,
-        // 2 = dynlink.read, 3 = locks.lock (build_rcs), 4/5 = start_compartment's two.
-        let lck_wait = |site: u64, t0: Option<Instant>| {
-            if let Some(t0) = t0 {
-                secgate::statlog::record_on(
-                    SPAWN_PHASE_STATS,
-                    "LCKWAIT",
-                    t0.elapsed().as_micros() as u64,
-                    &[site],
-                );
-            }
-        };
         // Two phases, two locks. Graph mutation needs the write; relocation does not, and is a
         // median 6.7 ms of the load that every reader of the lock collection used to queue behind.
         let pending = {
-            let _t = SPAWN_PHASE_STATS.then(Instant::now);
             let mut dynlink =
                 crate::lockdiag::watched(self.dynlink.write(ThreadKey::get().unwrap()));
-            lck_wait(1, _t);
             loader::RunCompLoader::load_graph(
                 *dynlink,
                 compname,
@@ -898,19 +767,15 @@ impl super::Monitor {
         .map_err(|_| GenericError::Internal)?;
 
         let loader = {
-            let _t = SPAWN_PHASE_STATS.then(Instant::now);
             let dynlink = crate::lockdiag::watched(self.dynlink.read(ThreadKey::get().unwrap()));
-            lck_wait(2, _t);
             pending.relocate_and_finish(*dynlink, compname, mondebug)
         }
         .inspect_err(|e| tracing::error!("failed to relocate new compartment: {}", e))
         .map_err(|_| GenericError::Internal)?;
 
         let root_comp = {
-            let _t = SPAWN_PHASE_STATS.then(Instant::now);
             let (_, ref mut cmp, ref mut dynlink, _, _) =
                 &mut *crate::lockdiag::watched(self.locks.lock(ThreadKey::get().unwrap()));
-            lck_wait(3, _t);
 
             let controller = match config.controller {
                 ControllerOption::Inherit => cmp.get(caller)?.controller,
@@ -949,16 +814,6 @@ impl super::Monitor {
             (_start_3 - _start_2).as_millis(),
             _start_3.elapsed().as_millis()
         );
-        secgate::statlog::record_on(
-            SPAWN_PHASE_STATS,
-            "SPAWNPHA",
-            _start_1.elapsed().as_micros() as u64,
-            &[
-                (_start_2 - _start_1).as_micros() as u64,
-                (_start_3 - _start_2).as_micros() as u64,
-                _start_3.elapsed().as_micros() as u64,
-            ],
-        );
 
         Ok(desc)
     }
@@ -983,8 +838,7 @@ impl super::Monitor {
         // re-partitioned every *pending* entry through `threads_of`, an O(live threads) scan that
         // allocates. A handle drop cannot change thread liveness, so that scan could never find
         // anything a previous pass had not: only a thread exit turns pending into ready, and the
-        // cleaner wakes on exactly that. Measured at 838 holds of 1-5 ms per pair of runs
-        // (`sysperf.md` round 8).
+        // cleaner wakes on exactly that. Measured at 838 holds of 1-5 ms per pair of runs.
         let queued = {
             let (ref mut cmgr, ref mut comp_handles) =
                 *crate::lockdiag::watched(self.comp_lookup.lock(key));

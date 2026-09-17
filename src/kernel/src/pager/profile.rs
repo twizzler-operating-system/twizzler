@@ -1,11 +1,11 @@
 //! Counters for the pager path, dumped at `debug_shutdown`.
 //!
-//! Unlike [`crate::syscall::SYSCALL_PROFILE`] and its siblings there is no switch, because there is
-//! nothing to switch off. The pager is entered on the order of seventy times in a boot, so the
-//! per-request counters cannot distort what they measure; the per-page ones are relaxed adds on the
-//! path that is already moving a page of data. Nothing prints until shutdown.
+//! There is no switch, because there is nothing to switch off. The pager is entered on the order of
+//! seventy times in a boot, so the per-request counters cannot distort what they measure; the
+//! per-page ones are relaxed adds on the path that is already moving a page of data. Nothing prints
+//! until shutdown.
 //!
-//! Two questions shaped what is here, both from `sysperf.md` round 6:
+//! Two questions shaped what is here:
 //!
 //! - **How many pages does a fault ask for against how many it needs?** `pages_requested` against
 //!   the fault count says it directly. The userspace side already reports the pages it *served*
@@ -118,7 +118,7 @@ pub struct PagerProfile {
     pre_ns_max: AtomicU64,
     /// Submit to the first completion handled. Nothing in this segment is the kernel's: it is
     /// queue transit, the pager's scheduling, its store, and its write-back, and it is the
-    /// segment the measurement in `INPROG.md` left unexplained.
+    /// segment earlier measurements left unexplained.
     wait_ns_sum: AtomicU64,
     wait_ns_max: AtomicU64,
     /// First completion to slot release -- how spread out a multi-completion answer is.
@@ -218,7 +218,7 @@ pub static PAGER_PROFILE: PagerProfile = PagerProfile {
 /// registered the object.
 ///
 /// It exists because the map syscall's cost was traced to this function by subtraction
-/// (`INPROG.md`, next step 1) and subtraction cannot say *which part* -- a slow in-kernel lookup
+/// and subtraction cannot say *which part* -- a slow in-kernel lookup
 /// (two sleeping-mutex acquisitions on a global map) and a slow pager round trip are both
 /// consistent with the same total.
 pub mod lookupstats {
@@ -561,7 +561,6 @@ pub fn print_pager_profile() {
     // Before the early return: a boot where nothing was submitted still did lookups, and the
     // in-kernel hit path is half of what this measures.
     lookupstats::print();
-    crate::pager::syncwait::report();
     let submitted = p.submitted.load(Ordering::Relaxed);
     if submitted == 0 {
         return;

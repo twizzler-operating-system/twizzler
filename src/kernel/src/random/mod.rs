@@ -6,7 +6,7 @@ use alloc::{boxed::Box, vec::Vec};
 use core::{borrow::BorrowMut, time::Duration};
 
 use cpu_trng::maybe_add_cpu_entropy_source;
-pub(crate) use fortuna::PerCpuRng;
+pub use fortuna::PerCpuRng;
 use fortuna::{Accumulator, Contributor};
 use jitter::maybe_add_jitter_entropy_source;
 
@@ -70,10 +70,6 @@ impl EntropySources {
     }
 }
 
-/// A/B: serve `getrandom` from a per-cpu batched generator, taking the global accumulator only to
-/// (re)seed. `false` restores routing every request through the one global mutex.
-pub const PERCPU_RNG: bool = true;
-
 /// Bumped whenever new entropy reaches the accumulator, so per-cpu generators know to reseed.
 ///
 /// Starts at 1 rather than 0: a fresh [`PerCpuRng`] carries `seed_gen == 0`, so the mismatch is
@@ -100,12 +96,11 @@ pub fn getrandom(out: &mut [u8], nonblocking: bool) -> bool {
     //
     // `tls_ready` is not optional: `current_processor()` *panics* without it, and `getrandom` runs
     // from `Object::new_kernel` during initrd parsing, well before the processor registry exists.
-    if PERCPU_RNG && crate::processor::tls_ready() {
+    if crate::processor::tls_ready() {
         if percpu_fill(out) {
             return true;
         }
     }
-    // return false;
     let mut acc: LockGuard<Accumulator> = ACCUMULATOR
         .call_once(|| Mutex::new(Accumulator::new()))
         .lock();

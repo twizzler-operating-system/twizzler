@@ -130,30 +130,6 @@ pub fn phase_delta_report() -> Option<String> {
     )
 }
 
-/// Per-phase totals, ordered by total time spent, which is the order that answers "where did the
-/// request go". Mean alone hides a phase that is cheap per call and runs on every request.
-pub fn phase_report() -> String {
-    let stats = PHASE_STATS.lock().unwrap_or_else(|e| e.into_inner());
-    let mut rows: Vec<_> = stats.iter().map(|(k, v)| (*k, *v)).collect();
-    rows.sort_by_key(|(_, v)| core::cmp::Reverse(v.sum_ns));
-    if rows.is_empty() {
-        return "none".to_string();
-    }
-    rows.iter()
-        .map(|(name, acc)| {
-            format!(
-                "{} n={} total={}us mean={}us max={}us",
-                name,
-                acc.n,
-                acc.sum_ns / 1000,
-                acc.sum_ns / acc.n.max(1) / 1000,
-                acc.max_ns / 1000,
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
 /// A registered unit of work. Deregisters on drop, so an early return cannot leave a phantom entry
 /// behind that the sampler would report forever.
 pub struct Work {

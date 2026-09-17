@@ -62,7 +62,7 @@ Not indexed: `target/`, `.target-xtask/`, `toolchain/` (downloaded/built toolcha
 - `src/kernel/src/panic.rs` — panic handler support: loads DWARF debug info from the kernel ELF (via `addr2line`) and produces symbolized `backtrace()`s.
 - `src/kernel/src/queue.rs` — `QueueObject<S,C>`/`ManagedQueueSender`/`ManagedQueueReceiver`/`Outstanding<C>`: kernel-side wrapper around `twizzler-queue-raw` submission/completion queues (used e.g. by the pager).
 - `src/kernel/src/security.rs` — `SecurityContext`, `SecCtxMgr`, `AccessInfo`, capability lookup/caching (`PermsInfo`), security-context switch/attach syscalls, wraps `twizzler-security`.
-- `src/kernel/src/spinlock.rs` — `GenericSpinlock<T, Relax>`/`LockGuard`, `RelaxStrategy` trait with `Reschedule` and `SpinLoop` policies; integrates with lock-tracking (`thread::locktrack`).
+- `src/kernel/src/spinlock.rs` — `GenericSpinlock<T, Relax>`/`LockGuard`, `RelaxStrategy` trait with `Reschedule` and `SpinLoop` policies.
 - `src/kernel/src/time.rs` — `Ticks`, `ClockHardware` trait, tick-source registry (`TICK_SOURCES`), `TimeStatCollector` (mean/variance/min/max stats).
 - `src/kernel/src/userinit.rs` — constructs the initial userspace init object/environment (`create_blank_object`, name object, `KernelInitInfo`) handed off to the first user thread.
 - `src/kernel/src/utils.rs` — `align`, deadlock-avoiding `lock_two`/`spinlock_two` (locks two mutexes/spinlocks in address order), `quick_random`, micro-benchmark helper `benchmark`.
@@ -188,7 +188,7 @@ Not indexed: `target/`, `.target-xtask/`, `toolchain/` (downloaded/built toolcha
 - `src/kernel/src/thread.rs` — `Thread`/`ThreadRef` core struct: state (`ExecutionState`), critical-section tracking (`CriticalGuard`, `do_critical`/`enter_critical`), upcall delivery (`send_upcall`), exit path (`exit`, `force_exit`, `maybe_exit`), trace-sampling hooks, `current_thread_ref`/`current_memory_context` thread-local accessors.
 - `src/kernel/src/thread/entry.rs` — new-thread bootstrap: `start_new_user`/`start_new_init`/`start_new_kernel`, `run_closure_in_new_thread`/`KthreadClosure` (kernel-thread-with-return-value helper).
 - `src/kernel/src/thread/flags.rs` — bitflag constants on `Thread.flags` (`THREAD_PROC_IDLE`, `THREAD_IN_KERNEL`, `THREAD_IS_SYNC_SLEEP[_DONE]`, `THREAD_IS_EXITING`, `THREAD_IS_SUSPENDED`, `THREAD_MUST_SUSPEND`, `THREAD_MUST_EXIT`, `THREAD_MUTEX_WAIT`) plus `enter_kernel`/`exit_kernel` transition hooks.
-- `src/kernel/src/thread/locktrack.rs` — `LockTracker`/`LockTrackerInner`/`Lock`: per-thread record of currently-held/intended-to-lock mutexes and spinlocks (bounded `heapless::Vec`s), used for deadlock/lock-stats diagnostics (`print_locks`, `check_timed_out_mutexes`).
+- `src/kernel/src/thread/locktrack.rs` — `diag`: rate-limited counters for lock/scheduling bookkeeping anomalies, printed at panic and debug shutdown.
 - `src/kernel/src/thread/priority.rs` — `PriorityClass` (Idle/Background/User/Realtime), `Priority`, `ThreadPriority` (current + donated), priority donation (`donate_priority`, `get_donated_priority`).
 - `src/kernel/src/thread/suspend.rs` — thread suspend/resume: global `SUSPENDED_THREADS` intrusive `RBTree`, `suspend`/`maybe_suspend_self`/`unsuspend_thread`, cross-CPU suspend via IPI.
 - `src/kernel/src/thread/time.rs` — `ThreadStats` (user/sys/idle time), `ThreadSched` (scheduler-facing per-thread fields: pinned CPU, deadline, timeslice, current run-queue).
@@ -553,12 +553,6 @@ Package `devmgr`. Client library for the device manager service (`devmgr-srv`): 
 
 - `src/lib/devmgr/src/lib.rs` — `DriverSpec`/`Supported` (`PcieClass(u8,u8,u8)` | `Vendor(u16,u16)`) describe what a driver is looking for; `OwnedDevice { id: ObjID }` (marked `Invariant`, stored in a `VecObject`); `#[secgate::gatecall]` stubs `devmgr_start()`, `get_devices(spec)`; `enumerate_devices(spec)` maps the returned object ID into a `VecObject<OwnedDevice, VecObjectAlloc>` for the caller to iterate.
 
-## src/lib/sgtest
-
-Package `sgtest`. Minimal secgate smoke-test library used to exercise the `secgate`/monitor cross-compartment call mechanism end-to-end (pairs with `src/srv/sgtest-srv`). Only dependency is `secgate`.
-
-- `src/lib/sgtest/src/lib.rs` — `Foo { x: u32 }` test payload struct; `#[secgate::gatecall] fn foo(f: Foo) -> Result<u32, TwzError>` stub; `pub fn bar(f: Foo) -> Foo` calls `foo` and wraps the result — the minimal round-trip test pattern used to validate secgate plumbing.
-
 ## src/rt and src/abi — userspace runtimes and the runtime ABI
 
 ## src/rt/rt (wrapper)
@@ -782,7 +776,6 @@ The pager: services page-fault/page-in-out requests from the kernel over a queue
 - `src/srv/pager-srv/src/nvme/requester.rs` — `NvmeRequester`/`NvmeRequesterInner`/`InflightRequest`/`NvmeRequest`: submission/completion-queue request tracking, sync (`submit_wait`) and async (`async_poll`) NVMe command completion.
 - `src/srv/pager-srv/src/physrw.rs` — `PageRequestMgr`/`Request`: async bridge that submits `RequestFromPager` messages to the kernel (physical-memory read/write requests) over a queue and awaits `CompletionToPager` replies via a `Waiter`; `init_pr_mgr` wires it up.
 - `src/srv/pager-srv/src/request_handle.rs` — handles incoming `RequestFromKernel` page-data requests (`handle_page_data_request_task`): resolves object length, clamps requested range to object bounds, and orchestrates page-in from the object store back to the kernel.
-- `src/srv/pager-srv/src/stats.rs` — `PerObjectStats`/`RecentStats`: tracks recent read/write page counts per object for throughput reporting (`pages_to_kbytes_per_sec`).
 - `src/srv/pager-srv/src/threads.rs` — `PagerThreadPool`/`WorkerThread`/`Workers`/`WorkItem`: a small worker-thread pool plus `spawn_async`/`run_async` helpers for driving the pager's async executor, and a generic `Waiter<T>` future used to bridge blocking threads and async tasks (used by physrw.rs).
 
 ## src/srv/pager-srv/object-store
@@ -796,12 +789,6 @@ Sibling library crate implementing the actual on-disk object store(s) pager-srv 
 - `src/srv/pager-srv/object-store/src/kms.rs` — key-management wrapper (`khf_lock`/`wal_lock`) around a `MyKhf`/`MyWal` (write-ahead log) pair guarding the Lethe store's key hierarchy.
 - `src/srv/pager-srv/object-store/src/fs.rs` — `Disk`/`FS` wrapper around the `fatfs` crate's `FileSystem`, `PAGE_SIZE`/`SECTOR_SIZE` constants, `format`/`open_fs`/`reopen`.
 - `src/srv/pager-srv/object-store/src/wrapped_extent.rs` — `WrappedExtent`: newtype around `intervaltree::Extent` adding `PartialEq`/`Eq`/`Hash` so extents can live in hash sets/maps.
-
-## src/srv/sgtest-srv
-
-Minimal secgate test server used to validate the secgate cross-compartment call mechanism itself. Package `sgtest-srv` (cdylib, edition 2024); deps: `sgtest`, `secgate`.
-
-- `src/srv/sgtest-srv/src/lib.rs` — single secgate entry `foo(x: Foo) -> Result<u32, TwzError>`, a trivial round-trip test gate.
 
 ## src/test/async-test
 
@@ -828,20 +815,6 @@ CLI client for cache-srv: hold/drop/preload/stat/list objects in the cache. Pack
 - `src/bin/debug/src/main.rs` — CLI (`Run`/`Attach` subcommands); `run_debug_program` resolves the target binary by name, loads it via `monitor_api::CompartmentLoader` with `NewCompartmentFlags::DEBUG`, then runs `gdbstub::stub::GdbStub` against a `TwizzlerTarget`/`TwizzlerConn` over stdio.
 - `src/bin/debug/src/gdb.rs` — the bulk of the debugger: `TwizzlerGdb` (`BlockingEventLoop` impl), `TwizzlerTarget` (implements gdbstub's `Target`, `MultiThreadBase`, `MultiThreadResume`/`SingleStep`, `ExecFile`, `LibrariesSvr4`, `HostIo*` traits, `Breakpoints`/`SwBreakpoint`) backed by a monitor `CompartmentHandle`; `Breaks`/`Breakpoint`/`FileMgr`/`TargetInner` track debuggee state; `TwzRegs` <-> `X86_64CoreRegs` register conversions; `TwizzlerConn` implements gdbstub's `Connection` over an mpsc channel.
 
-## src/bin/etl_twizzler
-
-`etl` — an archive/packing tool that can bundle files (or Twizzler objects/persistent vectors) into a custom tar-like archive format and unpack/inspect them. Package `etl_twizzler`; deps: `bincode`, `serde`, `tar` (twizzler fork), `clap`.
-
-- `src/bin/etl_twizzler/src/lib.rs` — re-exports the `etl` module.
-- `src/bin/etl_twizzler/src/etl.rs` — `Pack<W>`/`Unpack<T>` (archive writer/reader), `PackType` enum (`StdFile`/`TwzObj`/`PVec` — plain file, Twizzler object, or persistent-vector encoding), `form_twizzler_object`/`form_fs_file`/`form_persistent_vector` helpers to materialize unpacked entries into the right representation.
-- `src/bin/etl_twizzler/src/main.rs` — `clap` CLI with `Pack`/`Unpack`/`Inspect`/`Read` subcommands driving `Pack`/`Unpack`.
-
-## src/bin/gadget
-
-"Twisted Gadget" interactive demo shell showcasing the Lethe provable-deletion filesystem, naming, and an embedded HTTP server, via a `noline`-based line editor over stdio. **Currently disabled** — not a workspace member, not in the initrd, and does not build: its `setup_http` demo needs the vendored `tiny_http` port, which was removed with the `test-tiny-http` harness. Package `gadget`; deps: `noline`, `embedded-io`, `naming`, `logboi`, `pager`, `virtio-net`.
-
-- `src/bin/gadget/src/main.rs` — `TwzIo` (stdin/stdout `embedded_io` adapter); command loop (`show`, `intro`, `test`, `demo`, `new`, `write`, `read`, `del`, `lethe`, `quit`, `clear`) implementing file create/write/read/delete against the Lethe-backed pager, `lethe adv` to call `pager::adv_lethe()`, plus a `setup_http` thread serving an HTTP demo endpoint (dead code since `tiny_http` was removed); `TestVecItem`/vector benchmarking commands (`append`/`read-all[-slices]`/`read`) for `VecObject` performance testing.
-
 ## src/test/gfxtest
 
 Graphics smoke test: decodes a bundled PNG and blits it to a display-srv window. Package `gfxtest`; deps: `twizzler-display`, `image`.
@@ -867,24 +840,6 @@ Minimal logboi client smoke test. Package `logboi-test`; deps: `logboi`.
 
 - `src/test/logboi-test/src/main.rs` — opens a `logboi::LogHandle` and logs one test message.
 
-## src/bin/ls
-
-`ls`-like directory/namespace listing tool built on the naming service (not the uutils one). Package `ls`; deps: `naming`, `clap`.
-
-- `src/bin/ls/src/main.rs` — `Args` (clap: `--recursive`, optional `path`); uses `naming::static_naming_factory()`/`StaticNamingHandle` to `enumerate_names[_relative]`, sorting namespaces after entries; `recurse()` walks nested namespaces printing a tree-ish listing.
-
-## src/test/naming-test
-
-Standalone unit-test harness (run as a normal binary, not `#[test]`) exercising `naming-core`'s `NameStore`/`NameSession` directly, in-process. Package `naming-test`; deps: `naming-core`, `twizzler`.
-
-- `src/test/naming-test/src/main.rs` — a series of `test_*`/`put_namespace`/`namespace_nested`/`traverse_namespace_nested_*`/`remove*`/`load_from_object` functions asserting put/get/rename/remove/enumerate/namespace-traversal/persistence-reload behavior of `NameStore`, invoked in sequence from `main()`.
-
-## src/test/object-store-test
-
-Standalone test/benchmark harness for the `object-store` crate (pager-srv's Lethe/ext4 backing store), exercising it directly rather than through pager-srv. Package `object-store-test`; deps: `object-store` (path dep to `srv/pager-srv/object-store`), `obliviate-core`.
-
-- `src/test/object-store-test/src/main.rs` — `it_works`, `test_khf_serde`, `test_lfn`, `zero_length_file`, `get_all_ids` tests exercising `create_object`/`write_all`/`read_exact`/`unlink_object`/`advance_epoch`/`get_all_object_ids` and KHF (key-hierarchy-for-forgetting) load/serde round-tripping; `main()` runs them all and prints pass/fail.
-
 ## src/bin/otop
 
 Interactive terminal object-system monitor (like `top`, but for Twizzler objects instead of processes). Package `otop`; deps: `crossterm`, `twizzler`, `twizzler-abi`.
@@ -899,7 +854,7 @@ Benchmark/test for `twizzler::collections::hachage::PersistentHashMap`, comparin
 
 ## src/test/ptest
 
-"Persistence test" — exercises Twizzler's invariant-pointer persistent-object collections (`VecObject`, arena allocator, `InvBox`) directly and via secgate (`sgtest`), plus NUMA/topology info via `hwlocality`. Package `ptest`; deps: `twizzler` (collections/alloc APIs), `sgtest`, `hwlocality`, `naming`, `clap`.
+"Persistence test" — exercises Twizzler's invariant-pointer persistent-object collections (`VecObject`, arena allocator, `InvBox`) directly, plus NUMA/topology info via `hwlocality`. Package `ptest`; deps: `twizzler` (collections/alloc APIs), `hwlocality`, `naming`, `clap`.
 
 - `src/test/ptest/src/main.rs` — `Foo` (`#[derive(Invariant)]` struct holding an `InvBox<u32, ArenaAllocator>`, with `Debug`/`Display` impls) used to test invariant-pointer boxing/arena allocation; `main()` drives various persistence/collection/allocator exercises plus topology queries.
 
@@ -1000,12 +955,6 @@ Multi-call binary bundling many uutils/coreutils utilities (`ls`, `cat`, `echo`,
 - `src/bin/uuhelper/build.rs` — build script generating the `utils_map.rs` (`util_map()`) mapping utility name -> `uumain` entry point, via `phf_codegen`, included at compile time.
 - `src/bin/uuhelper/src/main.rs` — `main()` dispatches based on the invoked binary name (`binary_path`/`name`) or first argument to the matching uutils `uumain`, falling back to prefix matching; `usage()`, `gen_completions`/`gen_manpage`/`gen_coreutils_app` implement `--list`/`completion`/`manpage`/`--help` meta-commands.
 
-## src/test/virtio
-
-Standalone virtio-net + smoltcp TCP echo-server smoke test, run directly against the virtio-net device (no net-srv involved). Package `virtio`; deps: `smoltcp`, `virtio-net`.
-
-- `src/test/virtio/src/main.rs` — `test_echo_server()`: brings up a smoltcp `Interface` directly over `virtio_net::get_device()` with a hardcoded QEMU IP/gateway, runs a simple TCP echo server on port 5555.
-
 ## src/ports — third-party software ported to Twizzler (git submodules, mostly forked/patched to build against the Twizzler target; treated as vendored dependencies rather than original project code)
 
 - `src/ports/libc` (337 files) — Fork of the `libc` crate (branch `twizzler-2025-04`) with Twizzler libc bindings added.
@@ -1058,7 +1007,6 @@ Host-only tool crate (`package.metadata.twizzler-build = "xtask"`); parses CLI s
 
 - `tools/image_builder/src/main.rs` — Standalone CLI (`clap`) that creates a disk image at a given path (used by xtask/`cargo make-image`).
 - `tools/initrd_gen/src/main.rs` — Standalone CLI that packs a set of files into a tar-based initrd for the boot image.
-- `tools/serialtest/src/main.rs` — Dev helper that runs `cargo start-qemu -p=release -q=-nographic --autostart serialecho` and drives the serial console programmatically (pairs with `src/test/serialecho`).
 
 ## doc/ (mdBook source, `doc/src/SUMMARY.md` is the ToC)
 

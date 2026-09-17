@@ -4,7 +4,7 @@ use core::panic::PanicInfo;
 use addr2line::{Context, gimli::EndianSlice};
 use object::{Object, ObjectSection, read::elf::ElfFile64};
 
-use crate::{arch::VirtAddr, interrupt::disable, once::Once, thread::current_thread_ref};
+use crate::{arch::VirtAddr, interrupt::disable, once::Once};
 
 type ElfSlice = addr2line::gimli::read::EndianSlice<'static, addr2line::gimli::RunTimeEndian>;
 
@@ -168,9 +168,6 @@ fn panic(info: &PanicInfo) -> ! {
         emerglogln!("we've had one, yes, but what about second panic?");
     }
 
-    if let Some(current_thread) = current_thread_ref() {
-        current_thread.print_locks();
-    }
     crate::thread::locktrack::diag::print_counters(false);
 
     emerglogln!("starting backtrace...");

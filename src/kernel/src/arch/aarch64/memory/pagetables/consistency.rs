@@ -129,6 +129,19 @@ impl TlbInvQueue {
         self.len as usize == Self::MAX_OUTSTANDING_INVALIDATIONS
     }
 
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn enqueue_data(&mut self, data: TlbInvData) {
+        if self.is_full() {
+            self.drain();
+        }
+        let next = self.len as usize;
+        self.data[next] = data;
+        self.len += 1;
+    }
+
     fn drain(&mut self) {
         for i in 0..self.len as usize {
             let inv = &self.data[i];
@@ -142,6 +155,8 @@ impl TlbInvQueue {
 pub struct ArchTlbMgr {
     queue: TlbInvQueue,
     root: PhysAddr,
+    /// Everything, on every core: `tlbi vmalle1is` at `finish` instead of the queue.
+    full: bool,
 }
 
 impl ArchTlbMgr {
@@ -150,7 +165,31 @@ impl ArchTlbMgr {
         Self {
             queue: TlbInvQueue::new(),
             root: target.0,
+            full: false,
         }
+    }
+
+    /// Mirrors amd64: a manager whose `finish` flushes every translation on every core, for the
+    /// paths that cannot enumerate what they changed.
+    pub fn new_full_global() -> Self {
+        let mut this = Self::new(ArchContextTarget::null());
+        this.full = true;
+        this
+    }
+
+    pub fn has_pending(&self) -> bool {
+        self.full || !self.queue.is_empty()
+    }
+
+    /// Fold `other`'s queued invalidations into this one; `other` then has nothing left to run
+    /// when it drops.
+    pub fn merge(&mut self, mut other: Self) {
+        self.full |= other.full;
+        for i in 0..other.queue.len as usize {
+            self.queue.enqueue_data(other.queue.data[i]);
+        }
+        other.queue.len = 0;
+        other.full = false;
     }
 
     /// Enqueue a new TLB invalidation. is_global should be set iff the page is global, and
@@ -168,6 +207,14 @@ impl ArchTlbMgr {
 
     /// Execute all queued invalidations.
     pub fn finish(&mut self) {
+        if self.full {
+            self.full = false;
+            self.queue.len = 0;
+            unsafe {
+                core::arch::asm!("dsb ishst", "tlbi vmalle1is", "dsb ish", "isb");
+            }
+            return;
+        }
         self.queue.drain()
     }
 

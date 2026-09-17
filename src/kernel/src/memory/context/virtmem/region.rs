@@ -1,7 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::{
     ops::Range,
-    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, Ordering},
     usize,
 };
 
@@ -18,10 +18,7 @@ use twizzler_rt_abi::{
     error::{ObjectError, ResourceError, TwzError},
 };
 
-use super::{
-    PageFaultFlags, Slot,
-    fault::{FaultClass, FaultStage, census, record_class, record_stage, stage_start},
-};
+use super::{PageFaultFlags, Slot, fault::census};
 use crate::{
     arch::VirtAddr,
     instant::Instant,
@@ -45,7 +42,7 @@ use crate::{
 /// Pages filled per anonymous fault. See [`MapRegion::fault_around`]; 1 restores one page per
 /// fault.
 ///
-/// **4 -> 16 on 2026-08-23** (`pageperf.md` §4). `page_fault_zero_fill` 811 -> 609 ns/touch,
+/// **4 -> 16 on 2026-08-23**. `page_fault_zero_fill` 811 -> 609 ns/touch,
 /// **-24.9%, disjoint ranges**, against a drift of +0.1% measured by repeating the baseline arm
 /// after the treatment. Mechanism gated on counts rather than the clock: faults per touch
 /// 0.251 -> 0.063 (1/4 -> 1/16) and `PERFMARK-MAPFRAMES pages_per_call` 3.99 -> 15.96, so the runs
@@ -67,20 +64,6 @@ use crate::{
 /// *sparse* first-touch workload is unmeasured. `fault_around` bounds the run by the 2 MiB block
 /// and stops at a present neighbour, which limits it, but a sparse object still gets 16-page runs.
 pub(crate) const ANON_FAULT_AROUND: usize = 4;
-
-/// Whether [`ANON_FAULT_AROUND`] is a ceiling that adapts per region, or a fixed width.
-/// `false` restores the fixed behaviour from one tree, which is the A/B.
-pub(crate) const ADAPTIVE_FAULT_AROUND: bool = false;
-
-/// Stream ends remembered per region. Four covers the contended zero-fill bench's threads without
-/// making the miss path a scan.
-pub(crate) const FA_STREAMS: usize = 8;
-
-/// Empty slot. `0` cannot mean this: page 0 is a real page number, and a region whose slots all
-/// read zero would score its first fault as a miss and halve the window before it has any evidence
-/// at all. `compartment_spawn_exit` creates many short-lived regions and paid that on nearly every
-/// one.
-const FA_EMPTY: u64 = u64::MAX;
 
 /// Pages COW'd per write fault. 1 restores one page per fault -- the behaviour before this existed.
 ///
@@ -129,26 +112,6 @@ pub struct MapRegion {
     /// Security context to install this mapping in; zero means the mapping thread's active one.
     pub target_sctx: ObjID,
     pub should_sync: AtomicBool,
-    /// Adaptive fault-around width for this region, and the page each recent batch ended at.
-    ///
-    /// A fixed [`ANON_FAULT_AROUND`] cannot serve both workloads it meets: on dense first-touch it
-    /// is worth 4.4x on `page_fault_zero_fill` and 25% on `compartment_spawn_exit`, and on a
-    /// sparse one -- an on-target cargo build, whose 1 MiB stacker stacks are touched a few
-    /// pages at a time -- it materialises 8x the pages the workload ever reads (1.56M against
-    /// 194k), all of them zeroed for nothing.
-    ///
-    /// The signal needs no accessed bits: with a batch of N installed, a *sequential* first touch
-    /// faults again exactly where the last batch ended, and a scattered one does not. So the
-    /// position of the next fault says whether the last batch was consumed.
-    ///
-    /// Several slots, not one, because `page_fault_zero_fill_contended` is several threads
-    /// streaming through the same region at once. Their faults interleave, so a single
-    /// "expected next" would read every one of them as scattered and collapse the window on
-    /// precisely the bench this is meant to protect.
-    pub fa_window: AtomicU32,
-    pub fa_streams: [AtomicU64; FA_STREAMS],
-    /// Next `fa_streams` slot to replace.
-    pub fa_slot: AtomicU32,
     /// Set once this region has been taken out of its [RegionManager] and unmapped. Plain fields
     /// rather than their own `Arc`s: regions are only ever shared as `Arc<MapRegion>` (the fault
     /// path holds one taken before the removal), so the enclosing refcount already carries them.
@@ -279,54 +242,6 @@ impl MapRegion {
     /// fills. `handle_fault` uses it to skip the COW check, which a frame allocated moments ago
     /// cannot need; `false` whenever the answer is not known here, which is the pre-existing
     /// behaviour.
-    /// Fold this fault into the region's window: continuing a recorded stream means the last batch
-    /// was walked through, anything else means it may have been installed for nothing.
-    ///
-    /// Halve on a miss rather than dropping to 1: a single stray fault inside an otherwise
-    /// sequential pass should cost width, not the whole window.
-    fn fa_note(&self, page: PageNumber) -> usize {
-        if !ADAPTIVE_FAULT_AROUND {
-            return ANON_FAULT_AROUND;
-        }
-        let want = page.num() as u64;
-        let mut hit = false;
-        let mut any = false;
-        for slot in self.fa_streams.iter() {
-            let v = slot.load(Ordering::Relaxed);
-            if v != FA_EMPTY {
-                any = true;
-                if v == want {
-                    hit = true;
-                    break;
-                }
-            }
-        }
-        let cur = self.fa_window.load(Ordering::Relaxed).max(1) as usize;
-        // No stream recorded yet is not evidence of a scattered access pattern -- it is a region
-        // nobody has faulted twice. Shrinking here charges every fresh region a halving.
-        let next = if hit || !any {
-            (cur * 2).min(ANON_FAULT_AROUND)
-        } else {
-            (cur / 2).max(1)
-        };
-        self.fa_window.store(next as u32, Ordering::Relaxed);
-        next
-    }
-
-    /// Record where a batch ended, so the next fault that continues it is recognised. Slots are
-    /// replaced round-robin by the low bits of the page number: no lock, and two streams landing
-    /// on one slot costs a shrink, not correctness.
-    fn fa_record(&self, end: usize) {
-        if !ADAPTIVE_FAULT_AROUND {
-            return;
-        }
-        // Round-robin on an insertion counter, not a function of the address: keying on `end`
-        // made two threads streaming through the same span collide on one slot and evict each
-        // other, which is `page_fault_zero_fill_contended` exactly.
-        let slot = self.fa_slot.fetch_add(1, Ordering::Relaxed) as usize % FA_STREAMS;
-        self.fa_streams[slot].store(end as u64, Ordering::Relaxed);
-    }
-
     fn fault_around(
         &self,
         pt: &mut ObjectPageTable,
@@ -336,11 +251,7 @@ impl MapRegion {
         if ANON_FAULT_AROUND <= 1 || self.object.use_pager() {
             return (page, 1, false);
         }
-        let width = self.fa_note(page);
-        if width <= 1 {
-            self.fa_record(page.num() + 1);
-            return (page, 1, false);
-        }
+        let width = ANON_FAULT_AROUND;
         let mut present = |p: PageNumber| pt.get_frame(p.as_byte_offset() as u64).is_some();
         // The faulting page is already in the object's tables, so this fault is about the address
         // space rather than the fill. `handle_fault` decides whether to install the object-table
@@ -354,7 +265,6 @@ impl MapRegion {
         // Both neighbours mapped: a hole, not a run. Filling around it would allocate pages for an
         // access pattern that has already been served.
         if prev_present && next_present {
-            self.fa_record(page.num() + 1);
             return (page, 1, true);
         }
 
@@ -366,8 +276,6 @@ impl MapRegion {
             while first > lowest && !present((first - 1).into()) {
                 first -= 1;
             }
-            // Backward runs end at the fault, so that is where a forward continuation resumes.
-            self.fa_record(page.num() + 1);
             return (first.into(), page.num() - first + 1, true);
         }
         // Forward, starting at the fault itself.
@@ -380,7 +288,6 @@ impl MapRegion {
         while end < highest && !present(end.into()) {
             end += 1;
         }
-        self.fa_record(end);
         (page, end - page.num(), true)
     }
 
@@ -450,7 +357,6 @@ impl MapRegion {
         // backed by a frame this thread allocated moments ago, so it cannot be a COW mapping.
         let mut filled_fault_page = false;
         let needs_fill = !pfflags.contains(PageFaultFlags::PRESENT);
-        let t_pt = stage_start();
         let mut obj_page_tree = match self.stable.as_ref() {
             // A stable region's clone holds only what the object held when it was taken, and
             // nothing refills it afterwards, so a page missing from it has to be brought into the
@@ -459,8 +365,6 @@ impl MapRegion {
             // the order MapControlCmd::Discard uses.
             Some(stable) if needs_fill => {
                 let mut pt = self.object.lock_page_tables();
-                record_stage(FaultStage::PtLock, t_pt);
-                let t = stage_start();
                 pt = self.object.ensure_in_core_fault(
                     pt,
                     page_number,
@@ -468,18 +372,8 @@ impl MapRegion {
                     &mut used_pager,
                     &mut all_were_present,
                 )?;
-                record_stage(FaultStage::EnsureCore, t);
                 let mut clone = PtGuard::new(stable);
                 let offset = page_number.as_byte_offset() as u64;
-                if crate::pager::queues::PAGER_QUEUE_DIAG
-                    && crate::pager::is_pager_queue(self.object().id())
-                {
-                    logln!(
-                        "QPAGE-STABLE-SHARE {} offset {:x} (stable-region fill re-shared a queue page)",
-                        self.object().id(),
-                        offset
-                    );
-                }
                 pt.setup_cow_range(&mut clone, offset, offset, PageNumber::PAGE_SIZE)?;
                 // Unavoidably nested, unlike the two-guard sites that use `release_two`: `clone` is
                 // this block's value and has to outlive `pt`, so `pt`'s shootdown wait runs with
@@ -490,14 +384,11 @@ impl MapRegion {
             }
             Some(stable) => {
                 let pt = PtGuard::new(stable);
-                record_stage(FaultStage::PtLock, t_pt);
                 pt
             }
             None => {
                 let mut pt = self.object.lock_page_tables();
-                record_stage(FaultStage::PtLock, t_pt);
                 if needs_fill {
-                    let t = stage_start();
                     let (first, count, fills) = self.fault_around(&mut pt, page_number);
                     filled_fault_page = fills;
                     pt = self.object.ensure_in_core_fault(
@@ -507,14 +398,10 @@ impl MapRegion {
                         &mut used_pager,
                         &mut all_were_present,
                     )?;
-                    record_stage(FaultStage::EnsureCore, t);
                 }
                 pt
             }
         };
-        if used_pager {
-            record_class(FaultClass::Pager);
-        }
         let prot = perms.effective(self.default_prot, self.prot);
 
         log::trace!(
@@ -579,17 +466,12 @@ impl MapRegion {
             // tables, precharge an allocator, and run a consistency pass only to find a mapping
             // that was never shared. That is ~700 ns on the majority of write faults.
             if !filled_fault_page {
-                let t = stage_start();
                 let cow_run = self.cow_around(&mut *obj_page_tree, page_number);
                 did_cow = obj_page_tree.maybe_cow_range(
                     page_number.as_byte_offset() as u64,
                     cow_run,
                     false,
                 )?;
-                record_stage(FaultStage::Cow, t);
-                if did_cow {
-                    record_class(FaultClass::Cow);
-                }
             }
             log::trace!(
                 "cow at page {} in object {} due to write fault at addr {:?} (ip: {:?}): {} use_pager: {}",
@@ -623,7 +505,6 @@ impl MapRegion {
             let cursor = MappingCursor::new(self.range.start, self.range.end - self.range.start);
             // TODO: is this always user?
             let settings = MappingSettings::new(prot, self.cache_type, MappingFlags::USER);
-            let t = stage_start();
             mapped = map_ctx.ensure_object_mapped(
                 sctxid,
                 // `obj_page_tree` is this region's stable clone when it has one, and a clone
@@ -633,10 +514,6 @@ impl MapRegion {
                 &mut obj_page_tree,
                 settings,
             );
-            record_stage(FaultStage::MapObject, t);
-            if mapped {
-                record_class(FaultClass::Mapped);
-            }
         }
 
         if census::enabled() {
@@ -776,16 +653,6 @@ impl MapRegion {
                     // Conservative: the stable shadow is not the region's own object and its
                     // backing is not established here, so it keeps the inherited DIRTY and behaves
                     // exactly as before.
-                    if crate::pager::queues::PAGER_QUEUE_DIAG
-                        && crate::pager::is_pager_queue(self.object().id())
-                    {
-                        logln!(
-                            "QPAGE-DISCARD-SHARE {} offset {:x} len {:x}",
-                            self.object().id(),
-                            self.offset,
-                            len
-                        );
-                    }
                     stable.setup_zero_range(self.offset, len, false)?;
                     pt.setup_cow_range(&mut *stable, self.offset, self.offset, len)?;
                     // Both locks off before either one's shootdown wait runs. Letting these drop

@@ -25,7 +25,7 @@ use crate::{
         VirtAddr,
         context::{
             ContextRef, UserContext,
-            virtmem::{Slot, SlotMemo, VirtContext},
+            virtmem::{Slot, VirtContext},
         },
     },
     obj::{ThreadSleepLinker, control::ControlObjectCacher},
@@ -42,7 +42,6 @@ use crate::{
     thread::{
         flags::THREAD_MUST_EXIT,
         kstack::KernelStack,
-        locktrack::{LockTracker, deregister_lock_tracker, register_lock_tracker},
         sctx::{SctxCache, Switch},
     },
     trace::{
@@ -76,9 +75,8 @@ pub struct Thread {
     /// happens to take next, which never names the entry that leaked it. This does.
     critical_origin: AtomicUsize,
     /// Where this thread is blocked in `Mutex::lock`, as a `&'static Location` pointer (0 = not
-    /// blocked). Set by `lock` itself rather than by the lock tracker, which is what makes it the
-    /// only wait edge available in a build with `DISABLE_LOCK_TRACKING` on -- and that is every
-    /// build today, which is why `mutex stall` reports read "edge unknown" without it.
+    /// blocked). Set by `lock` itself, so `mutex stall` reports can name the site the owner
+    /// waits at.
     mutex_wait_at: AtomicUsize,
     id: Id<'static>,
     pub switch_lock: AtomicU64,
@@ -91,8 +89,6 @@ pub struct Thread {
     sync_sleep_gen: AtomicU64,
     pub donated_priority: AtomicU32,
     memory_context: Option<ContextRef>,
-    /// Slot -> object memo for `sys_thread_sync`, in front of the context's `regions` mutex.
-    pub slot_memo: SlotMemo,
     pub kernel_stack: KernelStack,
     pub stats: ThreadStats,
     spawn_args: Option<ThreadSpawnArgs>,
@@ -155,27 +151,10 @@ pub struct Thread {
     /// syscall wrapper, so it says the thread is in a thread-sync sleep and nothing about *which*
     /// word -- which is exactly what names the userspace lock it is waiting on.
     sleep_word: [AtomicU64; 5],
-    /// (site, sync_sleep_gen) of the last winner of `reset_sync_sleep`. Diagnostic only: names
-    /// which path consumed the SYNC_SLEEP flag when a hang row shows a parked thread no wake can
-    /// claim. Sites: 1=wakeup_word claim, 2=SleepEntry::drop, 3=timeout callback, 4=self
-    /// (non-sleep path), 5=device-interrupt claim, 6=self post-sleep cleanup, 7=exit.
-    pub(crate) sync_consumer: [AtomicU64; 2],
-    /// (site, sync_sleep_gen) of the last requeue-list event involving this thread. Sites:
-    /// 1=slow insert, 2=dedup skip (already listed), 3=fast-path direct schedule, 4=requeue_all
-    /// claim, 5=claim_own_wakeup removed+won, 6=claim_own_wakeup removed WITHOUT winning (the
-    /// eaten-wake candidate), 7=remove_from_requeue. Diagnostic only.
-    pub(crate) requeue_event: [AtomicU64; 2],
-    /// Count of accepted parks (`setup_sleep_word*` res=true). The notes above stamp this
-    /// instead of `sync_sleep_gen` (which only moves for timed sleeps): at a wedge,
-    /// note-seq == current means the final park WAS claimed and lost downstream; note-seq <
-    /// current means no wake-side event ever touched it.
-    pub(crate) park_seq: AtomicU64,
     /// Depth of nested kernel entries (syscall, fault, exception). Zero means the thread is
     /// executing in userspace. A counter rather than a flag because a fault taken while already
     /// in the kernel must not report a return to user when only the inner handler finishes.
     kernel_depth: AtomicU32,
-    lock_tracker: Arc<LockTracker>,
-    lock_tracker_index: Option<usize>,
 }
 unsafe impl Send for Thread {}
 unsafe impl Sync for Thread {}
@@ -260,13 +239,6 @@ fn read_current_thread_ptr() -> *const ThreadRef {
     }
 }
 
-/// Capture the interrupted kernel pc on each sample, so in-kernel time is attributable.
-///
-/// Costs an atomic swap and restore on *every* in-kernel interrupt, whether or not a sample fires
-/// -- which is why it is a switch: the run that introduced it reported 28.3% sys against a prior
-/// three-run cluster of 22.9-24.1%, and that gap has to be shown to be noise rather than this.
-pub const SAMPLE_KERNEL_IP: bool = true;
-
 #[inline(always)]
 pub fn current_thread_ref() -> Option<&'static ThreadRef> {
     #[allow(unused_unsafe)]
@@ -339,8 +311,6 @@ impl Thread {
             ThreadReprFlags::KERNEL
         };
         let id = ID_COUNTER.next();
-        let lock_tracker = Arc::new(LockTracker::new(id.value()));
-        let lock_tracker_index = register_lock_tracker(lock_tracker.clone());
         Self {
             arch: crate::arch::thread::ArchThread::new(),
             priority: AtomicU32::new(priority.raw()),
@@ -357,7 +327,6 @@ impl Thread {
             donated_priority: AtomicU32::new(u32::MAX),
             stats: ThreadStats::new(crate::processor::sched::current_stat_ticks()),
             memory_context: ctx,
-            slot_memo: SlotMemo::new(),
             spawn_args,
             control_object: ControlObjectCacher::new(ThreadRepr::new(repr_flags)),
             sched_link: AtomicLink::default(),
@@ -390,15 +359,10 @@ impl Thread {
             hang_since: AtomicU64::new(0),
             hang_reports: AtomicU32::new(0),
             sleep_word: [const { AtomicU64::new(0) }; 5],
-            sync_consumer: [const { AtomicU64::new(0) }; 2],
-            requeue_event: [const { AtomicU64::new(0) }; 2],
-            park_seq: AtomicU64::new(0),
             last_pf_flags: AtomicU32::new(0),
             mutex_count: AtomicU32::new(0),
             // Threads start executing in the kernel; jump_to_user() performs the matching exit.
             kernel_depth: AtomicU32::new(1),
-            lock_tracker,
-            lock_tracker_index,
         }
     }
 
@@ -555,10 +519,6 @@ impl Thread {
         self.sync_sleep_gen.fetch_add(1, Ordering::SeqCst);
     }
 
-    pub fn lock_tracker(&self) -> &LockTracker {
-        &self.lock_tracker
-    }
-
     pub fn switch_thread(&self, current: &Thread) {
         if self != current {
             if let Some(ref ctx) = self.memory_context {
@@ -577,10 +537,6 @@ impl Thread {
                 VirtContext::switch_to_kernel_context();
             }
         }
-        // Prologue done, and it is the only part of the switch that takes a tracked lock.
-        // `arch_switch_to` takes none, so the attribution window closes here -- on the same cpu
-        // that opened it, in straight-line code, rather than depending on where a thread resumes.
-        locktrack::leave_switch_window();
         // Give up the outgoing thread's running mark *before* the switch, because `__do_switch`
         // releases its `switch_lock` before acquiring ours -- the moment that store lands, another
         // cpu may take this thread. Clearing it below, where `set_current_thread` otherwise would,
@@ -995,26 +951,6 @@ impl Thread {
         self.sleep_word[4].store((is32 as u64) | ((invert as u64) << 1), Ordering::Relaxed);
     }
 
-    /// Record which path just won `reset_sync_sleep` on this thread; see the field. Called by the
-    /// winner immediately after the win, so the (site, gen) pair identifies the consumer of the
-    /// park a hang row later shows as unclaimable.
-    pub fn note_sync_consumer(&self, site: u64) {
-        self.sync_consumer[0].store(site, Ordering::Relaxed);
-        self.sync_consumer[1].store(self.park_seq.load(Ordering::Relaxed), Ordering::Relaxed);
-    }
-
-    /// Record the last requeue-list event for this thread; see the field.
-    pub fn note_requeue_event(&self, site: u64) {
-        self.requeue_event[0].store(site, Ordering::Relaxed);
-        self.requeue_event[1].store(self.park_seq.load(Ordering::Relaxed), Ordering::Relaxed);
-    }
-
-    /// One accepted park: called from `setup_sleep_word*` when the thread commits to the
-    /// sleep tree, so the notes above can be sequenced against the CURRENT park.
-    pub fn bump_park_seq(&self) {
-        self.park_seq.fetch_add(1, Ordering::Relaxed);
-    }
-
     /// Record the security context this thread must be running in before a pending force-exit is
     /// delivered. Zero clears the restriction.
     /// Record a name for this thread as a note on its control object. Notes are where thread
@@ -1145,11 +1081,7 @@ impl Thread {
                 }
                 let data = ThreadSamplingEvent {
                     ip: self.read_ip(),
-                    kernel_ip: if SAMPLE_KERNEL_IP {
-                        self.read_kernel_ip()
-                    } else {
-                        0
-                    },
+                    kernel_ip: self.read_kernel_ip(),
                     state: self.get_state(),
                     bp: self.read_bp(),
                     sp: sp_val,
@@ -1220,20 +1152,14 @@ impl Drop for Thread {
         if !self.is_repr_user_owned() {
             self.control_object.object().mark_for_delete();
         }
-        if let Some(index) = self.lock_tracker_index {
-            deregister_lock_tracker(index);
-        }
     }
 }
 
-/// Sizes of the per-thread kernel heap allocations, so a `kalloc_census` size class can be read
-/// back to a struct without guessing. Printed once at boot under `--diag`.
+/// Sizes of the per-thread kernel heap allocations. Printed once at boot under `--diag`.
 pub fn log_thread_sizes() {
     logln!(
-        "[thread] sizeof Thread={} LockTracker={} LockTrackerInner={} ArchThread={}",
+        "[thread] sizeof Thread={} ArchThread={}",
         core::mem::size_of::<Thread>(),
-        core::mem::size_of::<crate::thread::locktrack::LockTracker>(),
-        crate::thread::locktrack::inner_size(),
         core::mem::size_of::<crate::arch::thread::ArchThread>(),
     );
 }
@@ -1268,16 +1194,13 @@ pub fn exit(code: u64) -> ! {
             th.get_mutex_count(),
             code,
         );
-        th.print_locks();
         crate::panic::backtrace(true, None);
     }
     // A thread can exit with a timeout still outstanding against it -- the callback holds a
     // ThreadRef, so it will run. Retire it here for the same reason the sleep paths do, rather than
     // relying on `schedule_thread_on_cpu`'s is_exiting() check to catch it downstream.
     th.end_sync_sleep();
-    if th.reset_sync_sleep() {
-        th.note_sync_consumer(7);
-    }
+    th.reset_sync_sleep();
     th.reset_sync_sleep_done();
     th.sync_links.clear_all_references();
     // Disable interrupts for the entire exit sequence including schedule(), to
@@ -1571,16 +1494,8 @@ pub fn check_system_hang() {
         return;
     }
     let (stuck_tid, stuck_objid) = stuck_id.unwrap_or((0, 0.into()));
-    if let Some((used, cap, compl_consumed, qobj, kview)) = crate::pager::sender_occupancy() {
-        emerglogln!(
-            "== pager-sender idmap occupancy: {}/{} compl-consumed {:x} sender-qobj {:x} kview-sub {:x?} kview-com {:x?}",
-            used,
-            cap,
-            compl_consumed,
-            qobj,
-            kview.0,
-            kview.1
-        );
+    if let Some((used, cap)) = crate::pager::sender_occupancy() {
+        emerglogln!("== pager-sender idmap occupancy: {}/{}", used, cap);
     }
     emerglogln!(
         "== thread {} ({}) has been asleep for {}s; thread wait table:",
@@ -1613,7 +1528,7 @@ pub fn check_system_hang() {
     {
         for thread in threads.iter() {
             // The runtime mirrors thread names into notes on the repr object; without one the
-            // table is a list of anonymous parked threads (rustchang.md).
+            // table is a list of anonymous parked threads.
             let mut namebuf = [0u8; 24];
             let namelen =
                 match crate::obj::lookup_object(thread.objid(), crate::obj::LookupFlags::empty()) {
@@ -1633,20 +1548,9 @@ pub fn check_system_hang() {
             let sw_off = thread.sleep_word[2].load(Ordering::Relaxed) as usize;
             let sw_val = thread.sleep_word[3].load(Ordering::Relaxed);
             let sw_meta = thread.sleep_word[4].load(Ordering::Relaxed);
-            let mut avdiag: Option<(usize, Option<(u64, u64, usize)>)> = None;
             let (cur, slprs, cw, wt) = if sw_obj != 0.into() {
                 match crate::obj::lookup_object(sw_obj, crate::obj::LookupFlags::empty()) {
                     crate::obj::LookupResult::Found(obj) => {
-                        // For a pager-queue word, the row's own read carries its provenance: the
-                        // Object instance it resolved through and the physical frame it landed
-                        // on. A stale `av` then names its frame instead of leaving frame-vs-lost
-                        // ambiguous (round5 syncwedge18: av 7 behind av2 deterministically).
-                        if crate::pager::is_pager_queue(sw_obj) {
-                            avdiag = Some((
-                                Arc::as_ptr(&obj) as *const u8 as usize,
-                                obj.read_word_with_phys_rw(sw_off & !7).ok(),
-                            ));
-                        }
                         let cur = if sw_meta & 1 != 0 {
                             obj.read_atomic_32(sw_off).ok().map(|v| v as u64)
                         } else {
@@ -1686,162 +1590,8 @@ pub fn check_system_hang() {
                     && thread.sync_links.is_linked()
                     && thread.get_state() == ExecutionState::Sleeping
             });
-            // A lost-looking row gets one extra line: the word via the object tree (with its
-            // backing frame) and via any kernel-context mapping of the same object. Two
-            // different values is a forked frame, not a lost wake.
-            if lost {
-                if let crate::obj::LookupResult::Found(obj) =
-                    crate::obj::lookup_object(sw_obj, crate::obj::LookupFlags::empty())
-                {
-                    let aoff = sw_off & !7;
-                    // For a queue-bell sleeper, `aoff + 0x40` is the consumer-written tail --
-                    // the word whose regression is the wedge signature. Nearby memory otherwise.
-                    let tree = obj.read_word_with_phys(aoff).ok();
-                    let tree_tail = obj.read_word_with_phys(aoff + 0x40).ok();
-                    let kmap = obj.mappings().iter().find_map(|r| {
-                        if r.range.start.is_kernel_object_memory() {
-                            let va = r.range.start.offset(aoff).ok()?;
-                            let vt = r.range.start.offset(aoff + 0x40).ok()?;
-                            Some((
-                                va.raw(),
-                                unsafe { va.as_ptr::<u64>().read_volatile() },
-                                unsafe { vt.as_ptr::<u64>().read_volatile() },
-                            ))
-                        } else {
-                            None
-                        }
-                    });
-                    let (linked_here, entry_threads) = obj.sleep_query(sw_off, thread.objid());
-                    // The exact `av` code path (WRITE-flagged lookup), recomputed here so it and
-                    // the no-WRITE read below are the same instant: a same-line difference is a
-                    // path difference; agreement means the row's av gap was temporal.
-                    let av2 = obj.read_atomic_64(aoff).ok();
-                    // Read the queue state ON THE PARKED THREAD'S LAST CPU, via the global
-                    // kernel-slot mapping: a turn/pending view that differs from this (scan)
-                    // CPU's read is a per-CPU stale TLB entry, observed directly.
-                    if crate::pager::is_pager_queue(sw_obj) {
-                        let last_cpu = thread.sched.last_cpu.load(Ordering::SeqCst);
-                        if last_cpu >= 0 {
-                            use alloc::sync::Arc as XArc;
-                            let cell = XArc::new([
-                                AtomicU64::new(u64::MAX),
-                                AtomicU64::new(0),
-                                AtomicU64::new(0),
-                                AtomicU64::new(0),
-                                AtomicU64::new(0),
-                                AtomicU64::new(0),
-                            ]);
-                            let c2 = cell.clone();
-                            crate::processor::ipi::ipi_exec(
-                                crate::interrupt::Destination::Single(last_cpu as u32),
-                                alloc::boxed::Box::new(move || {
-                                    if let Some((sub, com)) = crate::pager::sender_kview() {
-                                        c2[1].store(sub.0, Ordering::SeqCst);
-                                        c2[2].store(sub.1, Ordering::SeqCst);
-                                        c2[3].store(com.0, Ordering::SeqCst);
-                                        c2[4].store(com.1, Ordering::SeqCst);
-                                        c2[5].store(
-                                            (sub.2 as u64)
-                                                | ((sub.3 as u64) << 1)
-                                                | ((com.2 as u64) << 2)
-                                                | ((com.3 as u64) << 3),
-                                            Ordering::SeqCst,
-                                        );
-                                        c2[0].store(0, Ordering::SeqCst);
-                                    }
-                                }),
-                                true,
-                            );
-                            emerglogln!(
-                                "  ipi-view cpu {}: ok {} sub({:x},{:x}) com({:x},{:x}) flags {:x}",
-                                last_cpu,
-                                cell[0].load(Ordering::SeqCst) == 0,
-                                cell[1].load(Ordering::SeqCst),
-                                cell[2].load(Ordering::SeqCst),
-                                cell[3].load(Ordering::SeqCst),
-                                cell[4].load(Ordering::SeqCst),
-                                cell[5].load(Ordering::SeqCst)
-                            );
-                        }
-                    }
-                    let regions = obj.mappings();
-                    let nr_user = regions
-                        .iter()
-                        .filter(|r| !r.range.start.is_kernel_object_memory())
-                        .count();
-                    let arcs_match = regions
-                        .iter()
-                        .all(|r| alloc::sync::Arc::ptr_eq(&r.object, &obj));
-                    emerglogln!(
-                        "  fork-check thread {}: obj-inst {:x} linked-here {} entry-threads {} regions {} user {} arcs-match {} av2 {:x?} tree(phys,bell,fsz) {:x?} tree-tail(phys,val,fsz) {:x?} kmap(vaddr,bell,tail) {:x?}",
-                        thread.id(),
-                        alloc::sync::Arc::as_ptr(&obj) as *const u8 as usize,
-                        linked_here,
-                        entry_threads,
-                        regions.len(),
-                        nr_user,
-                        arcs_match,
-                        av2,
-                        tree,
-                        tree_tail,
-                        kmap
-                    );
-                    // `row-av` is the wait-table row's own read with provenance (arc, phys, val,
-                    // fsz); `slot` is each subqueue's tail-slot cmd_slot via kernel mapping vs
-                    // object tree -- the word `is_turn` judges by.
-                    crate::pager::queues::qtrail::dump();
-                    emerglogln!(
-                        "  row-av {:x?} slot {:x?} qwake-inst ({:x},{:x})",
-                        avdiag,
-                        crate::pager::sender_slot_diag(),
-                        crate::obj::thread_sync::QWAKE_INST_1140.load(Ordering::Relaxed),
-                        crate::obj::thread_sync::QWAKE_INST_12C0.load(Ordering::Relaxed)
-                    );
-                    // Per user region: is it STABLE (private page-table clone)? A stable
-                    // region's threads resolve through the clone, not the object tree -- read
-                    // the bell/tail/cw words through the clone with their phys. A clone frame
-                    // differing from the tree frame is the mapping-level fork no TLB flush
-                    // repairs (sweep21: 84% of stale parks unhealed by invlpg).
-                    for r in regions.iter() {
-                        if r.range.start.is_kernel_object_memory() {
-                            continue;
-                        }
-                        let clone_view = r.stable.as_ref().map(|st| {
-                            let mut pt = st.lock();
-                            let mut rd = |off: usize| {
-                                pt.with_frame(
-                                    off as u64,
-                                    crate::obj::pagetables::FindFrameFlags::empty(),
-                                    &mut false,
-                                    |fo, fr| {
-                                        fr.map(|fr| {
-                                            (fr.start_address().raw(), unsafe {
-                                                fr.virtaddr()
-                                                    .as_ptr::<u64>()
-                                                    .byte_add(off - fo)
-                                                    .read_volatile()
-                                            })
-                                        })
-                                    },
-                                )
-                                .ok()
-                                .flatten()
-                            };
-                            (rd(aoff), rd(aoff + 0x40), rd(aoff - 0x40))
-                        });
-                        emerglogln!(
-                            "  region {:x} prot {:x} flags {:x} stable {} clone(bell,tail,cw) {:x?}",
-                            r.range.start.raw(),
-                            r.prot.bits(),
-                            r.flags.bits(),
-                            r.stable.is_some(),
-                            clone_view
-                        );
-                    }
-                }
-            }
             emerglogln!(
-                "  thread {} ({}) '{}': {:?} sctx {} in_user {} must_exit {} ip {:x} word {}+{:x} wv {:x} av {:x} avok {} m {} slprs {} cw {} wt {} lost {} fl {:x} crit {} gen {} ps {} cs {} cg {} rq {} rg {} | sync {} pager {} memwait {} mutex {} condvar {} requeue {} suspend {} sched {} timed {}",
+                "  thread {} ({}) '{}': {:?} sctx {} in_user {} must_exit {} ip {:x} word {}+{:x} wv {:x} av {:x} avok {} m {} slprs {} cw {} wt {} lost {} fl {:x} crit {} gen {} | sync {} pager {} memwait {} mutex {} condvar {} requeue {} suspend {} sched {} timed {}",
                 thread.id(),
                 thread.objid(),
                 core::str::from_utf8(&namebuf[..namelen]).unwrap_or("?"),
@@ -1863,11 +1613,6 @@ pub fn check_system_hang() {
                 thread.flags.load(Ordering::Relaxed),
                 thread.is_critical(),
                 thread.sync_sleep_gen(),
-                thread.park_seq.load(Ordering::Relaxed),
-                thread.sync_consumer[0].load(Ordering::Relaxed),
-                thread.sync_consumer[1].load(Ordering::Relaxed),
-                thread.requeue_event[0].load(Ordering::Relaxed),
-                thread.requeue_event[1].load(Ordering::Relaxed),
                 thread.sync_links.is_linked(),
                 thread.pager_link.is_linked(),
                 thread.memwait_link.is_linked(),
@@ -1974,7 +1719,6 @@ pub fn check_orphan_threads() {
                         is_timed_wait,
                         is_active_running,
                     );
-                    thread.print_locks();
                 }
             } else {
                 thread.stuck_exit_scans.store(0, Ordering::Relaxed);

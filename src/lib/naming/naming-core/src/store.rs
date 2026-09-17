@@ -161,58 +161,13 @@ impl NsNode {
     }
 }
 
-// Temporary instrumentation for the directory-enumeration latency hunt (pagerperf.md): opening a
-// namespace by id maps its object, which is a monitor gate call on a cache miss.
-//
-// Gated by a const rather than by `statcadence::STATS_ON`, which suppresses the *output* and leaves
-// the work: this cost two `Instant::now()` and three shared-cacheline RMWs on every readdir chunk,
-// which is the shape sysperf.md round 6 caught doing more harm than the thing it measured.
-mod nsidstats {
-    use std::{
-        sync::atomic::{AtomicU64, Ordering},
-        time::Instant,
-    };
-
-    pub const NSID_STATS: bool = false;
-
-    static COUNT: AtomicU64 = AtomicU64::new(0);
-    static OPEN: AtomicU64 = AtomicU64::new(0);
-    static ITEMS: AtomicU64 = AtomicU64::new(0);
-
-    /// `None` unless the instrument is on, so the clock read folds away with it.
-    pub fn start() -> Option<Instant> {
-        NSID_STATS.then(Instant::now)
-    }
-
-    pub fn elapsed(t: Option<Instant>) -> u64 {
-        t.map_or(0, |t| t.elapsed().as_nanos() as u64)
-    }
-
-    pub fn record(open: u64, items: u64) {
-        if !NSID_STATS {
-            return;
-        }
-        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        let o = OPEN.fetch_add(open, Ordering::Relaxed) + open;
-        let i = ITEMS.fetch_add(items, Ordering::Relaxed) + items;
-        if n.is_power_of_two() {
-            twizzler_abi::klog_println!(
-                "NSIDSTATS {} enumerates: open-ns {} us, items {} us",
-                n,
-                o / 1000,
-                i / 1000,
-            );
-        }
-    }
-}
-
 /// A memo of resolved paths, so a repeated lookup does not re-walk -- and re-lock -- the tree.
 ///
 /// `namei` takes on the order of ten process-global mutexes for a warm four-component path: the
 /// root object's pair, twice over because an absolute symlink like `/sysroot` restarts the walk at
 /// the root; the external-namespace registry, once per component in `open_namespace`; and each
 /// namespace's own cache. That is why the namer's cost grows with thread count -- 2.3 us solo
-/// against 8.4 us at four threads (pagerperf.md 21) -- and why 21 concluded the fix had to be
+/// against 8.4 us at four threads -- and why 21 concluded the fix had to be
 /// taking fewer locks rather than cheaper ones. A hit here takes exactly one, and which one is
 /// chosen by the path's hash, so threads looking up different paths do not meet at all.
 ///
@@ -244,12 +199,6 @@ mod memo {
     use twizzler_rt_abi::object::ObjID;
 
     use super::{GetFlags, NsNode};
-
-    /// A/B knob. `false` restores the pre-memo path exactly.
-    pub const MEMO_ON: bool = true;
-    /// Hit/miss reporting. Off by default and const-folded away when it is: round 6 of sysperf.md
-    /// is a catalogue of counters that became the thing they were measuring.
-    const MEMO_STATS: bool = false;
 
     const SHARDS: usize = 16;
     const PER_SHARD: usize = 32;
@@ -297,91 +246,18 @@ mod memo {
         GEN.fetch_add(1, Ordering::Release);
     }
 
-    /// Why a lookup did not get an answer. The split is the point: a memo that misses because it
-    /// has not seen a path yet is working as designed, one that misses because the generation moved
-    /// is being destroyed by write traffic elsewhere in the tree, and one that misses on expiry is
-    /// paying for a staleness bound it may not need. Only the first is fixed by running longer.
-    #[derive(Clone, Copy)]
-    enum Miss {
-        /// No entry for this key -- first sight, or evicted by its shard's LRU.
-        Unseen,
-        /// An entry was there, and a mutation somewhere in the tree retired it.
-        StaleGen,
-        /// An entry was there and current, and older than `TTL`.
-        Expired,
-        /// The key collided: same hash, different lookup.
-        Collision,
-    }
-
-    static HITS: AtomicU64 = AtomicU64::new(0);
-    static UNSEEN: AtomicU64 = AtomicU64::new(0);
-    static STALE_GEN: AtomicU64 = AtomicU64::new(0);
-    static EXPIRED: AtomicU64 = AtomicU64::new(0);
-    static COLLISION: AtomicU64 = AtomicU64::new(0);
-
-    /// Folds away entirely with `MEMO_STATS` off, atomics included.
-    fn note(miss: Option<Miss>) {
-        if !MEMO_STATS {
-            return;
-        }
-        match miss {
-            None => HITS.fetch_add(1, Ordering::Relaxed),
-            Some(Miss::Unseen) => UNSEEN.fetch_add(1, Ordering::Relaxed),
-            Some(Miss::StaleGen) => STALE_GEN.fetch_add(1, Ordering::Relaxed),
-            Some(Miss::Expired) => EXPIRED.fetch_add(1, Ordering::Relaxed),
-            Some(Miss::Collision) => COLLISION.fetch_add(1, Ordering::Relaxed),
-        };
-        let h = HITS.load(Ordering::Relaxed);
-        let u = UNSEEN.load(Ordering::Relaxed);
-        let s = STALE_GEN.load(Ordering::Relaxed);
-        let e = EXPIRED.load(Ordering::Relaxed);
-        let c = COLLISION.load(Ordering::Relaxed);
-        let total = h + u + s + e + c;
-        if total.is_power_of_two() {
-            // One write, because `klog_println!` interleaves under concurrency and a torn report
-            // loses every counter in it.
-            twizzler_abi::klog_println!(
-                "MEMOSTATS {} lookups: {} hits ({}%), misses: {} unseen, {} stale-gen, {} expired, \
-                 {} collision; gen {}",
-                total,
-                h,
-                h * 100 / total.max(1),
-                u,
-                s,
-                e,
-                c,
-                generation(),
-            );
-        }
-    }
-
     pub fn lookup(ns: ObjID, path: &str, flags: GetFlags) -> Option<NsNode> {
         let k = key(ns, path, flags);
         let gen = generation();
-        let mut miss = Some(Miss::Unseen);
-        let node = (|| {
-            let mut shard = TABLE[(k as usize) % SHARDS].lock().ok()?;
-            let entry = shard.as_mut()?.get(&k)?;
-            // Order matters only for the diagnosis: the cheapest disqualifier that applies is the
-            // one reported, and identity is checked before staleness so a collision is never
-            // reported as write traffic.
-            if entry.ns != ns || entry.flags != flags || entry.path != path {
-                miss = Some(Miss::Collision);
-                return None;
-            }
-            if entry.gen != gen {
-                miss = Some(Miss::StaleGen);
-                return None;
-            }
-            if entry.recorded.elapsed() >= TTL {
-                miss = Some(Miss::Expired);
-                return None;
-            }
-            miss = None;
-            Some(entry.node)
-        })();
-        note(miss);
-        node
+        let mut shard = TABLE[(k as usize) % SHARDS].lock().ok()?;
+        let entry = shard.as_mut()?.get(&k)?;
+        if entry.ns != ns || entry.flags != flags || entry.path != path {
+            return None;
+        }
+        if entry.gen != gen || entry.recorded.elapsed() >= TTL {
+            return None;
+        }
+        Some(entry.node)
     }
 
     pub fn record(gen: u64, ns: ObjID, path: &str, flags: GetFlags, node: NsNode) {
@@ -415,11 +291,7 @@ pub(crate) use memo::invalidate as invalidate_memo;
 /// one session's artifacts to another session's sweep. A marker whose text differs between arms
 /// does prove it, and costs one line per boot.
 pub fn memo_config() -> &'static str {
-    if memo::MEMO_ON {
-        "memo=on shards=16x32 ttl=1s"
-    } else {
-        "memo=off"
-    }
+    "memo=on shards=16x32 ttl=1s"
 }
 
 /// The name `remove`/`rename` unlinks, taken from the request path rather than from the node the
@@ -965,10 +837,9 @@ impl NameSession<'_> {
         // A re-rooted session is never memoized: the memo key is (start namespace, path, flags)
         // and does not identify the root, so two sessions sharing a working namespace but not a
         // root would read each other's answers for any path touching `/` or `..`.
-        let memoized =
-            (memo::MEMO_ON && self.root_ns.is_none() && !flags.contains(GetFlags::CREATE))
-                .then(|| name.as_ref().to_str())
-                .flatten();
+        let memoized = (self.root_ns.is_none() && !flags.contains(GetFlags::CREATE))
+            .then(|| name.as_ref().to_str())
+            .flatten();
         let start = if memoized.is_some() {
             self.start_id()
         } else {
@@ -1032,12 +903,8 @@ impl NameSession<'_> {
         count: usize,
     ) -> Result<std::vec::Vec<NsNode>> {
         tracing::trace!("opening namespace-ensid: {} {} {}", id, skip, count);
-        let t_open = nsidstats::start();
         let ns = self.open_namespace(id, false, None)?;
-        let open_ns = nsidstats::elapsed(t_open);
-        let t_items = nsidstats::start();
         let items = ns.items(skip, count);
-        nsidstats::record(open_ns, nsidstats::elapsed(t_items));
         tracing::trace!("collected: {:?}", items);
         Ok(items)
     }

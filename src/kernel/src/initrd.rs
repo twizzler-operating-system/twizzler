@@ -147,7 +147,7 @@ pub fn init(modules: &[BootModule]) {
             }
             // The only place the initrd's name-to-ObjID mapping exists: userspace gets it via
             // `KernelInitInfo`, but nothing records it where a kernel-side counter reporting bare
-            // ObjIDs can be read against it. See unmap.md's latched-object identification.
+            // ObjIDs can be read against it.
             // `emerglogln!`, not `info!`: initrd parsing runs before the logger is capturing, which
             // is why the neighbouring `info!("done, loaded ...")` never appears in a boot log
             // either. Same reason the shutdown counters use it.

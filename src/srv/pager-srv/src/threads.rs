@@ -21,14 +21,11 @@ use twizzler_abi::{
 use twizzler_queue::{QueueError, ReceiveFlags, SubmissionFlags};
 
 use crate::{
-    dispatch_stats::{DispatchStats, DISPATCH_STATS},
-    nvme::controller::MAX_DATA_QUEUES,
-    request_handle::handle_kernel_request,
-    watchdog, PAGER_CTX,
+    nvme::controller::MAX_DATA_QUEUES, request_handle::handle_kernel_request, watchdog, PAGER_CTX,
 };
 
 /// Worker threads per core. Measured: at 1x the blocking NVMe leaf loses to the async one by 2.1x,
-/// and at 2x it wins back the intra-worker overlap it gave up (pagerperf.md 1).
+/// and at 2x it wins back the intra-worker overlap it gave up.
 const WORKER_SCALE: usize = 2;
 
 /// Scheduler priority for the pager's service threads.
@@ -41,7 +38,7 @@ const WORKER_SCALE: usize = 2;
 ///
 /// Deliberately still `PriorityClass::User` rather than realtime. A pager thread is *not* more
 /// important than the thread whose fault it is servicing -- the right answer is to inherit that
-/// thread's priority (`pagerplan.md` stage 4), and a blanket realtime class would let a background
+/// thread's priority, and a blanket realtime class would let a background
 /// task's fault preempt a realtime thread, which is exactly what inheritance is supposed to
 /// prevent. It also keeps a pager thread that spins (`InflightRequest::spin`) from locking an
 /// ordinary thread off a core entirely.
@@ -98,8 +95,8 @@ fn lane_name(fast: bool, index: usize) -> &'static str {
 /// whole range the kernel widened around them.
 ///
 /// Measured against the widened range instead, this admitted nothing at all: `LANESTATS` reported
-/// 0 of 32 page-data requests fast, 31 rejected on size, and 0 admitted even at a limit of 512
-/// (`pagerplan.md` stage 4). That is because `ensure_in_core_pager` widens a one-page touch to a
+/// 0 of 32 page-data requests fast, 31 rejected on size, and 0 admitted even at a limit of 512.
+/// That is because `ensure_in_core_pager` widens a one-page touch to a
 /// 64-page run or a whole 512-page region, so the size test was reading the read-ahead and
 /// rejecting the fault attached to it -- and a lane that only ever runs `ObjectInfoReq` and
 /// `DramPages` is not a page-fault reservation at all.
@@ -113,8 +110,8 @@ fn lane_name(fast: bool, index: usize) -> &'static str {
 const FAST_PAGE_LIMIT: usize = 16;
 
 /// Whether a request belongs on a reserved fast lane. `DramPages` is pure bookkeeping and
-/// `ObjectInfoReq` is a `len()` probe the length cache usually answers without touching the disk
-/// (see pagerperf.md 12). Page data qualifies only when the segment someone is *blocked on* is
+/// `ObjectInfoReq` is a `len()` probe the length cache usually answers without touching the disk.
+/// Page data qualifies only when the segment someone is *blocked on* is
 /// small ([`FAST_PAGE_LIMIT`]), it is not a prefetch, it was not raised for a background thread,
 /// and it is answerable without the fs lock. Prefetch ranges run to the whole
 /// object, which is exactly the traffic the reservation exists to dodge; create/delete/evict all do
@@ -158,7 +155,7 @@ fn is_fast(req: &RequestFromKernel) -> bool {
 
 /// What the fast-lane reservation actually admits, and what a bigger [FAST_PAGE_LIMIT] would.
 ///
-/// `pagerperf.md` 11 set the threshold against the request shapes `ensure_in_core_pager` is
+/// The threshold was first set against the request shapes `ensure_in_core_pager` is
 /// *written* to emit and called it "a guess pending measurement"; this is that measurement. The
 /// `would_be_fast_at_*` counters are the decisive ones: they hold the flags and probe tests fixed
 /// and vary only the size limit, so the difference between them is exactly what raising it buys.
@@ -180,13 +177,13 @@ struct LaneStats {
     /// The decisive counterfactual: requests that a fast lane could take **today** if it served
     /// only the urgent segment and handed the read-ahead tail to a bulk lane. Flags and size held
     /// fixed, so this is exactly what tail re-dispatch would buy -- and if it is ~0, nothing short
-    /// of the fs lock itself will open the fast lanes (`pagerplan.md` stages 4 and 6).
+    /// of the fs lock itself will open the fast lanes.
     would_be_fast_urgent_only: AtomicU64,
     pages_fast: AtomicU64,
     /// Of [`Self::pages_fast`], the pages nobody was blocked on -- the read-ahead a fast lane
     /// carries inline after the urgent segment it was admitted for. This is the cost of sizing
     /// admission on the urgent segment, and the number that decides whether the tail needs
-    /// handing back to a bulk lane (`pagerplan.md` stage 4). Zero means the widened range and the
+    /// handing back to a bulk lane. Zero means the widened range and the
     /// urgent segment always coincided and the re-cut changed nothing.
     pages_fast_tail: AtomicU64,
     pages_total: AtomicU64,
@@ -303,7 +300,7 @@ impl LaneStats {
 
 /// Why serving this range would park the lane on the object store's fs lock, if it would.
 ///
-/// That lock is global and held across NVMe round trips (pagerperf.md 2), so a fast lane that takes
+/// That lock is global and held across NVMe round trips, so a fast lane that takes
 /// it can sit behind a bulk transfer for a whole disk round trip -- the queueing the reservation
 /// exists to prevent, and the one thing that makes running these lanes above ordinary userspace
 /// unsafe: the holder can be of any priority class, and a userspace mutex donates nothing. Sending
@@ -368,7 +365,7 @@ pub fn current_queue_index() -> usize {
 /// `available_parallelism` is not contractually stable across calls.
 ///
 /// A blocking worker is parked for the whole transfer, so the pool -- not the executor -- is what
-/// keeps commands outstanding; 1x cores measured 2.1x worse than 2x (pagerperf.md 1). Floor of 2 so
+/// keeps commands outstanding; 1x cores measured 2.1x worse than 2x. Floor of 2 so
 /// the fast lane always has somewhere to live.
 pub fn desired_queues() -> usize {
     static NR: OnceLock<usize> = OnceLock::new();
@@ -391,7 +388,7 @@ pub fn set_granted_queues(n: usize) {
 /// A waiting thread reaps the queue it submitted to, so 1-1 gives each worker an uncontended
 /// requester lock and no spurious wakeups -- with several workers per queue, one queue's interrupt
 /// wakes them all and most find the completion belongs to someone else. Sharing is *correct*
-/// (`pagerplan.md`, "waiters reap"), just noisier, which is why this follows the device down rather
+/// ("waiters reap"), just noisier, which is why this follows the device down rather
 /// than leaving the pool at what we asked for.
 ///
 /// `desired_queues()` is the fallback for configurations with no nvme controller at all (the
@@ -419,7 +416,7 @@ pub fn nr_queues() -> usize {
 /// The reason this exists rather than a bare fetch_add/fetch_sub pair: page-data and fence-sync
 /// requests used to detach a task and return, so the work item finished while the paging it asked
 /// for was still running. With blocking workers the item and the work are the same thing, so the
-/// count is now just "queued plus in progress" -- `pagerplan.md` stage 3 collapses it further.
+/// count is now just "queued plus in progress".
 pub struct DepthGuard(Option<Arc<AtomicUsize>>);
 
 impl DepthGuard {
@@ -459,13 +456,6 @@ impl WorkerThread {
                     loop {
                         let wi = recv.recv_blocking().unwrap();
                         let _depth = DepthGuard::adopt(thread_depth.clone());
-                        // Labelled by the *lane's* class, not the request's: a fast request that
-                        // borrowed an idle bulk lane waited in that lane's queue, which is what
-                        // this measures.
-                        DISPATCH_STATS.pickup(fast, wi.start.elapsed().as_nanos() as u64);
-                        if matches!(wi.req.cmd(), KernelCommand::ObjectInfoReq(_)) {
-                            DISPATCH_STATS.info_pickup(wi.start.elapsed().as_nanos() as u64);
-                        }
                         tracing::trace!(
                             "{}: starting handling after {}us",
                             wi.qid,
@@ -586,18 +576,11 @@ impl Workers {
     /// loaded; ties break to the lowest index, and the charge lands before the next decision reads
     /// it, so a run of identical requests still spreads.
     fn dispatch(&self, wi: WorkItem) {
-        let probe_start = DispatchStats::now_ns();
         let fast = is_fast(&wi.req);
-        let send_start = DispatchStats::now_ns();
-        DISPATCH_STATS.probe(send_start - probe_start);
         self.place(wi, fast);
-        DISPATCH_STATS.send(DispatchStats::now_ns() - send_start);
     }
 
-    /// Place an already-classified item on a lane. Split out from [`Self::dispatch`] only so the
-    /// lane decision and the placement can be timed apart -- the `is_fast` probe reads the object
-    /// store's caches, and whether a slow dispatch is that probe or a full lane is the whole
-    /// question.
+    /// Place an already-classified item on a lane.
     fn place(&self, wi: WorkItem, fast: bool) {
         let lane = self.lane(fast);
         let depth = |i: usize| self.threads[i].depth.load(Ordering::Relaxed);
@@ -686,9 +669,9 @@ impl PagerThreadPool {
 /// (`park_poll`) driving it against this thread's nvme interrupt word, `spawn_async` to detach a
 /// page-in so the worker could take the next item, and `run_isolated` to poll one future without
 /// the executor -- that last one existing only to keep lwext4's callbacks from re-entering it and
-/// deadlocking on `Ext4Store::fs` (pagerperf.md 2). A blocking worker does the work on the thread
-/// that took the item, so the handoff, the parker and the whole deadlock class go with it
-/// (`pagerplan.md` stage 2). What replaced the parker is `InflightRequest::wait_owned`, which
+/// deadlocking on `Ext4Store::fs`. A blocking worker does the work on the thread
+/// that took the item, so the handoff, the parker and the whole deadlock class go with it.
+/// What replaced the parker is `InflightRequest::wait_owned`, which
 /// sleeps on the flags word and this thread's queue interrupt together and reaps for itself.
 
 fn kq_handler_main(
@@ -697,21 +680,17 @@ fn kq_handler_main(
 ) {
     boost_priority(SERVICE_PRIORITY);
     loop {
-        // Each entry carries the moment it came off the queue, which is both the end of its transit
-        // and the start of its wait for a lane. Stamped per item rather than per batch because a
-        // batch is drained non-blockingly after the first item wakes this thread, so the last of
-        // eight has been in the queue measurably less long than the first.
-        let mut tmp = heapless::Vec::<(u32, RequestFromKernel, u64), 8>::new();
+        let mut tmp = heapless::Vec::<(u32, RequestFromKernel), 8>::new();
         while !tmp.is_full() {
             let res = queue.receive(ReceiveFlags::NON_BLOCK);
             match res {
-                Ok((id, req)) => unsafe { tmp.push_unchecked((id, req, DispatchStats::now_ns())) },
+                Ok((id, req)) => unsafe { tmp.push_unchecked((id, req)) },
                 Err(e) if e == QueueError::WouldBlock => {
                     if !tmp.is_empty() {
                         break;
                     }
                     if let Ok((id, req)) = queue.receive(ReceiveFlags::empty()) {
-                        unsafe { tmp.push_unchecked((id, req, DispatchStats::now_ns())) };
+                        unsafe { tmp.push_unchecked((id, req)) };
                     }
                 }
                 Err(e) => {
@@ -720,18 +699,8 @@ fn kq_handler_main(
             }
         }
 
-        DISPATCH_STATS.batch(tmp.len());
         KQ_CONSUMED.fetch_add(tmp.len(), Ordering::Relaxed);
-        for (id, req, dequeued) in tmp {
-            DISPATCH_STATS.transit(req.submit_ns(), dequeued);
-            if matches!(req.cmd(), KernelCommand::ObjectInfoReq(_)) {
-                DISPATCH_STATS.info_transit(req.submit_ns(), dequeued);
-            }
-            // Everything before this point in the loop body is bookkeeping, but everything before
-            // it in *earlier iterations* is real dispatch work this item has been waiting through.
-            // `ready` separates the two, so a slow placement can be told from a slow batch-mate.
-            let ready = DispatchStats::now_ns();
-            DISPATCH_STATS.batchwait(ready - dequeued);
+        for (id, req) in tmp {
             // Evicts never go through `dispatch`: a non-fence evict only records the page in
             // `PerObjectInner::sync_map`, and the fence that follows it drains and writes out what
             // was recorded, so the record has to happen first. Handling non-fence evicts inline
@@ -742,9 +711,6 @@ fn kq_handler_main(
                 if evict.flags.contains(ObjectEvictFlags::FENCE) {
                     let hash = req.id().map_or(0, |x| x.parts()[0] ^ x.parts()[1]) + id as u64;
                     workers.dispatch_ordered(WorkItem::new(id, req), hash);
-                    let now = DispatchStats::now_ns();
-                    DISPATCH_STATS.ordered(now - ready);
-                    DISPATCH_STATS.dispatched(now - dequeued);
                 } else {
                     // Handled inline, so anything that blocks here stops the pager dequeuing from
                     // the kernel at all -- worth naming separately from a stuck worker.
@@ -759,21 +725,15 @@ fn kq_handler_main(
                             .complete(id, resp, SubmissionFlags::empty())
                             .unwrap();
                     }
-                    DISPATCH_STATS.inline(DispatchStats::now_ns() - ready);
                 }
             } else {
                 workers.dispatch(WorkItem::new(id, req));
-                // After the dispatch returns, so a lane full enough to make `dispatch` block shows
-                // up here rather than silently in the next item's transit.
-                DISPATCH_STATS.dispatched(DispatchStats::now_ns() - dequeued);
             }
         }
 
-        // Both reports emit here, with the batch fully dispatched and no span open. Emitting them
-        // where the counters are updated put a console write inside `probe` and inside the
-        // `dispatched` window, which is what the first two rounds of these numbers were measuring.
+        // Emitted here, with the batch fully dispatched and no span open, so the console write is
+        // not inside a timed window.
         LANE_STATS.report_if_due();
-        DISPATCH_STATS.report_if_due();
     }
 }
 

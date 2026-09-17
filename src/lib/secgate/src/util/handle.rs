@@ -1,4 +1,3 @@
-use core::sync::atomic::{AtomicU64, Ordering};
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use stable_vec::StableVec;
@@ -51,16 +50,6 @@ pub struct HandleMgr<ServerData> {
 /// unreachable, and the empty-table half -- which is what reclaims a live compartment's table once
 /// it closes its handles -- still runs every time.
 const GC_FULL_EVERY: u32 = 1;
-
-/// Switch for the `HDLGC` counter: cumulative calls, microseconds and `sys_object_stat` syscalls.
-const GC_STATS: bool = false;
-static GC_CALLS: AtomicU64 = AtomicU64::new(0);
-static GC_NS: AtomicU64 = AtomicU64::new(0);
-static GC_STATCALLS: AtomicU64 = AtomicU64::new(0);
-/// Nanoseconds inside `sys_object_stat` alone, and how many of those returned "gone". A stat on a
-/// dead object may be a slower path than one on a live object, which a total cannot show.
-static GC_SYSNS: AtomicU64 = AtomicU64::new(0);
-static GC_MISSES: AtomicU64 = AtomicU64::new(0);
 
 impl<ServerData> HandleMgr<ServerData> {
     /// Construct a new HandleMgr.
@@ -147,7 +136,6 @@ impl<ServerData> HandleMgr<ServerData> {
     /// `THREAD_MGR` and calls a monitor gate, so the pair deadlocked: `lostwake/round765` caught
     /// `get_compartment_handle` holding `comp_lookup` here and waiting on `THREAD_MGR`.
     pub fn gc_handles(&mut self) {
-        let _t0 = GC_STATS.then(crate::now_ns);
         // Free, and the common case: a table with nothing in it is dead whoever owns it.
         self.handles.retain(|_, sv| !sv.is_empty());
         self.gc_tick = self.gc_tick.wrapping_add(1);
@@ -155,43 +143,9 @@ impl<ServerData> HandleMgr<ServerData> {
             return;
         }
         fn sctx_still_valid(id: &ObjID) -> bool {
-            if id.raw() == 0 {
-                return true;
-            }
-            let t = GC_STATS.then(crate::now_ns);
-            let r = sys_object_stat(*id).is_ok();
-            if let Some(t) = t {
-                GC_SYSNS.fetch_add(crate::now_ns().saturating_sub(t), Ordering::Relaxed);
-                if !r {
-                    GC_MISSES.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-            r
+            id.raw() == 0 || sys_object_stat(*id).is_ok()
         }
-        let _n = self.handles.len() as u64;
         self.handles.retain(|id, _| sctx_still_valid(id));
-        if let Some(t0) = _t0 {
-            // How much of a spawn is really here, measured rather than inferred from a difference
-            // between two call shapes. `stats` is the number of `sys_object_stat` syscalls this
-            // pass made -- the thing the cadence knob divides.
-            let ns = crate::now_ns().saturating_sub(t0);
-            let calls = GC_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
-            GC_NS.fetch_add(ns, Ordering::Relaxed);
-            let stats = GC_STATCALLS.fetch_add(_n, Ordering::Relaxed) + _n;
-            if calls % 256 == 0 {
-                crate::statlog::record_on(
-                    GC_STATS,
-                    "HDLGC",
-                    calls,
-                    &[
-                        GC_NS.load(Ordering::Relaxed) / 1000,
-                        stats,
-                        GC_SYSNS.load(Ordering::Relaxed) / 1000,
-                        GC_MISSES.load(Ordering::Relaxed),
-                    ],
-                );
-            }
-        }
     }
 }
 

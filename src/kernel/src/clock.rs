@@ -459,7 +459,17 @@ pub fn register_timeout_callback(
         let (key, expire_ns) = tq.insert(time, timeout);
         // A deadline sooner than the bsp's programmed wake would otherwise wait out that wake
         // (up to a full tick) — the quantization that made every sub-ms sleep cost ~1ms.
-        let kick = expire_ns != 0 && expire_ns.saturating_add(KICK_SLACK_NS) < tq.next_wake_abs_ns;
+        //
+        // `next_wake_abs_ns` only describes a real pending arm while it is still ahead of us:
+        // `oneshot_clock_hardtick` sets it at most a tick out and moves it on every fire. A value
+        // that has already passed therefore means the arm it names never fired, and deferring to
+        // it suppresses this kick -- and every later one, since nothing else ever lowers it. That
+        // is what makes a single lost arm permanent: the bsp stays idle with interrupts on,
+        // answering ipis it is never sent. Treat a passed deadline as "nothing is armed".
+        let now_ns = crate::instant::current_ns();
+        let nothing_armed = now_ns != 0 && tq.next_wake_abs_ns <= now_ns;
+        let kick = expire_ns != 0
+            && (nothing_armed || expire_ns.saturating_add(KICK_SLACK_NS) < tq.next_wake_abs_ns);
         (key, kick)
     };
     if kick {
@@ -531,7 +541,7 @@ pub fn get_current_ticks() -> u64 {
 
 /// Watchdog for a stalled BSP, run from *non-BSP* idle loops.
 ///
-/// Every hang diagnostic this kernel has -- `check_timed_out_mutexes`, `check_orphan_threads`,
+/// Every hang diagnostic this kernel has -- `check_orphan_threads`,
 /// `check_system_hang` -- runs from the `is_bsp()` arm of `idle_main`, and every timeout is
 /// advanced from the `is_bsp()` arm of `oneshot_clock_hardtick`. So the one failure they exist to
 /// catch, a BSP spinning with interrupts masked, is precisely the one where none of them can run:
@@ -550,6 +560,31 @@ pub fn get_current_ticks() -> u64 {
 /// across 46 captured wedges under that design this fired zero times.) What it still cannot see,
 /// by construction, is a BSP spinning with interrupts *on* -- ticking normally -- which is what
 /// the captured wedges actually were. Treat a silent watchdog as no evidence either way.
+/// Counts bsp timer arms that were never delivered, i.e. `next_wake_abs_ns` fell behind `now`.
+///
+/// The wedge this came from is repaired ([`check_reschedule_oneshot`] re-arms instead of deferring
+/// to a dead deadline), so the loss no longer shows as a hang -- which means without a counter it
+/// is now invisible. This is the instrument for the still-open question of what drops the arm.
+pub mod armloss {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    static MAX_LATE_NS: AtomicU64 = AtomicU64::new(0);
+
+    pub fn note(late_ns: u64) {
+        COUNT.fetch_add(1, Ordering::Relaxed);
+        MAX_LATE_NS.fetch_max(late_ns, Ordering::Relaxed);
+    }
+
+    /// `(count, worst overdue in ns)`.
+    pub fn read() -> (u64, u64) {
+        (
+            COUNT.load(Ordering::Relaxed),
+            MAX_LATE_NS.load(Ordering::Relaxed),
+        )
+    }
+}
+
 pub mod bsp_watchdog {
     use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -613,7 +648,17 @@ pub fn check_reschedule_oneshot() {
         };
         let programmed = delta.clamp(MIN_ONESHOT_NS, NANOS_PER_TICK);
         let deadline = now.saturating_add(programmed);
-        if deadline.saturating_add(KICK_SLACK_NS) < timeout_queue.next_wake_abs_ns {
+        // Same rule as `register_timeout_callback`: a programmed wake whose deadline has already
+        // passed did not fire, so there is nothing here to defer to and this cpu must re-arm.
+        let nothing_armed = timeout_queue.next_wake_abs_ns <= now;
+        if nothing_armed {
+            // This branch *is* the arm-loss detector: the bsp's programmed wake is behind us and
+            // its interrupt never arrived. Record how far overdue so a transcript can separate
+            // "fired a hair late" from "never fired at all".
+            armloss::note(now.saturating_sub(timeout_queue.next_wake_abs_ns));
+        }
+        if nothing_armed || deadline.saturating_add(KICK_SLACK_NS) < timeout_queue.next_wake_abs_ns
+        {
             timeout_queue.next_wake_abs_ns = deadline;
             schedule_oneshot_nanos(programmed);
         }

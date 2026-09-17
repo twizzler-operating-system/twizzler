@@ -59,45 +59,6 @@ fn binding_ref<'a, T>(binding: *const c_void, binding_len: usize) -> std::io::Re
     }
 }
 
-// Temporary instrumentation for the File::open latency hunt (pagerperf.md).
-pub mod openstats {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    /// This path's own switch. `statcadence::STATS_ON` is global, so flipping it to measure opens
-    /// turns on every counter in the tree and changes what every other run is measuring.
-    pub const OPEN_STATS: bool = false;
-
-    static COUNT: AtomicU64 = AtomicU64::new(0);
-    static OUTER: AtomicU64 = AtomicU64::new(0);
-
-    /// The three named segments of `open_path`, plus the whole of it -- so what the segments do
-    /// *not* account for is visible rather than inferred.
-    pub fn record(lock: u64, get: u64, obj: u64, total: u64) {
-        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        // Every call, in ns: the first open on a thread costs milliseconds and the rest tens of
-        // microseconds, so an aggregate reports a number that describes neither.
-        secgate::statlog::record_on(
-            OPEN_STATS,
-            "OPENPATH",
-            n,
-            &[
-                lock,
-                get,
-                obj,
-                total.saturating_sub(lock + get + obj),
-                total,
-            ],
-        );
-    }
-
-    /// `ReferenceRuntime::open` around `kinds::open`: what the open costs beyond resolving the name
-    /// and opening the object -- `FileDesc::new` and the process-wide fd table.
-    pub fn record_outer(kinds: u64, fdtable: u64, total: u64) {
-        let n = OUTER.fetch_add(1, Ordering::Relaxed) + 1;
-        secgate::statlog::record_on(OPEN_STATS, "OPENFD", n, &[kinds, fdtable, total]);
-    }
-}
-
 /// A symlink's `st_size` is the length of the path it holds -- the value callers size a
 /// `readlink` buffer from. Taken from the node the lookup already returned, since the open
 /// itself has no way back to the link text. Zero for anything that is not a symlink.
@@ -139,9 +100,7 @@ fn map_flags_for(open_opt: OperationOptions) -> MapFlags {
 }
 
 fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) -> Result<FdImpl> {
-    let t_start = std::time::Instant::now();
     let session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
-    let lock_ns = t_start.elapsed().as_nanos() as u64;
 
     check_truncate(open_opt)?;
     let flags = map_flags_for(open_opt);
@@ -150,7 +109,6 @@ fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) 
     } else {
         GetFlags::FOLLOW_SYMLINK
     };
-    let t_get = std::time::Instant::now();
     let (obj_id, did_create, kind, link_len) = match create_opt {
         CreateOptions::UNEXPECTED => return Err(TwzError::INVALID_ARGUMENT),
         CreateOptions::CreateKindExisting => {
@@ -175,8 +133,6 @@ fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) 
             .map(|x| (ObjID::from(x.id), false, x.kind, symlink_target_len(&x)))?,
     };
 
-    let get_ns = t_get.elapsed().as_nanos() as u64;
-
     tracing::trace!(
         "open_path: path = {}, obj_id = {:x}, did_create = {}, kind = {:?}",
         path,
@@ -188,7 +144,6 @@ fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) 
         session.put(path, obj_id)?;
     }
 
-    let t_obj = std::time::Instant::now();
     let res = match kind {
         NsNodeKind::Namespace => Arc::new(DirFile::new(obj_id)?) as FdImpl,
         NsNodeKind::Object => {
@@ -217,13 +172,6 @@ fn open_path(path: &str, create_opt: CreateOptions, open_opt: OperationOptions) 
             DevFs::Stderr => dup_fd_file(2)?,
         },
     };
-    openstats::record(
-        lock_ns,
-        get_ns,
-        t_obj.elapsed().as_nanos() as u64,
-        t_start.elapsed().as_nanos() as u64,
-    );
-
     Ok(res)
 }
 
@@ -382,6 +330,5 @@ pub fn open(
             }
             Some(Arc::new(file))
         }
-        _ => Err(ErrorKind::Unsupported)?,
     })
 }

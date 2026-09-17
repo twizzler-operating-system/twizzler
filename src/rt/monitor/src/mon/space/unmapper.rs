@@ -29,9 +29,6 @@ use crate::mon::get_monitor;
 /// load-bearing rather than cosmetic.
 const BOOST_AT: usize = 64;
 
-/// Kill switch for the self-boost. Shipped `true`; `false` reproduces the pre-boost behaviour.
-const UNMAPPER_BOOST: bool = true;
-
 /// Backlog at which the boost is released again. Deliberately **not** zero.
 ///
 /// `Realtime` is a **strict band**: `RunQueue::take` consults `take_realtime()` before
@@ -125,7 +122,7 @@ impl Unmapper {
                         match receiver.recv() {
                             Ok(info) => {
                                 let depth = worker_backlog.load(Ordering::Relaxed);
-                                if UNMAPPER_BOOST && !boosted && cooldown == 0 && depth >= BOOST_AT {
+                                if !boosted && cooldown == 0 && depth >= BOOST_AT {
                                     boosted = sys_thread_set_priority(
                                         self_id,
                                         // User band, not Realtime. `RunQueue::take` drains

@@ -17,8 +17,8 @@ mod benches {
         os::fd::AsRawFd,
         process::{Child, Command},
         sync::{
-            atomic::{AtomicBool, AtomicU64, Ordering},
             Arc,
+            atomic::{AtomicBool, AtomicU64, Ordering},
         },
         time::{Duration, Instant},
     };
@@ -26,13 +26,13 @@ mod benches {
     use test::Bencher;
     use twizzler::object::{Object, ObjectBuilder, RawObject};
     use twizzler_abi::{
-        object::{ObjID, Protections, MAX_SIZE, NULLPAGE_SIZE},
+        object::{MAX_SIZE, NULLPAGE_SIZE, ObjID, Protections},
         syscall::{
-            sys_map_ctrl, sys_object_create, sys_object_ctrl, sys_object_map, sys_object_unmap,
-            sys_read_clock_info, sys_thread_self_id, sys_thread_sync, ClockSource, DeleteFlags,
-            MapControlCmd, MapFlags, ObjectControlCmd, ObjectCreate, ReadClockFlags, ThreadSync,
-            ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
-            UnmapFlags,
+            ClockSource, DeleteFlags, MapControlCmd, MapFlags, ObjectControlCmd, ObjectCreate,
+            ReadClockFlags, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
+            ThreadSyncSleep, ThreadSyncWake, UnmapFlags, sys_map_ctrl, sys_object_create,
+            sys_object_ctrl, sys_object_map, sys_object_unmap, sys_read_clock_info,
+            sys_thread_self_id, sys_thread_sync,
         },
     };
     use twizzler_rt_abi::{
@@ -78,12 +78,12 @@ mod benches {
     /// matter: nothing is reset, so a mark that lands in the wrong place costs a line of output.
     ///
     /// It also counts the kernel events the bench actually caused, which is not decoration.
-    /// `sysbench.md`'s own method note -- "Count the events; do not infer them from the total" --
+    /// The method note "Count the events; do not infer them from the total"
     /// was written after two Linux numbers turned out to be measuring 16x fewer faults than the
     /// per-touch divisor claimed. The fault benches here have the same exposure from the other
     /// side: `page_fault_soft`'s doc comment *asserted* that each iteration takes one fault, and
     /// nothing has ever checked it. `page_fault_count` and `tlb_shootdown_count` come from
-    /// `MemoryStats`, are maintained whether or not `FAULT_PROFILE` is on, and cost two syscalls
+    /// `MemoryStats`, are always maintained, and cost two syscalls
     /// per bench rather than per iteration -- so this is readable in a timing arm without
     /// perturbing it.
     ///
@@ -301,12 +301,12 @@ mod benches {
     /// iteration, so the invalidation itself is real and local.
     ///
     /// What the op measures is therefore: one `sys_map_ctrl`, one local TLB invalidation over the
-    /// object's mapped range, and one non-faulting write. See `pageperf.md` §2.
+    /// object's mapped range, and one non-faulting write.
     ///
     /// The name was changed rather than the bench fixed because **Twizzler has no per-page soft
     /// fault to provoke**: a whole object is mapped by one object-table entry, so the minor fault
     /// Linux takes per page happens at most once per (object, security context). Numbers under the
-    /// old name in `reapbatch.md`, `reapqueue.md`, `ocdperf.md` and `perf-inprogress.md` are
+    /// old name in `perf-inprogress.md` and earlier notes are
     /// measurements of *this* operation and are not comparable to anyone's page-fault figure.
     struct MapCtrlInvalidate {
         obj: BenchObj,
@@ -2063,7 +2063,7 @@ mod benches {
         let status = child.wait().unwrap_or_else(|e| panic!("wait {prog}: {e}"));
         let t2 = std::time::Instant::now();
         // A child that failed to start would otherwise time as a *fast* spawn and read as a good
-        // result, which is the failure mode `sysbench.md` keeps warning about.
+        // result, which is the failure mode the bench notes keep warning about.
         assert!(status.success(), "{prog} exited {status:?}");
         ((t1 - t0).as_nanos() as u64, (t2 - t1).as_nanos() as u64)
     }

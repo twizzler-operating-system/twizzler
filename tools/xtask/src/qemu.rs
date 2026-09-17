@@ -2,8 +2,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     net::TcpListener,
     path::{Path, PathBuf},
-    process::{Child, Command, ExitStatus, Stdio},
-    str::FromStr,
+    process::{Command, ExitStatus, Stdio},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
@@ -75,10 +74,6 @@ pub struct RunOutcome {
     pub report: Option<ReportInfo>,
     /// Serial console transcript for this run, if the run captured one.
     pub serial_log: Option<PathBuf>,
-    /// Host port forwarded to the guest's ssh port.
-    pub ssh_port: u16,
-    /// Why a scenario's post-boot hook failed, if it ran and failed.
-    pub hook_error: Option<String>,
     /// Set when we concluded the guest was dead and stopped it ourselves, rather than letting the
     /// run burn its whole wall-clock budget producing nothing.
     pub guest_death: Option<GuestDeath>,
@@ -791,7 +786,7 @@ pub(crate) fn run_once(
     use wait_timeout::ChildExt;
 
     let mut run_cmd = QemuCommand::new(options);
-    let ssh_port = run_cmd.config(options, image.to_path_buf(), run);
+    run_cmd.config(options, image.to_path_buf(), run);
 
     // Only capture qemu's stdio when we plan to talk to the guest; an interactive boot needs the
     // terminal wired straight through.
@@ -942,8 +937,6 @@ pub(crate) fn run_once(
         guest_code: exit_status.and_then(decode_guest_code),
         report,
         serial_log: logging_to,
-        ssh_port,
-        hook_error: None,
         guest_death: death,
     })
 }

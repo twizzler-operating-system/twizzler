@@ -22,10 +22,6 @@ use twizzler_abi::{
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const MIN_ALIGN: usize = 16;
 
-/// Early allocations at or above this size get an `ALLCBIG` record when the child-startup diag
-/// switch is armed; sized to catch mlibc's 512KB slab chunks without recording ordinary traffic.
-const EARLY_ALLOC_DIAG_MIN: usize = 16 * 1024;
-
 /// Zeroed early allocations at or above this size are served from the virgin region (see
 /// [`RuntimeOom::virgin_next`]) instead of talc + memset. Small requests stay on talc: the memset
 /// is cheap there, and burning virgin space on them would exhaust the region for the chunks that
@@ -151,46 +147,6 @@ impl LocalAllocator {
 /// Every heap object *this compartment's* allocator owns, as `[slot, id_hi, id_lo]` triples,
 /// followed by `[n_main, n_early]`. Returns words written.
 ///
-/// How many 1 GiB slots this compartment's heap is spread across, and which.
-///
-/// The input side of `generate_crate_metadata` is a cold traversal of everything the compilation
-/// allocated, so the question is whether that heap is one contiguous span or many objects a
-/// gigabyte apart -- the latter costs a separate upper page-table path per object, which a
-/// scattered walk pays for and a compute-bound pass does not.
-pub(crate) mod heapspan {
-    use super::LOCAL_ALLOCATOR;
-
-    /// Off by default: prints on every compartment exit.
-    pub const REPORT_ON: bool = false;
-
-    pub fn report() {
-        if !REPORT_ON {
-            return;
-        }
-        let inner = LOCAL_ALLOCATOR.inner.lock();
-        let main = &inner.talc.oom_handler.objects;
-        let early = &inner.early_talc.oom_handler.objects;
-        if main.is_empty() && early.is_empty() {
-            return;
-        }
-        let (mut lo, mut hi) = (usize::MAX, 0usize);
-        for (slot, _) in main.iter().chain(early.iter()) {
-            lo = lo.min(*slot);
-            hi = hi.max(*slot);
-        }
-        // Span is in slots, i.e. GiB of address space between the lowest and highest heap object.
-        secgate::statcadence::report_forced(format_args!(
-            "HEAPSPAN {} objects ({} main, {} early), slots {}..{} spanning {} GiB",
-            main.len() + early.len(),
-            main.len(),
-            early.len(),
-            lo,
-            hi,
-            hi - lo + 1,
-        ));
-    }
-}
-
 /// DIAG, and the point is ownership. `note=heap` is written identically by every compartment's
 /// allocator, so a census grower reading `note=heap` says "a heap" and not "whose". Walking the
 /// caller's own `oom_handler.objects` answers it exactly: an id in this list belongs to the calling
@@ -375,14 +331,7 @@ impl OomHandler for RuntimeOom {
             );
             return Err(());
         }
-        // Arena growth cost (`OOMGROW`): object create + monitor map gate + delete-ctrl + note.
-        // Once per ~1GB span, so for a fresh compartment this fires inside the first allocation
-        // (mlibc's init_libc). Same switch as PREMAIN/CHILDINI.
-        let _t0 = crate::runtime::core::PRE_MAIN_PHASE_STATS.then(std::time::Instant::now);
         let (slot, id) = create_and_map().ok_or(())?;
-        if let Some(t0) = _t0 {
-            secgate::statlog::record_on(true, "OOMGROW", t0.elapsed().as_micros() as u64, &[]);
-        }
         // reserve an additional page size at the base of the object for future use. This behavior
         // may change as the runtime is fleshed out.
         const HEAP_OFFSET: usize = NULLPAGE_SIZE * 512;
@@ -522,9 +471,6 @@ impl LocalAllocator {
         let layout =
             Layout::from_size_align(layout.size(), core::cmp::max(layout.align(), MIN_ALIGN))
                 .expect("layout alignment bump failed");
-        let _diag =
-            crate::runtime::core::PRE_MAIN_PHASE_STATS && layout.size() >= EARLY_ALLOC_DIAG_MIN;
-        let _t0 = _diag.then(std::time::Instant::now);
         let mut inner = self.inner.lock();
 
         // Serve large zeroed requests from the virgin region: guaranteed-zero, so no memset and no
@@ -541,36 +487,12 @@ impl LocalAllocator {
             let next = oh.virgin_next.next_multiple_of(layout.align());
             if oh.virgin_top >= next + layout.size() {
                 oh.virgin_next = next + layout.size();
-                if let Some(t0) = _t0 {
-                    secgate::statlog::record_on(
-                        true,
-                        "ALLCBIG",
-                        t0.elapsed().as_micros() as u64,
-                        &[layout.size() as u64, t0.elapsed().as_micros() as u64, 0],
-                    );
-                }
                 return next as *mut u8;
             }
         }
 
         let ptr = unsafe { inner.do_alloc_early(layout) };
-        let _t1 = _diag.then(std::time::Instant::now);
         unsafe { ptr.write_bytes(0, layout.size()) };
-        // Large-early-allocation split (`ALLCBIG`): mlibc's slab pool maps 512KB chunks through
-        // here during ctors (`spawnbench.md` §31); vals = [size, alloc_us, memset_us]. The memset
-        // includes the first-touch faults on the fresh heap span.
-        if let (Some(t0), Some(t1)) = (_t0, _t1) {
-            secgate::statlog::record_on(
-                true,
-                "ALLCBIG",
-                t0.elapsed().as_micros() as u64,
-                &[
-                    layout.size() as u64,
-                    (t1 - t0).as_micros() as u64,
-                    t1.elapsed().as_micros() as u64,
-                ],
-            );
-        }
         ptr
     }
 }

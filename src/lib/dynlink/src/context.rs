@@ -25,28 +25,6 @@ mod syms;
 
 pub use load::LoadIds;
 
-/// Switch for the symbol-indexing counter (`SYMINDEX`): microseconds and symbol count per library.
-///
-/// Measured: was 67% of all library-load time at 871 ns/symbol, when the map owned its keys. With
-/// the hash key it is 40% at 556 ns/symbol. See `COMPNEW.md`.
-///
-/// A companion `SYMFALL` counter established that the global fallback fires ~7416 times a run
-/// against ~309 library loads -- 24 to 1 -- which is why this index is built eagerly rather than
-/// lazily. It was removed after answering that, being loud enough to move the timings it shared a
-/// run with.
-const SYM_INDEX_STATS: bool = false;
-
-/// Switch for the secgate-name-set counter (`SGNAMES`): microseconds and gate count per *build*.
-///
-/// Measured and closed. `Library::secgate_names` is derived per instance from what is really a
-/// property of the source object -- the same shape as the symbol index, which was 88% repeat work
-/// -- so sharing it per object looked like the same win. It is not: the set is built lazily and
-/// only for libraries that actually export gates, so it is built ~8 times a run costing 0.09 ms
-/// total. Sharing it per source object changed the build count not at all (25 vs 27 over three
-/// runs). The shape matched; the volume did not, because `index_library_symbols` ran eagerly for
-/// every library and this does not.
-pub(crate) const SGNAME_STATS: bool = false;
-
 /// FNV-1a over a symbol name: the key for [Context::sym_index].
 ///
 /// Must stay identical between insert and lookup; nothing else depends on the value.
@@ -84,17 +62,11 @@ pub struct Context {
     // is what exists today.
     sym_blooms: HashMap<ObjID, Arc<SymBloom>>,
 
-    // Memoized symbol resolutions per library source object (see `relocate::RELOC_MEMO`). Only
+    // Memoized symbol resolutions per library source object (see `relocate::LibReplayMemo`). Only
     // mutated under `reloc_lock` (relocations are serialized), so this Mutex is uncontended; it
     // exists because relocation runs under a shared `&Context`. Same ObjID-reuse caveat as
     // `sym_blooms`.
     pub(crate) reloc_memo: Mutex<HashMap<ObjID, Arc<relocate::LibReplayMemo>>>,
-
-    /// Times `do_lookup_symbol` fell through to the global search (a walk over every library
-    /// node). Relaxed; read as per-`relocate_all` deltas by the `RELOCMEM` sizing record. The
-    /// removed `SYMFALL` counter measured this at ~24 per library load -- the prior this exists
-    /// to re-check on the current tree.
-    pub(crate) global_fallbacks: std::sync::atomic::AtomicU64,
 
     // Relocation runs under a shared reference, so it is no longer serialized by the caller's
     // write lock. Two concurrent relocations of a shared dependency would race on its
@@ -207,7 +179,6 @@ impl Context {
             compartments: StableVec::new(),
             sym_blooms: HashMap::new(),
             reloc_memo: Mutex::new(HashMap::new()),
-            global_fallbacks: std::sync::atomic::AtomicU64::new(0),
             reloc_lock: Mutex::new(()),
         }
     }
@@ -215,52 +186,43 @@ impl Context {
     /// Give a freshly-loaded library the membership filter for its ELF object, building it the
     /// first time that object is seen.
     pub(crate) fn index_library_symbols(&mut self, idx: NodeIndex) {
-        let _start = std::time::Instant::now();
         let Some(src_id) = self.library_deps[idx].loaded().map(|lib| lib.full_obj.id()) else {
             return;
         };
         // Repeat instances take this branch: one `Arc` clone, no per-symbol work at all.
-        let (bloom, _nsyms) = match self.sym_blooms.get(&src_id) {
-            Some(bloom) => (bloom.clone(), 0),
+        let bloom = match self.sym_blooms.get(&src_id) {
+            Some(bloom) => bloom.clone(),
             None => {
-                let Some((bloom, nsyms)) = self.build_sym_bloom(idx) else {
+                let Some(bloom) = self.build_sym_bloom(idx) else {
                     return;
                 };
                 self.sym_blooms.insert(src_id, bloom.clone());
-                (bloom, nsyms)
+                bloom
             }
         };
         if let Some(lib) = self.library_deps[idx].loaded_mut() {
             lib.sym_bloom = Some(bloom);
         }
-        secgate::statlog::record_on_anon(
-            SYM_INDEX_STATS,
-            "SYMINDEX",
-            _start.elapsed().as_nanos() as u64 / 1000,
-            &[_nsyms as u64],
-        );
     }
 
     /// Walk an ELF object's dynamic symbols once, filling a filter with every name it defines.
-    fn build_sym_bloom(&self, idx: NodeIndex) -> Option<(Arc<SymBloom>, usize)> {
+    fn build_sym_bloom(&self, idx: NodeIndex) -> Option<Arc<SymBloom>> {
         let lib = self.library_deps[idx].loaded()?;
         let common = lib.get_elf_common().ok()?;
         let (syms, strs) = (common.dynsyms.as_ref()?, common.dynsyms_strs.as_ref()?);
         let defined = syms.iter().filter(|sym| !sym.is_undefined()).count();
         let mut bloom = SymBloom::new(defined * 2);
-        let mut nsyms = 0;
         for sym in syms.iter().filter(|sym| !sym.is_undefined()) {
             let Ok(name) = strs.get(sym.st_name as usize) else {
                 continue;
             };
-            nsyms += 1;
             // Both spellings, mirroring the prefixed retry in Library::lookup_symbol.
             if let Some(bare) = name.strip_prefix("__TWIZZLER_SECURE_GATE_") {
                 bloom.insert(sym_hash(bare));
             }
             bloom.insert(sym_hash(name));
         }
-        Some((Arc::new(bloom), nsyms))
+        Some(Arc::new(bloom))
     }
 
     /// Replace the callback engine for this context.

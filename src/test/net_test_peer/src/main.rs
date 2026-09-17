@@ -197,7 +197,7 @@ fn connect_send(target: &str, msg: &str, expect_echo: bool) -> std::io::Result<(
 ///
 /// The linger afterwards is what keeps this a test of `TcpStreamInner::drop` alone. The FIN that
 /// drop queues still needs a poll pass to reach the wire, and nothing drains the engine at
-/// compartment exit (the orderly-shutdown item in asyncplan.md); without the linger, a failure
+/// compartment exit; without the linger, a failure
 /// would not distinguish "drop emitted no FIN" from "the compartment died before it went out".
 fn connect_drop(target: &str, linger_ms: u64) -> std::io::Result<()> {
     let mut stream = TcpStream::connect(target)?;
@@ -696,26 +696,14 @@ fn serve_udp_echo(listen: &str, idle_ms: u64) -> std::io::Result<()> {
     // Armed once, reused for every wait below; see ArmedWait.
     let rw = ArmedWait::new(fd, EVFILT_READ)
         .ok_or_else(|| std::io::Error::other("kqueue registration failed"))?;
-    if SPIN_PROBE {
-        match sock.set_nonblocking(true) {
-            Ok(()) => println!("UDPECHO nonblocking=ok"),
-            Err(e) => println!("UDPECHO nonblocking=FAILED {:?}", e),
-        }
-    }
     let mut buf = vec![0u8; 64 * 1024];
 
     // Diagnostics: the failure here has survived three rounds of inference, so count what the
     // loop actually does rather than deducing it from engine counters that instrument a
     // different code path.
-    // Probe retired: it established (netprobe2) that datagrams are queued and reachable all along
-    // -- the peer echoed 18,902 of them and the bench reported 0 timeouts of 18,901 -- so the
-    // defect was never delivery, it was the readiness path failing to wake a parked waiter.
-    // Back on the kevent path, which is what the fix has to make work.
-    const SPIN_PROBE: bool = false;
     let (mut recvs, mut sends, mut wb, mut wwfail, mut notready) = (0u64, 0u64, 0u64, 0u64, 0u64);
     // Readiness under-report tripwire; see the drain loop below.
     let (mut multidrain, mut maxdrain) = (0u64, 0usize);
-    let mut spins = 0u64;
     let mut report = std::time::Instant::now();
     loop {
         if report.elapsed() >= Duration::from_secs(2) {
@@ -725,43 +713,9 @@ fn serve_udp_echo(listen: &str, idle_ms: u64) -> std::io::Result<()> {
                 recvs, sends, wb, wwfail, notready, multidrain, maxdrain
             );
         }
-        // PROBE (netprobe1): does the data reach the socket at all, or is only the readiness
-        // path broken? Spin on a non-blocking recv instead of parking in `wait_readable`. A
-        // recv is a socket call, so this also wakes our own poll thread -- which is the point:
-        // if datagrams appear now, they were queued and reachable all along and the kevent
-        // readiness path is what fails. If they still do not appear, the data never arrived.
-        if SPIN_PROBE {
-            let deadline = std::time::Instant::now() + idle;
-            let mut got = None;
-            while std::time::Instant::now() < deadline {
-                match sock.recv_from(&mut buf) {
-                    Ok(v) => {
-                        got = Some(v);
-                        break;
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        spins += 1;
-                        std::thread::yield_now();
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-            let Some((n, from)) = got else {
-                println!(
-                    "UDPECHO exit-idle-spin recv={} sent={} spins={} wouldblock={}",
-                    recvs, sends, spins, wb
-                );
-                return Ok(());
-            };
-            recvs += 1;
-            let _ = sock.send_to(&buf[..n], from);
-            sends += 1;
-            continue;
-        }
         let t_wait_ret;
         let idle_start = Instant::now();
         if !wait_readable_until(&rw, idle) {
-            notready += 1;
             // THE discriminator, taken at the one instant it is decisive: readiness has just
             // claimed nothing arrived for a full 20s. If a plain non-blocking read succeeds here,
             // the data was in the socket the whole time and the readiness path lied. If it returns

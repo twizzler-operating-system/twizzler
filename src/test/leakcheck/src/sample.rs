@@ -46,7 +46,7 @@ counters! {
     // allocator's free list, so it depresses `trk.idle` and `mem.free_pages` and inflates its
     // class counter exactly as a leaked frame does. `trk.freed` reading slope 0.0000 in 31 of 42
     // ops -- and identically for `p1-leak-object`, the deliberate control -- is that confusion
-    // measured (framecache.md 1.6).
+    // measured.
     "trk.pooled": Level,
     // `kernel_used + page_data - pooled`: the live charged population, cache occupancy removed.
     // This is the counter to read for a frame leak; the two class counters are kept above because

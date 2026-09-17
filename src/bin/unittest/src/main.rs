@@ -5,42 +5,9 @@ use std::{
 };
 
 use twizzler_abi::syscall::{
-    sys_kernel_console_write, sys_memory_stats, KernelConsoleSource, KernelConsoleWriteFlags,
+    sys_kernel_console_write, KernelConsoleSource, KernelConsoleWriteFlags,
 };
 use unittest_report::{Report, ReportInfo, TestResult, TestStatus};
-
-/// Whether to emit a `FRAMESLOPE` line before each test starts.
-///
-/// Off by default so this costs nothing -- not a syscall, not a line -- in any build that has not
-/// asked for it. The `lowmem` panics (`tracker.rs:901: cannot wait for page`) cluster at a fixed
-/// position in the suite rather than scattering, which is the shape of pressure ratcheting up
-/// across tests rather than of a race. One free-frame reading per test turns each run from one bit
-/// (did it reach the band) into a slope: a sawtooth with a flat envelope means frames come back at
-/// compartment exit, a monotone decline means they do not.
-const FRAME_SLOPE: bool = false;
-
-/// Free frames per level, before `name` starts. Self-describing on one line, so it survives being
-/// interleaved with test output.
-fn frame_slope(name: &str) {
-    if !FRAME_SLOPE {
-        return;
-    }
-    let st = sys_memory_stats();
-    let mut out = format!("FRAMESLOPE test={} total_pages={}", name, st.total_pages);
-    for (i, lvl) in st.levels().iter().enumerate() {
-        out.push_str(&format!(
-            " l{}_sz={} l{}_free={} l{}_lent={} l{}_resv={}",
-            i, lvl.page_size, i, lvl.free_pages, i, lvl.lent_pages, i, lvl.reserved_pages
-        ));
-    }
-    // Kernel heap alongside the frame counts: page tables never pass through it, so the two
-    // together say whether growth is tables/frames or allocations.
-    out.push_str(&format!(
-        " kalloc_late={} kalloc_early={}",
-        st.late_kalloc_bytes, st.early_kalloc_bytes
-    ));
-    println!("{}", out);
-}
 
 static RESULT: OnceLock<Report> = OnceLock::new();
 
@@ -109,7 +76,6 @@ fn try_bench(path: &str) {
                 continue;
             }
             println!("STARTING {}", line);
-            frame_slope(line);
             // A line is `<binary> [filter]...`: everything after the binary name is passed to
             // the harness after `--bench`, so `--bench "sysbench page_fault_zero_fill"` runs one
             // bench in a fresh boot instead of the whole suite.
@@ -175,7 +141,6 @@ struct Pending {
 fn start_one(name: &str, args: &[&str], envs: &[(&str, &str)]) -> Pending {
     let path = resolve(name);
     println!("STARTING {}", path);
-    frame_slope(&path);
     let mut cmd = std::process::Command::new(&path);
     cmd.args(args);
     for (k, v) in envs {

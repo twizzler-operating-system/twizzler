@@ -96,7 +96,7 @@ enum SubCommand {
 }
 
 fn open_or_create_arena() -> Result<ArenaObject> {
-    let mut nh = naming::dynamic_naming_factory().unwrap();
+    let nh = naming::dynamic_naming_factory().unwrap();
     let name = format!("/data/ptest-arena");
     let vo = if let Ok(node) = nh.get(&name, GetFlags::empty()) {
         println!("reopened-arena: {:?}", node.id);
@@ -113,7 +113,7 @@ fn open_or_create_arena() -> Result<ArenaObject> {
 fn open_or_create_vector_object<T: Debug + Invariant>(
     name: &str,
 ) -> Result<VecObject<T, VecObjectAlloc>> {
-    let mut nh = naming::dynamic_naming_factory().unwrap();
+    let nh = naming::dynamic_naming_factory().unwrap();
     let name = format!("/data/ptest-obj-{}", name);
     let vo = if let Ok(node) = nh.get(&name, GetFlags::empty()) {
         println!("reopened: {:?}", node.id);
@@ -192,10 +192,7 @@ fn main() {
     let cli = Cli::parse();
     println!("==> {:?}", cli);
 
-    let f = sgtest::bar(sgtest::Foo { x: 42 });
-    println!("==> foo: {:?}", f);
-
-    let mut nh = naming::dynamic_naming_factory().unwrap();
+    let nh = naming::dynamic_naming_factory().unwrap();
     match cli.sub {
         SubCommand::Hw => {
             let top = hwlocality::topology::Topology::new().unwrap();

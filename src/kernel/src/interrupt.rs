@@ -1,8 +1,5 @@
 use alloc::vec::Vec;
-use core::{
-    panic::Location,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use intrusive_collections::RBTree;
 use twizzler_abi::{
@@ -65,142 +62,11 @@ pub fn get() -> bool {
     crate::arch::interrupt::get()
 }
 
-/// Time each interrupts-disabled window and attribute it to the caller that opened it.
-///
-/// Off by default and, like [`INTERRUPT_PROFILE`], folds away entirely when off rather than
-/// testing at runtime -- this sits under every critical section in the kernel.
-///
-/// What it answers: a sampling profile cannot measure an irqs-off region directly, because the
-/// tick that would sample it is exactly the thing the region defers. The deferred samples do
-/// estimate residency (time in the window), but they cannot separate a long window from a frequent
-/// one, and those want opposite fixes.
-pub const IRQOFF_PROFILE: bool = false;
-
-/// Interrupts-disabled windows opened by [`with_disabled`], by call site.
-///
-/// Lock-free by necessity, not by preference: every spinlock acquire calls [`disable`], so a
-/// recorder that took a lock -- or that called `with_disabled` itself, as [`record_interrupt`]
-/// does -- would recurse. Plain relaxed atomics have neither problem.
-///
-/// Timings include the recorder's own cost.
-///
-/// READ THE NEXT PARAGRAPH BEFORE RANKING THIS OUTPUT. What is timed is wall-clock across the
-/// closure, which equals the interrupts-off window only for a closure that does not block. A
-/// closure that blocks -- `syscall::sync::finish_blocking`, whose `schedule()` deschedules the
-/// caller -- keeps the timer running for the whole sleep, while the cpu is off running other
-/// threads with interrupts enabled. Such a site reports milliseconds and means nothing here; its
-/// real residency comes from the deferred-tick samples instead, which measure the cpu rather than
-/// the closure. Sites are flagged in the report when their mean exceeds a plausible window.
-pub mod irqoff {
-    use core::{
-        panic::Location,
-        sync::atomic::{AtomicU64, AtomicUsize, Ordering},
-    };
-
-    /// One slot per distinct call site; the last collects the overflow so a site that appears
-    /// after the table fills reads as "other" rather than vanishing.
-    const NR: usize = 24;
-
-    #[allow(clippy::declare_interior_mutable_const)]
-    const ZERO_U: AtomicUsize = AtomicUsize::new(0);
-    #[allow(clippy::declare_interior_mutable_const)]
-    const ZERO: AtomicU64 = AtomicU64::new(0);
-    /// The `&'static Location` pointer is the key -- two call sites never share one.
-    static SITES: [AtomicUsize; NR] = [ZERO_U; NR];
-    static COUNTS: [AtomicU64; NR] = [ZERO; NR];
-    static NANOS: [AtomicU64; NR] = [ZERO; NR];
-    static MAXNS: [AtomicU64; NR] = [ZERO; NR];
-
-    fn slot(loc: &'static Location<'static>) -> usize {
-        let key = loc as *const _ as *const u8 as usize;
-        for i in 0..NR - 1 {
-            let cur = SITES[i].load(Ordering::Relaxed);
-            if cur == key {
-                return i;
-            }
-            if cur == 0
-                && SITES[i]
-                    .compare_exchange(0, key, Ordering::Relaxed, Ordering::Relaxed)
-                    .is_ok()
-            {
-                return i;
-            }
-        }
-        NR - 1
-    }
-
-    pub fn record(loc: &'static Location<'static>, ns: u64) {
-        let i = slot(loc);
-        COUNTS[i].fetch_add(1, Ordering::Relaxed);
-        NANOS[i].fetch_add(ns, Ordering::Relaxed);
-        MAXNS[i].fetch_max(ns, Ordering::Relaxed);
-    }
-
-    pub fn print() {
-        if !super::IRQOFF_PROFILE {
-            return;
-        }
-        let mut rows: alloc::vec::Vec<(u64, u64, u64, usize)> = (0..NR)
-            .map(|i| {
-                (
-                    NANOS[i].load(Ordering::Relaxed),
-                    COUNTS[i].load(Ordering::Relaxed),
-                    MAXNS[i].load(Ordering::Relaxed),
-                    SITES[i].load(Ordering::Relaxed),
-                )
-            })
-            .filter(|r| r.1 > 0)
-            .collect();
-        rows.sort_unstable_by(|a, b| b.0.cmp(&a.0));
-        let total_ns: u64 = rows.iter().map(|r| r.0).sum();
-        logln!(
-            "== irqs-off windows (with_disabled): {} us over {} windows; BLOCKS = closure sleeps, \
-             wall-clock not irqs-off, ignore its time ==",
-            total_ns / 1000,
-            rows.iter().map(|r| r.1).sum::<u64>()
-        );
-        for (ns, count, max, key) in rows {
-            let loc = if key == 0 {
-                None
-            } else {
-                // SAFETY: the key is a `&'static Location` interned by `slot`, never anything else.
-                Some(unsafe { &*(key as *const Location<'static>) })
-            };
-            // No real irqs-off region survives a millisecond: anything above that blocked.
-            let blocks = if ns / count.max(1) > 1_000_000 {
-                "BLOCKS "
-            } else {
-                ""
-            };
-            logln!(
-                "==   {:>10} us  {:>8} windows  mean {:>7} ns  max {:>9} ns  {}{}",
-                ns / 1000,
-                count,
-                ns / count.max(1),
-                max,
-                blocks,
-                loc.map(|l| alloc::format!("{}:{}", l.file(), l.line()))
-                    .unwrap_or_else(|| "other (table full)".into())
-            );
-        }
-    }
-}
-
 #[inline]
 #[track_caller]
 pub fn with_disabled<T, F: FnOnce() -> T>(f: F) -> T {
     let tmp = disable();
-    // Read the clock inside the window, so what is measured is the window and not the call.
-    let start = if IRQOFF_PROFILE {
-        crate::instant::current_ns()
-    } else {
-        0
-    };
     let t = f();
-    if IRQOFF_PROFILE && start != 0 {
-        let end = crate::instant::current_ns();
-        irqoff::record(Location::caller(), end.saturating_sub(start));
-    }
     set(tmp);
     t
 }
@@ -210,63 +76,8 @@ pub fn post_interrupt() {
     schedule_maybe_preempt();
 }
 
-/// Count and time every interrupt by vector, per cpu, and dump it at `debug_shutdown`.
-///
-/// Same shape and same caveats as [`crate::syscall::SYSCALL_PROFILE`] and
-/// [`crate::memory::context::virtmem::fault::FAULT_PROFILE`]: off by default, and the timings it
-/// reports include its own cost.
-pub const INTERRUPT_PROFILE: bool = false;
-
-/// Bucket bounds in nanoseconds; the last bucket is everything above. Interrupt handlers here run
-/// the scheduler and the fault path, so the distribution is as tail-heavy as the fault path's.
-const INT_BUCKET_NS: [u64; 3] = [1_000, 10_000, 100_000];
-const NR_INT_BUCKETS: usize = INT_BUCKET_NS.len() + 1;
-
-pub struct InterruptTracking {
-    counts: [usize; NUM_VECTORS],
-    times: [crate::time::TimeStatCollector; NUM_VECTORS],
-    buckets: [[usize; NR_INT_BUCKETS]; NUM_VECTORS],
-    /// Interrupts whose tail actually rescheduled, and what that cost.
-    preempts: usize,
-    preempt_time: crate::time::TimeStatCollector,
-}
-
-impl InterruptTracking {
-    pub fn new() -> Self {
-        Self {
-            counts: [0; NUM_VECTORS],
-            times: core::array::from_fn(|_| crate::time::TimeStatCollector::new()),
-            buckets: [[0; NR_INT_BUCKETS]; NUM_VECTORS],
-            preempts: 0,
-            preempt_time: crate::time::TimeStatCollector::new(),
-        }
-    }
-}
-
-/// Timestamp for [`record_interrupt`]/[`record_preempt`], taken only when the profile that
-/// consumes it is on.
-///
-/// The recorders already bail on [`INTERRUPT_PROFILE`], but their *argument* was evaluated
-/// regardless -- and `Instant::now()` is an indirect call through the registered tick source plus
-/// an `rdtsc`, which the compiler cannot see through and so cannot elide. Every interrupt paid for
-/// a reading nothing looked at. A const, so with the profile off this folds to a zero `Instant`.
-#[inline(always)]
-pub fn profile_now() -> crate::instant::Instant {
-    if INTERRUPT_PROFILE {
-        crate::instant::Instant::now()
-    } else {
-        crate::instant::Instant::zero()
-    }
-}
-
-/// Interrupts taken since boot, as a single relaxed counter.
-///
-/// [`snapshot`] sums per-cpu, per-vector collectors and takes a lock to do it, which is fine twice
-/// a mark and far too expensive on a per-page probe. This is the cheap version.
-///
-/// Counted by [`count_interrupt`] rather than by [`record_interrupt`], so it survives
-/// [`INTERRUPT_PROFILE`] being off -- it is exported to userspace (`KernelStats::interrupts`) and
-/// read as a rate, which a counter that only moves under a debug switch cannot answer.
+/// Interrupts taken since boot, as a single relaxed counter. Exported to userspace
+/// (`KernelStats::interrupts`) and read as a rate.
 static TAKEN: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 pub fn taken() -> u64 {
@@ -278,126 +89,6 @@ pub fn taken() -> u64 {
 #[inline]
 pub fn count_interrupt() {
     TAKEN.fetch_add(1, Ordering::Relaxed);
-}
-
-/// Record one interrupt of `vector` that started at `start`. Compiles away when the profile is off.
-pub fn record_interrupt(vector: u64, start: crate::instant::Instant) {
-    if !INTERRUPT_PROFILE || !crate::processor::tls_ready() {
-        return;
-    }
-    let vector = vector as usize;
-    if vector >= NUM_VECTORS {
-        return;
-    }
-    let dur: twizzler_abi::syscall::TimeSpan = (crate::instant::Instant::now() - start).into();
-    let ns = dur.as_nanos() as u64;
-    let bucket = INT_BUCKET_NS
-        .iter()
-        .position(|b| ns < *b)
-        .unwrap_or(NR_INT_BUCKETS - 1);
-    with_disabled(|| {
-        let mut stats = crate::processor::mp::current_processor()
-            .interrupt_stats
-            .lock();
-        stats.counts[vector] += 1;
-        stats.times[vector].add_sample(dur);
-        stats.buckets[vector][bucket] += 1;
-    });
-}
-
-/// Record the reschedule that [`post_interrupt`] performed, if it did one.
-pub fn record_preempt(start: crate::instant::Instant) {
-    if !INTERRUPT_PROFILE || !crate::processor::tls_ready() {
-        return;
-    }
-    let dur = (crate::instant::Instant::now() - start).into();
-    with_disabled(|| {
-        let mut stats = crate::processor::mp::current_processor()
-            .interrupt_stats
-            .lock();
-        stats.preempts += 1;
-        stats.preempt_time.add_sample(dur);
-    });
-}
-
-/// (interrupts, nanoseconds in handlers) summed over vectors and cpus, for [`crate::perfmark`].
-///
-/// A fault-path span that loses wall-clock time either spent it in a handler -- which this counts
-/// -- or was not running at all, which is a different diagnosis entirely.
-pub fn snapshot() -> (u64, u64) {
-    let (mut count, mut ns) = (0u64, 0u64);
-    if !INTERRUPT_PROFILE {
-        return (0, 0);
-    }
-    crate::processor::mp::with_each_active_processor(|p| {
-        let stats = p.interrupt_stats.lock();
-        for (i, c) in stats.counts.iter().enumerate() {
-            count += *c as u64;
-            ns += (stats.times[i].sum_femtos() / 1_000_000) as u64;
-        }
-    });
-    (count, ns)
-}
-
-pub fn print_interrupt_profile() {
-    if !INTERRUPT_PROFILE {
-        return;
-    }
-    let mut counts = [0usize; NUM_VECTORS];
-    let mut times: [crate::time::TimeStatCollector; NUM_VECTORS] =
-        core::array::from_fn(|_| crate::time::TimeStatCollector::new());
-    let mut buckets = [[0usize; NR_INT_BUCKETS]; NUM_VECTORS];
-    let (mut preempts, mut preempt_time) = (0, crate::time::TimeStatCollector::new());
-    crate::processor::mp::with_each_active_processor(|p| {
-        let stats = p.interrupt_stats.lock();
-        for i in 0..NUM_VECTORS {
-            counts[i] += stats.counts[i];
-            times[i].merge(&stats.times[i]);
-            for b in 0..NR_INT_BUCKETS {
-                buckets[i][b] += stats.buckets[i][b];
-            }
-        }
-        preempts += stats.preempts;
-        preempt_time.merge(&stats.preempt_time);
-    });
-
-    let total: usize = counts.iter().sum();
-    let total_us: usize = (0..NUM_VECTORS)
-        .map(|i| (times[i].get_stats().mean.as_nanos() as usize * counts[i]) / 1000)
-        .sum();
-    logln!(
-        "== interrupt profile: {} interrupts, {} us ==",
-        total,
-        total_us
-    );
-    let mut order: alloc::vec::Vec<usize> = (0..NUM_VECTORS).collect();
-    order.sort_unstable_by_key(|i| core::cmp::Reverse(counts[*i]));
-    for i in order {
-        if counts[i] == 0 {
-            continue;
-        }
-        let stat = times[i].get_stats();
-        logln!(
-            "  vec {:>3}: {:>6} x {:>7} ns = {:>7} us  min {:>6} max {:>9}  [<1us {:>6} <10us {:>5} <100us {:>4} >= {:>4}]",
-            i,
-            counts[i],
-            stat.mean.as_nanos(),
-            (stat.mean.as_nanos() as usize * counts[i]) / 1000,
-            stat.min.as_nanos(),
-            stat.max.as_nanos(),
-            buckets[i][0],
-            buckets[i][1],
-            buckets[i][2],
-            buckets[i][3],
-        );
-    }
-    let stat = preempt_time.get_stats();
-    logln!(
-        "  post_interrupt reschedules: {} x {} ns = {} us",
-        preempts,
-        stat.mean.as_nanos(),
-        (stat.mean.as_nanos() as usize * preempts) / 1000
-    );
 }
 
 #[inline]
@@ -487,9 +178,6 @@ unsafe impl Sync for DeviceInterrupter {}
 
 impl DeviceInterrupter {
     fn new(wi: &WakeInfo) -> Self {
-        crate::memory::context::kobjcensus::record(
-            crate::memory::context::kobjcensus::Site::Interrupt,
-        );
         let word_object = kernel_context().insert_kernel_object(ObjectContextInfo::new(
             wi.obj.clone(),
             Protections::WRITE | Protections::READ,
@@ -734,7 +422,6 @@ pub fn external_interrupt_entry(number: u32) {
                 let mut cursor = waiters.front_mut();
                 while !batch.is_full() && !cursor.is_null() {
                     if cursor.get().is_some_and(|t| t.reset_sync_sleep()) {
-                        cursor.get().map(|t| t.note_sync_consumer(5));
                         let thread = cursor.remove().unwrap();
                         // Safety: not full, checked above.
                         unsafe { batch.push_unchecked(thread) };

@@ -133,17 +133,17 @@ mod test {
     /// bug it was fixed for -- a stale writable entry surviving the downgrade -- cannot be tested
     /// directly: observing it needs a multi-cpu race with a window that cannot be scheduled. What
     /// can be pinned down is that the path still executes, so that a green run over it means
-    /// something rather than nothing. See TLB.md.
+    /// something rather than nothing.
     ///
     /// **This test asserted the wrong thing first, and the mistake is worth keeping written down.**
-    /// It opened with `assert!(nonleaf_cow::calls() > 0)`, on TLB.md's measurement of 11 calls per
+    /// It opened with `assert!(nonleaf_cow::calls() > 0)`, on a measurement of 11 calls per
     /// boot -- byte-identical across four boots and both profiles, so seemingly the safest claim
     /// available. It failed 12/12, deterministically, in every config. The 11 calls are counted at
     /// *shutdown*, by the `Syscall::Null` dump arm, and they come from userspace object cloning;
     /// kernel tests run before any of that exists, so at test time the counter is legitimately
     /// zero. The number was real, the assertion on it was not: a count is only meaningful together
     /// with when it is read. Asserting a shutdown-time measurement at test time is the same error
-    /// as reading an empty bucket as a maximum -- see unmap.md.
+    /// as reading an empty bucket as a maximum.
     ///
     /// What replaced it is a deliberate driver, which does not depend on when it runs. Sharing a
     /// whole 2 MiB region by reference marks its level-0 table COW, and the write after it resolves

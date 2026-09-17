@@ -317,7 +317,7 @@ pub fn late_init() {
     // `interrupt_handler()` call below -- with interrupts on, since `serial2()` is evaluated
     // before `.lock()` masks them -- and the serial ISR calls `serial2()` itself. An interrupt
     // landing inside that initializer re-entered `call_once`, saw RUNNING and spun, on the very
-    // cpu that owed the initialization. Same defect as `REQUEUE` (boothang.md); ordering the
+    // cpu that owed the initialization. Same defect as `REQUEUE`; ordering the
     // init before the unmask closes it, because a masked entry cannot deliver the only interrupt
     // that re-enters.
     let _ = serial1();

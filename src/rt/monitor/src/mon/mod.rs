@@ -54,111 +54,6 @@ pub(crate) fn reentrant_key() -> Result<ThreadKey, TwzError> {
     ThreadKey::get().ok_or(GenericError::WouldBlock.into())
 }
 
-// Temporary instrumentation for the File::open latency hunt (pagerperf.md): splits the monitor's
-// side of a map gate into the space lock plus `sys_object_map`, reaching the compartment, and
-// recording the mapping in it.
-mod monmapstats {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    /// Master switch for the clock reads; see `space::spacesplit::TIMING`, same reasoning. The
-    /// three `Instant::now()` pairs below sit on every object map in the system.
-    pub const TIMING: bool = false;
-
-    /// `Instant::now()`, if [`TIMING`] is on.
-    #[inline(always)]
-    pub fn t0() -> Option<std::time::Instant> {
-        TIMING.then(std::time::Instant::now)
-    }
-
-    /// Nanoseconds since `t`, or 0 when [`TIMING`] is off.
-    #[inline(always)]
-    pub fn ns(t: Option<std::time::Instant>) -> u64 {
-        t.map_or(0, |t| t.elapsed().as_nanos() as u64)
-    }
-
-    static COUNT: AtomicU64 = AtomicU64::new(0);
-    static SPACE: AtomicU64 = AtomicU64::new(0);
-    static MGR: AtomicU64 = AtomicU64::new(0);
-    static REC: AtomicU64 = AtomicU64::new(0);
-
-    pub fn record(space: u64, mgr: u64, rec: u64) {
-        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        let s = SPACE.fetch_add(space, Ordering::Relaxed) + space;
-        let m = MGR.fetch_add(mgr, Ordering::Relaxed) + mgr;
-        let r = REC.fetch_add(rec, Ordering::Relaxed) + rec;
-        if TIMING && secgate::statcadence::report_now(n) {
-            secgate::statlog::record("MONMAPST", n, &[s / 1000, m / 1000, r / 1000]);
-        }
-    }
-}
-
-// Temporary: which monitor entry points actually reach a thread's simple buffer, and how often.
-//
-// `get_thread_simple_buffer` turned out to be cold -- 8 calls over a whole boot, because the client
-// caches the id in a `#[thread_local] OnceCell` (`monitor_api::lazy_sb`). These counters say which
-// of the *other* per-thread-buffer paths carry real traffic, so a workload can be chosen before
-// anything is measured against it. One `klog_println!` per report: it does not line-buffer, so a
-// multi-line report from several threads interleaves into garbage.
-pub(crate) mod ptstats {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    /// Entry points that reach `RunComp::get_per_thread`, directly or via
-    /// `read_thread_simple_buffer`.
-    #[derive(Clone, Copy, Debug)]
-    pub enum Site {
-        GetSb = 0,
-        CompInfo = 1,
-        LibInfo = 2,
-        LoadLib = 3,
-        LookupSym = 4,
-        Spawn = 5,
-        // The five that shared `read_sb` in the first pass, which was 66% of all traffic. Split
-        // because "narrow the lock further" and "stop making the call" are different fixes and
-        // the aggregate could not tell them apart.
-        GateAddr = 6,
-        LookupComp = 7,
-        LoadComp = 8,
-        LibNameMap = 9,
-        LibNameUnmap = 10,
-        // Not buffer users: the inline gates. Counted so the collapse of
-        // `gate_addr`/`lookup_comp` is visibly a move, not a disappearance.
-        GateAddrInline = 11,
-        LookupCompInline = 12,
-    }
-    const NR_SITES: usize = 13;
-    const NAMES: [&str; NR_SITES] = [
-        "get_sb",
-        "comp_info",
-        "lib_info",
-        "load_lib",
-        "lookup_sym",
-        "spawn",
-        "gate_addr",
-        "lookup_comp",
-        "load_comp",
-        "libname_map",
-        "libname_unmap",
-        "gate_addr_INL",
-        "lookup_comp_INL",
-    ];
-
-    static SITES: [AtomicU64; NR_SITES] = [const { AtomicU64::new(0) }; NR_SITES];
-    static TOTAL: AtomicU64 = AtomicU64::new(0);
-
-    pub fn record(site: Site) {
-        SITES[site as usize].fetch_add(1, Ordering::Relaxed);
-        let n = TOTAL.fetch_add(1, Ordering::Relaxed) + 1;
-        if !secgate::statcadence::report_now(n) {
-            return;
-        }
-        let mut line = format!("PTSTATS {} per-thread-buffer calls:", n);
-        for (i, name) in NAMES.iter().enumerate() {
-            line.push_str(&format!(" {} {},", name, SITES[i].load(Ordering::Relaxed)));
-        }
-        twizzler_abi::klog_println!("{}", line);
-    }
-}
-
 /// A security monitor instance. All monitor logic is implemented as methods for this type.
 /// We split the state into the following components: 'space', managing the virtual memory space and
 /// mapping objects, 'thread_mgr', which manages all threads owned by the monitor (typically, all
@@ -174,8 +69,7 @@ pub struct Monitor {
     /// [`Self::locks`] for this, which takes all five -- so a `comps` lookup and a handle insert
     /// blocked every spawn (which takes `thread_mgr`) and every library operation for as long as
     /// they held it. Measured at 502 holds over a millisecond in one boot, 724 ms of collection
-    /// time, none of it needing `thread_mgr`, `dynlink`, or the library handles (`sysperf.md`
-    /// round 8).
+    /// time, none of it needing `thread_mgr`, `dynlink`, or the library handles.
     ///
     /// A second collection is sound here for the same reason the first one is: happylock hands
     /// each thread a single key and `lock` consumes it, so no thread can hold two collections and
@@ -237,7 +131,9 @@ impl Monitor {
     /// Start the background threads for the monitor instance. Must be done only once the monitor
     /// has been initialized.
     pub fn start_background_threads(&self) {
-        crate::lockdiag::start_watchdog();
+        if crate::diag_enabled() {
+            crate::lockdiag::start_watchdog();
+        }
         // The sweeper the reference runtime does not have: a compartment that goes quiet never
         // expires its own cached handles, and each one pins a mapping. See `handlesweep`.
         let _ = handlesweep::HandleSweeper::new();
@@ -354,62 +250,32 @@ impl Monitor {
         // dynlink state, so this takes `thread_mgr` alone for an id instead of the whole lock
         // collection, and stops queueing behind every unrelated monitor operation. Falling back
         // costs what a spawn always cost.
-        let t_lock = std::time::Instant::now();
-        let (super_tls, super_tid, pooled, lockwait, tls_ns) = match thread::readypool::take() {
+        let (super_tls, super_tid) = match thread::readypool::take() {
             Some(super_tls) => {
                 let key = ThreadKey::get().unwrap();
                 let mut tmgr = crate::lockdiag::watched(self.thread_mgr.write(key));
-                let lockwait = thread::spawnstats::since(t_lock);
                 let super_tid = tmgr.take_super_tid();
                 drop(tmgr);
                 thread::init_super_tcb(&super_tls, super_tid);
-                (super_tls, super_tid, true, lockwait, 0)
+                (super_tls, super_tid)
             }
             None => {
                 let key = ThreadKey::get().unwrap();
                 let locks = &mut *crate::lockdiag::watched(self.locks.lock(key));
-                let lockwait = thread::spawnstats::since(t_lock);
-                let t_tls = std::time::Instant::now();
                 let monitor_dynlink_comp =
                     locks.2.get_compartment_mut(MONITOR_COMPARTMENT_ID).unwrap();
-                let (super_tls, super_tid) = locks.0.prep_spawn(monitor_dynlink_comp)?;
-                (
-                    super_tls,
-                    super_tid,
-                    false,
-                    lockwait,
-                    thread::spawnstats::since(t_tls),
-                )
+                locks.0.prep_spawn(monitor_dynlink_comp)?
             }
         };
 
-        let mut phases = thread::spawnstats::Phases::default();
-        let mt = ThreadMgr::finish_spawn(
-            super_tls,
-            super_tid,
-            start,
-            args,
-            None,
-            instance,
-            &mut phases,
-        );
+        let mt = ThreadMgr::finish_spawn(super_tls, super_tid, start, args, None, instance);
 
-        let t_reg = std::time::Instant::now();
         let key = ThreadKey::get().unwrap();
         let mut tmgr = crate::lockdiag::watched(self.thread_mgr.write(key));
         match mt {
             Ok(mt) => {
                 tmgr.register(&mt);
                 drop(tmgr);
-                thread::spawnstats::record(
-                    pooled,
-                    lockwait,
-                    tls_ns,
-                    phases.stack,
-                    phases.sys_spawn,
-                    phases.reprmap,
-                    thread::spawnstats::since(t_reg),
-                );
                 Ok(mt)
             }
             Err(e) => {
@@ -493,21 +359,14 @@ impl Monitor {
     /// Map an object into a given compartment.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn map_object(&self, sctx: ObjID, info: MapInfo) -> Result<MapHandle, TwzError> {
-        let t_space = monmapstats::t0();
         let handle = Space::map(&self.space, info, sctx)?;
-        let space_ns = monmapstats::ns(t_space);
 
         // A read: recording the mapping only touches the compartment's own map, which has its own
         // lock. Taking the manager's *write* lock here made every map in the system serialize
         // against every other one, in any compartment.
-        let t_mgr = monmapstats::t0();
         let comp_mgr = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
         let rc = comp_mgr.get(sctx)?;
-        let mgr_ns = monmapstats::ns(t_mgr);
-        let t_rec = monmapstats::t0();
-        let handle = rc.map_object(info, handle)?;
-        monmapstats::record(space_ns, mgr_ns, monmapstats::ns(t_rec));
-        Ok(handle)
+        rc.map_object(info, handle)
     }
 
     /// Map a pair of objects into a given compartment.
@@ -559,7 +418,6 @@ impl Monitor {
     /// Get the object ID for this compartment-thread's simple buffer.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn get_thread_simple_buffer(&self, sctx: ObjID, thread: ObjID) -> Result<ObjID, TwzError> {
-        ptstats::record(ptstats::Site::GetSb);
         let pt = self.per_thread(sctx, thread)?;
         let id = pt.lock().unwrap().simple_buffer_id();
         id.ok_or(GenericError::Internal.into())
@@ -599,9 +457,7 @@ impl Monitor {
         sctx: ObjID,
         thread: ObjID,
         len: usize,
-        site: ptstats::Site,
     ) -> Result<Vec<u8>, TwzError> {
-        ptstats::record(site);
         let pt = self.per_thread(sctx, thread)?;
         let bytes = pt.lock().unwrap().read_bytes(len);
         Ok(bytes)
@@ -705,10 +561,6 @@ impl Monitor {
                 }
             },
             MonitorCompControlCmd::RuntimePostMain => {
-                // A compartment finishing main is the only moment the monitor is told about that
-                // is also a natural end of a measured workload, so the space counters print here
-                // rather than on a cadence that would land inside what they measure.
-                crate::mon::space::spacesplit::report();
                 // First we want to check if we are a binary, and if so, we don't have to wait
                 // around in here.
                 loop {
@@ -845,8 +697,7 @@ impl Monitor {
         namelen: usize,
         id: ObjID,
     ) -> Result<(), TwzError> {
-        let str_bytes =
-            self.read_thread_simple_buffer(caller, thread, namelen, ptstats::Site::LibNameMap)?;
+        let str_bytes = self.read_thread_simple_buffer(caller, thread, namelen)?;
 
         let name = str::from_utf8(&str_bytes).map_err(|_| TwzError::INVALID_ARGUMENT)?;
         tracing::trace!("libname map: {}", name);
@@ -863,12 +714,7 @@ impl Monitor {
         namelen: Option<usize>,
         id: Option<ObjID>,
     ) -> Result<(), TwzError> {
-        let str_bytes = self.read_thread_simple_buffer(
-            caller,
-            thread,
-            namelen.unwrap_or(0),
-            ptstats::Site::LibNameUnmap,
-        )?;
+        let str_bytes = self.read_thread_simple_buffer(caller, thread, namelen.unwrap_or(0))?;
         let name = namelen
             .map(|_| str::from_utf8(&str_bytes).map_err(|_| TwzError::INVALID_ARGUMENT))
             .transpose()?;

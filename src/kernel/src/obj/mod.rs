@@ -55,8 +55,6 @@ pub const OBJ_HAS_INTERRUPTS: u32 = 2;
 /// `OBJ_DELETED`, which means a delete has actually been requested -- an object carrying only this
 /// flag is still live, and in particular is still live before it has ever been mapped.
 const OBJ_DELETE_ON_LAST_UNMAP: u32 = 4;
-/// A map of this object has already tried a speculative page-in. See [Object::claim_map_prefetch].
-const OBJ_MAP_PREFETCHED: u32 = 8;
 /// `known_len` is an *exact* logical byte length, not a page-granular "last synced page" extent.
 /// True for objects created this boot (nothing on the store until the first sync, so `known_len`
 /// starts at exactly 0) and for external-file-backed objects, whose length the pager reports from
@@ -125,7 +123,7 @@ pub struct Object {
     /// The backing store's data length. `u64::MAX` means "never told"; see [Object::known_len].
     known_len: AtomicU64,
     vnotes: VNotes,
-    /// Link into the sharded object map ([omap::ShardedOmap]); unused unless [OMAP_SHARDED].
+    /// Link into the sharded object map ([omap::ShardedOmap]).
     omap_link: RBTreeAtomicLink,
     /// Link into the reaper's object queue ([ReapQueue::objs]), which holds a reference while
     /// linked -- so this is always unlinked by the time [Object::drop] runs.
@@ -147,7 +145,7 @@ pub struct Object {
 /// Tearing them down unmaps the object's whole range, runs TLB consistency, and frees every frame
 /// with a `WAIT_OK` allocator -- it can sleep waiting for memory. [Object::drop] runs on whoever
 /// released the last reference, including the pager completion thread, which that sleep wedges on
-/// a resource it is itself needed to replenish (`sysbench.md` F7). So the drop hands them over,
+/// a resource it is itself needed to replenish. So the drop hands them over,
 /// and the handover must neither block nor allocate.
 ///
 /// Hence the separate allocation: it outlives the object, giving the reaper an address to thread
@@ -384,13 +382,6 @@ impl Object {
         self.id.parts()[0] == 1
     }
 
-    /// True for exactly one caller, ever: the first map of this object to reach the speculative
-    /// page-in. Concurrent maps of one object are ordinary (four threads opening the same library),
-    /// so this has to be the atomic and not a read followed by a set.
-    pub fn claim_map_prefetch(&self) -> bool {
-        self.flags.fetch_or(OBJ_MAP_PREFETCHED, Ordering::SeqCst) & OBJ_MAP_PREFETCHED == 0
-    }
-
     /// Record that this object should be deleted once its last mapping goes away.
     pub fn set_delete_on_last_unmap(&self) {
         self.flags
@@ -467,18 +458,12 @@ impl Object {
             ties.len(),
             core::panic::Location::caller()
         );
-        use crate::syscall::object::createprofile as cp;
-        let t = cp::start();
         let device_interrupt_info = Once::new();
         let sleep_slot = Once::new();
-        if OBJ_EAGER_COLD_FIELDS {
-            device_interrupt_info.call_once(|| {
-                Box::new([const { (AtomicU64::new(0), AtomicU64::new(0)) }; NUM_DEVICE_INTERRUPTS])
-            });
-            sleep_slot.call_once(|| Box::new(Mutex::new(SleepInfo::new(id))));
-        }
-        cp::record(cp::Stage::NewDevBox, t);
-        let t = cp::start();
+        device_interrupt_info.call_once(|| {
+            Box::new([const { (AtomicU64::new(0), AtomicU64::new(0)) }; NUM_DEVICE_INTERRUPTS])
+        });
+        sleep_slot.call_once(|| Box::new(Mutex::new(SleepInfo::new(id))));
         let this = Self {
             id,
             flags: AtomicU32::new(0),
@@ -497,7 +482,6 @@ impl Object {
             reap_link: LinkedListAtomicLink::new(),
             mappings: Mutex::new(BTreeMap::new()),
         };
-        cp::record(cp::Stage::NewStruct, t);
         this
     }
 
@@ -513,21 +497,9 @@ impl Object {
     /// The wake path never reaches here on an object with no sleepers: `wakeup_word` returns at its
     /// `sleepers == 0` check, which is the same guard that already existed to keep an uncontended
     /// futex release out of this mutex.
-    /// Diagnostic for the hang report: is `id` linked at `offset` in THIS instance's sleep
-    /// tree, and how many threads are. A parked thread absent here while claiming to sleep on
-    /// this (id, offset) is sleeping on a different Object instance.
-    pub fn sleep_query(&self, offset: usize, id: ObjID) -> (bool, usize) {
-        match self.sleep_info_if_present() {
-            Some(si) => si.lock().query(offset, id),
-            None => (false, 0),
-        }
-    }
-
     pub(crate) fn sleep_info(&self) -> &Mutex<SleepInfo> {
-        self.sleep_slot.call_once(|| {
-            coldfieldstats::SLEEP_INITS.fetch_add(1, Ordering::Relaxed);
-            Box::new(Mutex::new(SleepInfo::new(self.id)))
-        })
+        self.sleep_slot
+            .call_once(|| Box::new(Mutex::new(SleepInfo::new(self.id))))
     }
 
     /// This object's device-interrupt table, built on first use.
@@ -540,7 +512,6 @@ impl Object {
         &self,
     ) -> &[(AtomicU64, AtomicU64); NUM_DEVICE_INTERRUPTS] {
         self.device_interrupt_info.call_once(|| {
-            coldfieldstats::DEV_INITS.fetch_add(1, Ordering::Relaxed);
             Box::new([const { (AtomicU64::new(0), AtomicU64::new(0)) }; NUM_DEVICE_INTERRUPTS])
         })
     }
@@ -583,21 +554,14 @@ impl Object {
     /// accounted and reclaimed identically. It is not wired: nothing keeps a pointer to it.
     ///
     /// `sys_object_create` qualifies on the same terms and takes it too, which is where the cost
-    /// actually lands: 8.0 us of a 14.8 us `ObjectCreate` (`sysbench.md`).
+    /// actually lands: 8.0 us of a 14.8 us `ObjectCreate`.
     pub(crate) fn init_meta(self: &Arc<Self>, meta: MetaInfo) {
-        use crate::syscall::object::createprofile as cp;
-        let t = cp::start();
         let frame = alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::WAIT_OK);
-        cp::record(cp::Stage::MetaFrame, t);
         // Safety: a freshly allocated frame, named by nothing else, and `MetaInfo` sits at offset
         // zero of the meta page -- the offset `write_meta` writes it to.
         unsafe { frame.virtaddr().as_mut_ptr::<MetaInfo>().write(meta) };
-        let t = cp::start();
         self.add_frame(PageNumber::meta_page(), frame);
-        cp::record(cp::Stage::MetaAdd, t);
-        let t = cp::start();
         self.note_written_meta(&meta);
-        cp::record(cp::Stage::MetaNote, t);
     }
 
     pub fn new_kernel() -> Arc<Self> {
@@ -700,7 +664,7 @@ impl core::fmt::Debug for Object {
 ///
 /// The order in `drop` is the whole point and is not interchangeable: the mutex is released
 /// *before* the wait. That is what takes a median 90 ms per boot of shootdown spinning out of this
-/// lock's hold (TLB.md).
+/// lock's hold.
 ///
 /// What makes releasing first *safe* is not that `run_all` waits before it frees -- that only
 /// covers the path where `run_all` is called. It is that [DeferredUnmappingOps] has a backstop for
@@ -792,12 +756,7 @@ impl Drop for PtGuard<'_> {
 
 pub type ObjectRef = Arc<Object>;
 
-/// Selects the sharded object map ([omap::ShardedOmap]) over the single global
-/// `Mutex<BTreeMap>`. Both are compiled; one tree state builds both A/B arms.
-pub const OMAP_SHARDED: bool = true;
-
 struct ObjectManager {
-    map: Mutex<BTreeMap<ObjID, ObjectRef>>,
     sharded: omap::ShardedOmap,
     no_exist: Mutex<BTreeSet<ObjID>>,
 }
@@ -838,36 +797,21 @@ impl LookupResult {
 impl ObjectManager {
     fn new() -> Self {
         Self {
-            map: Mutex::new(BTreeMap::new()),
             sharded: omap::ShardedOmap::new(),
             no_exist: Mutex::new(BTreeSet::new()),
         }
     }
 
     fn lookup_object(&self, id: ObjID, _flags: LookupFlags) -> LookupResult {
-        if OMAP_SHARDED {
-            // The positive map answers first. `no_exist` is a negative cache, and nothing ever
-            // removes an entry from it -- so consulting it first both charged every successful
-            // lookup a second global lock and permanently shadowed any object whose id was
-            // marked nonexistent before it came to exist.
-            if let Some(obj) = self.sharded.lookup(id) {
-                return LookupResult::Found(obj);
-            }
-            if self.no_exist.lock().contains(&id) {
-                return LookupResult::NotFound;
-            }
-        } else {
-            if self.no_exist.lock().contains(&id) {
-                return LookupResult::NotFound;
-            }
-            if let Some(res) = self
-                .map
-                .lock()
-                .get(&id)
-                .map(|obj| LookupResult::Found(obj.clone()))
-            {
-                return res;
-            }
+        // The positive map answers first. `no_exist` is a negative cache, and nothing ever
+        // removes an entry from it -- so consulting it first both charged every successful
+        // lookup a second global lock and permanently shadowed any object whose id was
+        // marked nonexistent before it came to exist.
+        if let Some(obj) = self.sharded.lookup(id) {
+            return LookupResult::Found(obj);
+        }
+        if self.no_exist.lock().contains(&id) {
+            return LookupResult::NotFound;
         }
         ties::TIE_MGR
             .lookup_object(id)
@@ -875,27 +819,17 @@ impl ObjectManager {
     }
 
     fn register_object(&self, obj: Arc<Object>) {
-        if OMAP_SHARDED {
-            // An evicted duplicate (same-id replacement) drops here, outside the shard lock.
-            drop(self.sharded.insert(obj));
-        } else {
-            // TODO: what if it returns an obj
-            self.map.lock().insert(obj.id(), obj);
-        }
+        // An evicted duplicate (same-id replacement) drops here, outside the shard lock.
+        drop(self.sharded.insert(obj));
     }
 }
 
 pub fn print_all_objects() {
     let mgr = obj_manager();
-    // Both arms print from a collected snapshot: the sharded map's locks are spinlocks, which
-    // must not be held across console output.
-    let objs: Vec<ObjectRef> = if OMAP_SHARDED {
-        let mut v = Vec::new();
-        mgr.sharded.collect_all(&mut v);
-        v
-    } else {
-        mgr.map.lock().values().cloned().collect()
-    };
+    // Printed from a collected snapshot: the sharded map's locks are spinlocks, which must not be
+    // held across console output.
+    let mut objs: Vec<ObjectRef> = Vec::new();
+    mgr.sharded.collect_all(&mut objs);
     logln!("=== OBJECTS === ({})", objs.len());
     let mut nn = 0;
     for obj in objs.iter() {
@@ -921,28 +855,11 @@ pub fn print_all_objects() {
     logln!("\n=== DELETED OBJECTS WITH NO NOTES === ({})\n\n", nn);
 }
 
-/// A/B knob for the lock-free negative in [`is_reapable`].
-///
-/// `false` restores taking the page-table lock to read the map count, which is what every
-/// measurement before this change was taken against. The count itself is atomic either way, so
-/// this isolates *skipping the lock* rather than restoring the old field.
-pub const OBJ_REAP_MAP_COUNT_FAST: bool = false;
-
 /// Whether `obj` can be reaped now: nothing maps it and nothing has it pinned.
 ///
-/// Takes the object's pin lock, and the page-table lock too unless
-/// [`OBJ_REAP_MAP_COUNT_FAST`] elides it, so it must be called with the global map lock
-/// *released* -- see [`scan_deleted`] for what deadlocks otherwise.
+/// Takes the object's pin lock and its page-table lock, so it must be called with the global map
+/// lock *released* -- see [`scan_deleted`] for what deadlocks otherwise.
 fn is_reapable(obj: &ObjectRef) -> bool {
-    // A mapped object is the common case on this path -- `ObjectControlCmd::Delete` runs it on
-    // every delete, and the bench pattern deletes while still mapped -- and it is answerable
-    // without either lock.
-    if OBJ_REAP_MAP_COUNT_FAST {
-        if obj.map_count() != 0 && !stale_map_count(obj) {
-            return false;
-        }
-        return obj.pin_info.lock().pins.len() == 0;
-    }
     let _tables = obj.lock_page_tables();
     (obj.map_count() == 0 || stale_map_count(obj)) && obj.pin_info.lock().pins.len() == 0
 }
@@ -958,7 +875,6 @@ fn stale_map_count(obj: &ObjectRef) -> bool {
     if !obj.mappings().is_empty() {
         return false;
     }
-    reapstats::STALE_COUNT_REAPS.fetch_add(1, Ordering::Relaxed);
     true
 }
 
@@ -968,35 +884,12 @@ fn stale_map_count(obj: &ObjectRef) -> bool {
 /// been replaced or resurrected since. The removed reference is dropped by the tie manager rather
 /// than under the map lock.
 fn reap_one(obj: &ObjectRef) {
-    let dobj = if OMAP_SHARDED {
-        obj_manager().sharded.remove_if_pending(obj.id, obj)
-    } else {
-        let mut om = obj_manager().map.lock();
-        let unchanged = om
-            .get(&obj.id)
-            .is_some_and(|cur| Arc::ptr_eq(cur, obj) && cur.is_pending_delete());
-        if unchanged { om.remove(&obj.id) } else { None }
-    };
+    let dobj = obj_manager().sharded.remove_if_pending(obj.id, obj);
 
     if let Some(dobj) = dobj {
         ties::TIE_MGR.delete_object(dobj);
     }
 }
-
-/// The reap rework (`sysbench.md` F6). On: `ObjectControlCmd::Delete` reaps only the object it just
-/// marked, and the unmap paths hand the reaper thread the object whose last mapping went away. Off,
-/// delete runs a full [`scan_deleted`] inline -- a walk of every object in the system, taking each
-/// one's page-table lock -- and the unmap paths say nothing.
-///
-/// Worth 16.1 us of the 16.6 us a delete used to cost, and ~7 us of `object_create_delete`.
-///
-/// This wedged the machine for as long as it was on, deterministically, and the cause was not
-/// here: prompt reaping merely made it far more likely that an object's last `ObjectRef` died on
-/// the pager completion thread, where `Object::drop`'s blocking delete parked the one thread that
-/// drains completions (see `pager::Deleter`). Bisecting to this switch found the trigger, not the
-/// defect -- which is why three fixes aimed here in turn each still wedged. With the drop deferred,
-/// the sysbench suite passes 5/5 at smp1 and 5/5 at smp4, where it used to stop dead 5 out of 5.
-pub const TARGETED_REAP: bool = true;
 
 /// Background reaper: tears down what the unmap paths and dying objects hand it.
 ///
@@ -1086,38 +979,23 @@ pub fn start_reaper_thread() {
                 // waits on the pager -- and dropping the last `ObjectRef` re-enters
                 // `defer_teardown`, which takes this lock.
                 drop(q);
-                if grave.is_some() {
-                    drop(grave);
-                    reapstats::DRAINED_GRAVES.fetch_add(1, Ordering::Relaxed);
-                }
+                drop(grave);
                 if let Some(obj) = obj {
                     scan_deleted_one(&obj);
-                    drop(obj);
-                    reapstats::DRAINED_OBJS.fetch_add(1, Ordering::Relaxed);
                 }
                 q = r.queue.lock();
                 continue;
             }
-            // Both queues are empty here, so `depth` must be exactly zero. Checked rather than
-            // assumed because `OBJ_REAP_BATCH_WAKE` makes `depth` gate signal suppression: a
-            // drift would silently defeat batching (always signal) or stall it (never signal),
-            // with no other symptom and no test between here and there. Counted and corrected
-            // rather than asserted, so it reports from a release boot -- `debug_assert` is
-            // compiled out of this repo's release profile.
-            if q.depth != 0 {
-                reapstats::DEPTH_DRIFT.fetch_add(1, Ordering::Relaxed);
-                q.depth = 0;
-            }
+            // Both queues are empty here, so `depth` must be exactly zero; it gates signal
+            // suppression, so a drift would silently defeat or stall batching. Corrected rather
+            // than asserted, since `debug_assert` is compiled out of the release profile.
+            q.depth = 0;
             q.parked = true;
             q = r.work.wait(q);
             q.parked = false;
-            reapstats::BATCHES.fetch_add(1, Ordering::Relaxed);
             // Woken with `parked` false: pushes until the queues run dry cost no wake. Falls
             // through to the re-test, so a spurious wake re-parks rather than spinning.
-            if OBJ_REAP_BATCH_WAKE {
-                q = r.work.wait_waiters(q, Some(REAP_BATCH_LINGER), None).0;
-                reapstats::LINGERS.fetch_add(1, Ordering::Relaxed);
-            }
+            q = r.work.wait_waiters(q, Some(REAP_BATCH_LINGER), None).0;
         }
     }
     REAPER.call_once(|| Reaper {
@@ -1141,18 +1019,14 @@ pub fn start_reaper_thread() {
 /// Cheap and non-blocking: a link store and, usually, a signal. The per-object locks the check
 /// needs are taken on the reaper thread instead of on the unmap path.
 pub fn request_reap(obj: &ObjectRef) {
-    use crate::memory::context::virtmem::unmapprofile as up;
     let Some(reaper) = REAPER.poll() else {
         return;
     };
-    let t = up::start();
     let (parked, depth) = {
         let mut q = reaper.queue.lock();
         // Already queued means already covered -- see [ReapQueue::objs], which also explains why
         // this test is mandatory rather than an optimization.
-        if obj.reap_link.is_linked() {
-            reapstats::DEDUPED.fetch_add(1, Ordering::Relaxed);
-        } else {
+        if !obj.reap_link.is_linked() {
             q.objs.push_back(obj.clone());
             q.depth += 1;
         }
@@ -1164,20 +1038,17 @@ pub fn request_reap(obj: &ObjectRef) {
         }
         (parked, depth)
     };
-    up::record(up::Stage::ReapPush, t);
     // Only when the thread is actually parked, if the knobs say so. `parked` is written under this
     // same lock and `CondVar::wait` registers the waiter before it releases the guard, so a
     // producer that reads `true` is reading a waiter that is already queued -- and one that reads
     // `false` is looking at a thread that has not yet re-tested the queue it just pushed to.
     // Neither can lose the wakeup.
     if should_signal_reaper(parked, depth) {
-        let t = up::start();
         reaper.work.signal();
-        up::record(up::Stage::ReapSignal, t);
     }
 }
 
-/// Wake the reaper now, whatever [`OBJ_REAP_BATCH_WAKE`] would have decided.
+/// Wake the reaper now, whatever [`should_signal_reaper`] would have decided.
 ///
 /// For the memory-wait path. A lingering reaper is sitting on `graves` -- whole object page-table
 /// chains, and the frames behind them -- and [`should_signal_reaper`] deliberately trades reap
@@ -1192,152 +1063,6 @@ pub fn poke_reaper() {
         reaper.work.signal();
     }
 }
-
-/// A/B knob for the handover below. `false` restores tearing the tables down on whichever thread
-/// dropped the last reference, which is the behaviour every measurement before it was taken
-/// against -- including the one that says a three-pass sysbench boot exhausts memory.
-/// How often the lazily-built cold fields were actually built.
-///
-/// The question this answers is whether [`OBJ_EAGER_COLD_FIELDS`] can be moving a benchmark at
-/// all: eager builds both boxes for **every** object, lazy builds them only for objects something
-/// sleeps on or that carry device interrupts. If these counts are small against the boot's
-/// `ObjectCreate` count, the lazy arm does strictly less allocator work per object and cannot be
-/// losing to the eager one through allocation -- which sends the search to the measurement.
-///
-/// Counted inside the `call_once` initializer, so it costs one relaxed add per *first* use of a
-/// field and nothing on any later one. Printed unconditionally, including zero: "never built" is
-/// the informative outcome and a silent counter cannot be told from one that failed to build.
-/// Whether the batching mechanism engaged, as opposed to whether a benchmark moved.
-///
-/// Gate 1, registered before measurement: `suppressed/(sent+suppressed)` should be far above the
-/// 4.9% `REAP_SIGNAL_ONLY_WHEN_PARKED` reached on its own, and mean batch should exceed 1. A null
-/// on either means the mechanism did not fire, and no bench delta underneath it is interpretable.
-///
-/// Carries its own positive control: `sent + suppressed` counts every time an unmap of a deleted
-/// object reached the decision at all, and that was measured at 65,101 in one boot. A total near
-/// zero therefore means the counter was never *reached* -- a broken instrument -- rather than a
-/// quiet mechanism. The two readings are distinguishable only because this total is printed, so
-/// it is printed including zero.
-pub mod reapstats {
-    use core::sync::atomic::{AtomicU64, Ordering};
-
-    /// Times the reaper crossed into the boosted priority (see `REAP_BOOST_DEPTH`). Against
-    /// `BATCHES` it says whether the backlog ever actually gets deep, which is the thing that
-    /// decides if the boost earns its place.
-    pub static BOOSTS: AtomicU64 = AtomicU64::new(0);
-    pub static SIGNALS_SENT: AtomicU64 = AtomicU64::new(0);
-    pub static SIGNALS_SUPPRESSED: AtomicU64 = AtomicU64::new(0);
-    /// Wakes, i.e. times the thread left its untimed park.
-    ///
-    /// **Not comparable to the `batches=` this replaced.** That counted drain *iterations*, and
-    /// the old drain took the whole queue per iteration while this one takes one entry, so the
-    /// two count different events and `mean_batch` moves by redefinition alone. Comparing wake
-    /// counts across that change needs the same counter on both sides, which no arm has.
-    pub static BATCHES: AtomicU64 = AtomicU64::new(0);
-    pub static DRAINED_OBJS: AtomicU64 = AtomicU64::new(0);
-    pub static DRAINED_GRAVES: AtomicU64 = AtomicU64::new(0);
-    pub static LINGERS: AtomicU64 = AtomicU64::new(0);
-    /// Times the reaper parked with a nonzero `depth` and both queues empty -- i.e. the counter
-    /// disagreed with the lists. Must be 0. See the park site.
-    pub static DEPTH_DRIFT: AtomicU64 = AtomicU64::new(0);
-    /// Pushes skipped because the object was already queued. New with the intrusive queue: this
-    /// is the work the old duplicate-carrying `Vec` did and this one does not, and it is the
-    /// mechanism gate for the dedupe -- a zero here means dedupe never engaged.
-    pub static DEDUPED: AtomicU64 = AtomicU64::new(0);
-    /// Reaps admitted through the stale-map-count escape hatch (`is_reapable`): a positive
-    /// count with no live mapping. Nonzero means some teardown path swallowed a dec.
-    pub static STALE_COUNT_REAPS: AtomicU64 = AtomicU64::new(0);
-
-    pub fn print() {
-        let sent = SIGNALS_SENT.load(Ordering::Relaxed);
-        let sup = SIGNALS_SUPPRESSED.load(Ordering::Relaxed);
-        let batches = BATCHES.load(Ordering::Relaxed);
-        let objs = DRAINED_OBJS.load(Ordering::Relaxed);
-        let graves = DRAINED_GRAVES.load(Ordering::Relaxed);
-        let total = sent + sup;
-        // Integer math only; mean batch scaled by 1000 rather than a float.
-        logln!(
-            "== reaper wake: sent={} suppressed={} ({}% of {}) wakes={} objs={} graves={} deduped={} lingers={} depth_drift={} mean_batch_x1000={} stale_count_reaps={} boosts={} (batch_wake={} defer_teardown={} targeted={} mapcount_fast={}) ==",
-            sent,
-            sup,
-            if total > 0 { sup * 100 / total } else { 0 },
-            total,
-            batches,
-            objs,
-            graves,
-            DEDUPED.load(Ordering::Relaxed),
-            LINGERS.load(Ordering::Relaxed),
-            DEPTH_DRIFT.load(Ordering::Relaxed),
-            if batches > 0 {
-                (objs + graves) * 1000 / batches
-            } else {
-                0
-            },
-            STALE_COUNT_REAPS.load(Ordering::Relaxed),
-            BOOSTS.load(Ordering::Relaxed),
-            // Every const that governs this subsystem's behaviour, emitted with the numbers it
-            // governs. A handover message describing tree state can be wrong or absent -- this
-            // rides in the artifact, so a transcript is self-identifying about the configuration
-            // it was produced under. `DEFER_TEARDOWN` especially: see its doc.
-            super::OBJ_REAP_BATCH_WAKE,
-            super::DEFER_TEARDOWN,
-            super::TARGETED_REAP,
-            super::OBJ_REAP_MAP_COUNT_FAST,
-        );
-    }
-}
-
-pub mod coldfieldstats {
-    use core::sync::atomic::{AtomicU64, Ordering};
-
-    pub static SLEEP_INITS: AtomicU64 = AtomicU64::new(0);
-    pub static DEV_INITS: AtomicU64 = AtomicU64::new(0);
-
-    pub fn print() {
-        logln!(
-            "== object cold fields built lazily: {} sleep tables, {} device-interrupt tables (eager: {}) ==",
-            SLEEP_INITS.load(Ordering::Relaxed),
-            DEV_INITS.load(Ordering::Relaxed),
-            super::OBJ_EAGER_COLD_FIELDS,
-        );
-    }
-}
-
-/// A/B knob for the lazily-built cold fields on [`Object`] (`sleep_slot`,
-/// `device_interrupt_info`). `true` builds both at create, which is what every measurement before
-/// this change was taken against; the struct is the small one either way, so this isolates the
-/// allocation from the shrink rather than restoring the old layout.
-pub const OBJ_EAGER_COLD_FIELDS: bool = true;
-
-/// A/B knob for skipping the reaper wake when the reaper is not parked.
-///
-/// Every unmap of a deleted object signals the reaper, and `CondVar::signal` costs a critical
-/// section, a spinlock and a `requeue_all` even when it wakes nobody. Measured at 2,147 ns per
-/// unmap inside `remove_object`'s `finish` stage -- 9% of `object_create_delete`.
-///
-/// Measured **inert on its own**: it skipped 3,197 of 65,101 signals (4.9%), because the reaper
-/// drains its whole queue and re-parks between consecutive unmaps, so essentially every push
-/// finds it parked. Superseded by [`OBJ_REAP_BATCH_WAKE`], which is what makes "not parked" a
-/// state that lasts long enough to be worth testing; this const only selects the old behaviour
-/// when batching is off.
-pub const REAP_SIGNAL_ONLY_WHEN_PARKED: bool = false;
-
-/// A/B knob for amortizing the reaper wake across a batch of objects.
-///
-/// The wake, not the reaping, is what an unmap pays: `request_reap` is a push and a
-/// `CondVar::signal`, and that signal is a topology walk (`select_cpu`), an insert into a *remote*
-/// run queue, and an IPI -- 1,896 ns, against 2,606 ns for the reap itself on the reaper thread.
-///
-/// So the reaper lingers instead of parking the instant it is woken. During the linger `parked` is
-/// false, and a pusher that sees that skips the signal entirely: the reaper is going to re-test
-/// the queue before it sleeps again, and the same-lock argument on [`ReapQueue::parked`] says it
-/// cannot miss what was pushed. One wake per batch rather than one per unmap.
-///
-/// Two bounds, because a queued object holds frames: [`REAP_BATCH_LINGER`] caps how long a batch
-/// accumulates, and [`REAP_BATCH_MAX`] cuts the linger short when enough has piled up that the
-/// memory matters more than the wake. Nothing can strand -- a push that finds the reaper genuinely
-/// parked always signals.
-pub const OBJ_REAP_BATCH_WAKE: bool = true;
 
 /// How long the reaper accumulates before draining. Bounds reap latency, and with it how long a
 /// deleted object's frames stay out of circulation.
@@ -1410,9 +1135,6 @@ fn reap_adjust_priority(depth: usize) {
         return;
     }
     REAP_BOOSTED.store(want, Ordering::Relaxed);
-    if want {
-        reapstats::BOOSTS.fetch_add(1, Ordering::Relaxed);
-    }
     cur.set_priority(if want {
         Priority::USER
     } else {
@@ -1421,36 +1143,12 @@ fn reap_adjust_priority(depth: usize) {
 }
 
 fn should_signal_reaper(parked: bool, depth: usize) -> bool {
-    let signal = if OBJ_REAP_BATCH_WAKE {
-        parked || depth >= REAP_BATCH_MAX
-    } else {
-        !REAP_SIGNAL_ONLY_WHEN_PARKED || parked
-    };
-    // Counted here rather than at the two call sites, so the total is the number of decisions
-    // rather than the number of places that make them.
-    if signal {
-        reapstats::SIGNALS_SENT.fetch_add(1, Ordering::Relaxed);
-    } else {
-        reapstats::SIGNALS_SUPPRESSED.fetch_add(1, Ordering::Relaxed);
-    }
-    signal
+    parked || depth >= REAP_BATCH_MAX
 }
-
-/// Flipping this to `false` is not just a perf arm. `ObjectPageTable::drop` frees frames with a
-/// `WAIT_OK` allocator, so it can block for memory; deferred, that runs on the reaper with no lock
-/// held. Inline, it runs on whatever thread released the last reference -- which may hold a
-/// spinlock, and blocking with a spinlock held has no check anywhere in this kernel
-/// (`DISABLE_LOCK_TRACKING` is hardcoded on, and `Spinlock::lock` never touches
-/// `critical_counter`).
-pub const DEFER_TEARDOWN: bool = true;
 
 /// Hand a dead object's page tables to the reaper to tear down. Never blocks and never allocates:
 /// a link store and a signal.
 fn defer_teardown(home: Box<PtHome>) {
-    if !DEFER_TEARDOWN {
-        drop(home);
-        return;
-    }
     let Some(reaper) = REAPER.poll() else {
         // Before the reaper thread exists nothing else can free these, so the caller pays. Early
         // boot only, and the objects that die there are the bootstrap ones -- small, and dropped
@@ -1479,16 +1177,13 @@ fn defer_teardown(home: Box<PtHome>) {
 /// What [`ObjectControlCmd::Delete`] wants: the object it named is the only one whose reapability
 /// just changed, and a full [`scan_deleted`] to catch it walks the entire global object map under
 /// its lock -- which is most of what a delete syscall cost (18.6 us of a 34.9 us create/delete
-/// pair, `sysbench.md` F6). Objects that become reapable *later*, because someone else's mapping
+/// pair). Objects that become reapable *later*, because someone else's mapping
 /// went away, are still caught by the idle-loop scan.
 pub fn scan_deleted_one(obj: &ObjectRef) {
     if !obj.is_pending_delete() || !is_reapable(obj) {
         return;
     }
-    use crate::syscall::object::deleteprofile;
-    let t = deleteprofile::start();
     reap_one(obj);
-    deleteprofile::record(deleteprofile::Stage::Reap, t);
 }
 
 /// Returns the number of objects reaped, so an explicit sweep
@@ -1500,17 +1195,8 @@ pub fn scan_deleted() -> usize {
     // here would stall every lookup_object() in the kernel -- including the ones the pager request
     // handler needs to service that very wait. So: pick candidates using only the cheap test,
     // release the map lock, then evaluate the blocking predicate.
-    let candidates = if OMAP_SHARDED {
-        let mut v = Vec::new();
-        obj_manager().sharded.collect_pending(&mut v);
-        v
-    } else {
-        let om = obj_manager().map.lock();
-        om.iter()
-            .filter(|(_, obj)| obj.is_pending_delete())
-            .map(|(id, obj)| (*id, obj.clone()))
-            .collect::<Vec<_>>()
-    };
+    let mut candidates = Vec::new();
+    obj_manager().sharded.collect_pending(&mut candidates);
 
     let mut reaped = 0;
     for (_, obj) in candidates {
@@ -1630,39 +1316,6 @@ pub fn clear_no_exist(id: ObjID) {
     obj_manager().no_exist.lock().remove(&id);
 }
 
-/// Report what large-page promotion would win, if the picture has changed since the last report.
-///
-/// Sizing the prize before building it (`largepager.md`): promotion is real mapper work with a
-/// shootdown, and it is only worth it if regions actually end up fully populated with contiguous
-/// aligned 4 KiB frames. This is a scan rather than a hot-path counter because the question is
-/// about *state* -- which regions ended up that way -- and a scan cannot double-count a region that
-/// is touched again later, which an event counter would.
-///
-/// Diagnostic, and not free: called from the idle loop's test/diag block, throttled, and quiet
-/// unless a number moves.
-/// Composition of object-held pages, printed from the allocator's wait path under memory
-/// pressure. Answers the reclaim-design question pagerwedge.md §3.7 leaves open: how much of
-/// the "page" share is backed (evictable to disk) vs volatile (not evictable without swap),
-/// and whether it is concentrated or diffuse. Allocation-free ([omap::ShardedOmap::
-/// for_each_chunked]) because it runs while allocation is failing; `count_pages` is O(1) with
-/// the mapper's exact counter.
-/// Clean-object eviction, off by default.
-///
-/// **Off because it is implicated in a panic.** At `--scenario lowmem --memory 768` the guest went
-/// from a pager stall (rc=34, no panic) to `unrecoverable, halting processor` / `TEST MODE PANIC`
-/// (rc=36) after evicting one object worth two pages. Not yet root-caused; the transcript is
-/// interleaved with a concurrent pressure census. Candidate causes, in order: pages are evicted
-/// with no pin check (pins are not tracked at all), and with no check that a mapping is not in
-/// active use -- the design assumes a re-fault, which needs a pager that is answering, and 768 is
-/// a size where the pager is already stalling.
-///
-/// **Also measured to be nearly useless at this granularity**, which is the more interesting half:
-/// `scanned 653 skip(vol 572 empty 0 dirty 80 del 0) evicted 1 objs / 2 pages`. 87% of objects are
-/// volatile, and 80 of the 81 pager-backed ones hold at least one dirty page -- and one dirty page
-/// disqualifies a whole object here. Page granularity is not an optimization over this, it is the
-/// difference between reclaiming something and reclaiming nothing.
-pub const RECLAIM_CLEAN_OBJ: bool = true;
-
 /// Round-robin position for [`reclaim_clean_backed`]'s scan. See its use site.
 static SCAN_CURSOR: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
@@ -1724,7 +1377,7 @@ pub mod reclaimstat {
 /// Candidates are collected before any is evicted: eviction takes page-table locks and sends
 /// shootdown IPIs, and doing that inside the omap scan would run it under the shard lock.
 pub fn reclaim_clean_backed(budget: usize) -> usize {
-    if !RECLAIM_CLEAN_OBJ || !OMAP_SHARDED || budget == 0 {
+    if budget == 0 {
         return 0;
     }
     use reclaimstat as rs;
@@ -1801,9 +1454,6 @@ pub fn reclaim_clean_backed(budget: usize) -> usize {
 }
 
 pub fn pressure_census() {
-    if !OMAP_SHARDED {
-        return;
-    }
     let mut backed = 0usize;
     let mut backed_objs = 0usize;
     let mut vol = 0usize;
@@ -1835,7 +1485,7 @@ pub fn pressure_census() {
     let mut pg_sctx0 = 0usize;
     let mut pg_live = 0usize;
     let mut pg_dead = 0usize;
-    /// Pending-delete pages per live security context, so the aggregate can be attributed.
+    // Pending-delete pages per live security context, so the aggregate can be attributed.
     let mut top_sctx: heapless::Vec<(ObjID, usize), 12> = heapless::Vec::new();
     let mut pd_stuck_mapcount = 0usize;
     let mut pg_stuck_mapcount = 0usize;
@@ -2040,12 +1690,8 @@ pub fn promotion_census() {
 
     // Never take a per-object lock while holding the global map lock -- see `scan_deleted` for what
     // that deadlocks against.
-    let objects = obj_manager()
-        .map
-        .lock()
-        .values()
-        .cloned()
-        .collect::<Vec<_>>();
+    let mut objects = Vec::new();
+    obj_manager().sharded.collect_all(&mut objects);
     let mut census = pagetables::PromotionCensus::default();
     for obj in objects {
         obj.lock_page_tables().promotion_census(&mut census);
@@ -2094,18 +1740,12 @@ pub fn get_object_stats() -> twizzler_abi::syscall::ObjectStats {
         print_all_objects();
     }
     let mut stats = twizzler_abi::syscall::ObjectStats::default();
-    if OMAP_SHARDED {
-        // Count from a snapshot taken outside the shard locks: `is_mapped` takes the object's
-        // sleeping page-table mutex, which must not run under a shard spinlock.
-        let mut objs = Vec::new();
-        obj_manager().sharded.collect_all(&mut objs);
-        stats.nr_objects = objs.len();
-        stats.nr_mapped = objs.iter().filter(|obj| obj.is_mapped()).count();
-    } else {
-        let mgr = obj_manager().map.lock();
-        stats.nr_objects = mgr.len();
-        stats.nr_mapped = mgr.values().filter(|obj| obj.is_mapped()).count();
-    }
+    // Count from a snapshot taken outside the shard locks: `is_mapped` takes the object's
+    // sleeping page-table mutex, which must not run under a shard spinlock.
+    let mut objs = Vec::new();
+    obj_manager().sharded.collect_all(&mut objs);
+    stats.nr_objects = objs.len();
+    stats.nr_mapped = objs.iter().filter(|obj| obj.is_mapped()).count();
     stats.nr_handles = count_handles();
     ties::fill_stats(&mut stats);
 
@@ -2113,27 +1753,16 @@ pub fn get_object_stats() -> twizzler_abi::syscall::ObjectStats {
 }
 
 pub fn enumerate_objects(buf: &mut [ObjID], offset: usize) -> Result<usize, TwzError> {
-    let ids = if OMAP_SHARDED {
-        // Shard-major snapshot union; enumerate was never transactional, so this is the same
-        // guarantee class as the single-lock walk.
-        let mut all = Vec::new();
-        obj_manager().sharded.collect_ids(&mut all);
-        TIE_MGR.with_deleted_map(|dm| all.extend(dm.keys().copied()));
-        all.into_iter()
-            .skip(offset)
-            .take(buf.len())
-            .collect::<Vec<_>>()
-    } else {
-        let mgr = obj_manager().map.lock();
-        TIE_MGR.with_deleted_map(|dm| {
-            mgr.iter()
-                .chain(dm.iter())
-                .map(|(id, _)| *id)
-                .skip(offset)
-                .take(buf.len())
-                .collect::<Vec<_>>()
-        })
-    };
+    // Shard-major snapshot union; enumerate was never transactional, so this is the same
+    // guarantee class as the single-lock walk.
+    let mut all = Vec::new();
+    obj_manager().sharded.collect_ids(&mut all);
+    TIE_MGR.with_deleted_map(|dm| all.extend(dm.keys().copied()));
+    let ids = all
+        .into_iter()
+        .skip(offset)
+        .take(buf.len())
+        .collect::<Vec<_>>();
 
     buf[..ids.len()].copy_from_slice(&ids);
     Ok(ids.len())

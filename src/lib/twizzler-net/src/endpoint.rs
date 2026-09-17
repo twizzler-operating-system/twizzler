@@ -166,32 +166,6 @@ impl<S: Copy, C: Copy> Pair<S, C> {
         Ok(count)
     }
 
-    pub fn send_packets(
-        &self,
-        packets: &[PacketNum],
-        f: impl FnOnce(PacketSet) -> S,
-    ) -> std::io::Result<usize> {
-        let (set, count) = PacketSet::from_slice(packets);
-        let mut inner = self.inner.lock().unwrap();
-        let id = inner.next_id();
-        inner.register_set(id, set);
-        drop(inner);
-        let msg = f(set);
-        let r = self
-            .queue
-            .submit(id, msg, SubmissionFlags::empty())
-            .map_err(|_| ErrorKind::Other);
-        if r.is_err() {
-            let mut inner = self.inner.lock().unwrap();
-            if let Some(set) = inner.take_set(id) {
-                self.release_packets(set);
-            }
-            inner.release_id(id);
-            r?;
-        }
-        Ok(count)
-    }
-
     fn release_packets(&self, set: PacketSet) {
         for packet in set.into_iter() {
             self.release_packet(packet);

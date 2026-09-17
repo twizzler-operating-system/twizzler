@@ -11,7 +11,7 @@ use miette::{Context, IntoDiagnostic};
 use sunset::{ChanHandle, SignKey};
 use sunset_async::{ProgressHolder, SSHServer};
 use tracing::Level;
-use twizzler::object::{ObjID, Object, RawObject};
+use twizzler::object::{Object, RawObject};
 use twizzler_io::pty::{DEFAULT_TERMIOS, PtyBase, PtyServerHandle, PtySignal};
 use twizzler_rt_abi::{
     fd::{RawFd, twz_rt_fd_close},

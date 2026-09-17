@@ -1,8 +1,7 @@
 //! Per-cpu frame caching, magazine/depot form.
 //!
-//! Replacement for the `TLS_FRAME_ALLOCATOR` pool in [`crate::memory::tracker`]. The design and
-//! the measurements behind it are in `framecache.md`; what follows is only what a reader of this
-//! file needs.
+//! Per-cpu frame cache in front of [`crate::memory::tracker`]; what follows is only what a reader
+//! of this file needs.
 //!
 //! # Shape
 //!
@@ -49,15 +48,6 @@ use crate::{
     processor::tls_ready,
     spinlock::{LockGuard, Spinlock},
 };
-
-/// Master gate. `false` leaves every hook below inert and the old `TLS_FRAME_ALLOCATOR` pool in
-/// sole charge, which is the arm every measurement to date was taken against.
-///
-/// One const rather than the pool's eight, deliberately. Those grew one per experiment and the
-/// result is that no two of them were ever varied independently in the same boot, so the tree
-/// carries a combination nobody has measured. This ships as a single A/B and stays that way until
-/// there is a reason to split it that comes with a measurement.
-pub const ENABLED: bool = true;
 
 /// Frames per magazine, and therefore the amortization factor: one depot acquisition per this
 /// many frames, in each direction.
@@ -277,7 +267,7 @@ macro_rules! counters {
 
 /// Counters, differenced by [`crate::perfmark`].
 ///
-/// Chosen so every falsifier in `framecache.md` Part 4 is a counter rather than a wall-clock
+/// Chosen so every falsifier is a counter rather than a wall-clock
 /// number: `object_create_delete_nomap`'s identical-arm drift is 12.9%, which is larger than most
 /// of the effects here, so nanoseconds cannot settle them.
 pub mod stat {
@@ -359,9 +349,6 @@ pub mod stat {
 /// boot. That is the whole of R3: the free path cannot allocate because there is no allocation
 /// left to make, rather than because each caller was audited.
 pub fn init() {
-    if !ENABLED {
-        return;
-    }
     let mut depot = DEPOT.lock();
     for _ in 0..MAX_MAGAZINES {
         // Leaked deliberately: a magazine outlives every borrow of it and is never freed, so an
@@ -527,7 +514,7 @@ pub enum Want {
 /// Returns `(frame, needs_zeroing)`. `needs_zeroing` is true only when the caller asked for
 /// [`Want::Zeroed`] and got a frame off the dirty side.
 pub fn alloc_one(want: Want) -> Option<(FrameRef, bool)> {
-    if !ENABLED || !ready() || !tls_ready() {
+    if !ready() || !tls_ready() {
         return None;
     }
     // Fast path: this cpu's own magazine. No lock, no depot, one bounds check.
@@ -588,7 +575,7 @@ pub fn alloc_many(
     want_n: usize,
     mut push: impl FnMut(FrameRef, bool) -> bool,
 ) -> usize {
-    if !ENABLED || want_n == 0 || !ready() || !tls_ready() {
+    if want_n == 0 || !ready() || !tls_ready() {
         return 0;
     }
     let want_n = want_n.min(MAX_BATCH);
@@ -646,7 +633,7 @@ pub fn alloc_many(
 /// cheaper than zeroing one -- `setup_zero_range`, which can leave the page absent and let it
 /// zero-fill on fault instead of installing anything.
 pub fn alloc_one_clean() -> Option<FrameRef> {
-    if !ENABLED || !ready() || !tls_ready() {
+    if !ready() || !tls_ready() {
         return None;
     }
     if let Some(frame) = with_cache(take_clean) {
@@ -884,16 +871,6 @@ fn put_local(c: &mut Cache, frame: FrameRef, was_dirty: bool, want: Want) {
 /// 8 magazines is 512 frames, ~2 MB of standing clean supply.
 const FREE_ZERO_WATER: usize = 24;
 
-/// Check that a `known_zero` free really is zero, and panic if not.
-///
-/// This is the only unsafe-in-practice claim in the cache: a frame accepted as clean is handed
-/// to page-table code that parses it as entries, so a wrong hint is silent corruption rather
-/// than a crash. `debug_assert` is useless here -- `[profile.release]` sets only `debug = true`,
-/// so it compiles out of exactly the build the benches run. Leave this **on** until an armed
-/// boot has passed millions of frames through it, then turn it off; 4 KiB of compares is far
-/// too expensive to keep on the free path permanently.
-const VERIFY_KNOWN_ZERO: bool = false;
-
 /// Whether this free should pay for a 4 KiB memset.
 ///
 /// Two independent caps, and the second is a safety property rather than a tuning choice:
@@ -919,27 +896,6 @@ fn should_zero_on_free() -> bool {
     true
 }
 
-/// Panic unless every byte of `frame` is zero.
-///
-/// Read as `u64`s rather than bytes so the compare is 512 loads instead of 4096, and reported
-/// with the offset of the first non-zero word -- "somewhere in this frame" is not enough to find
-/// which caller lied.
-pub(crate) fn verify_zero(frame: FrameRef) {
-    let ptr = frame.start_address().kernel_vaddr().as_ptr::<u64>();
-    let words = frame.size() / core::mem::size_of::<u64>();
-    for i in 0..words {
-        // Safety: the frame is mapped in the kernel's physical map and owned by this free.
-        let v = unsafe { core::ptr::read_volatile(ptr.add(i)) };
-        assert!(
-            v == 0,
-            "known_zero free is not zero: frame {:?} word {} = {:#x}",
-            frame,
-            i,
-            v
-        );
-    }
-}
-
 /// Offer a freed level-0 frame to this cpu's cache. Returns whether it was taken.
 ///
 /// A refusal is not an error and the caller must free the frame to the physical allocator as it
@@ -957,9 +913,9 @@ pub fn free_one(frame: FrameRef) -> bool {
 /// `known_zero` is a promise that nothing has written this frame since it was last zeroed. The
 /// only caller that passes `true` is `FrameAllocator`'s drop, and only for frames left in its
 /// `precharge` list: those were never popped by `try_allocate`, so they were never handed to a
-/// consumer. See [`VERIFY_KNOWN_ZERO`] for the check that keeps that honest.
+/// consumer.
 pub fn free_one_hinted(frame: FrameRef, known_zero: bool) -> bool {
-    if !ENABLED || !ready() || !tls_ready() {
+    if !ready() || !tls_ready() {
         return false;
     }
     // A freed frame's contents are whatever its last owner left, so it always goes to the dirty
@@ -971,9 +927,6 @@ pub fn free_one_hinted(frame: FrameRef, known_zero: bool) -> bool {
     // is in, and a flag left set survives hand-out, survives being dirtied, and then tells
     // `raw_free_frame` to file a dirty page on the physical allocator's zeroed free list.
     let clean = if known_zero {
-        if VERIFY_KNOWN_ZERO {
-            verify_zero(frame);
-        }
         stat::FREE_KNOWN_ZERO.fetch_add(1, Ordering::Relaxed);
         true
     } else if should_zero_on_free() {
@@ -1245,9 +1198,6 @@ static TRIM_WANTED: AtomicUsize = AtomicUsize::new(usize::MAX);
 /// Note that memory pressure changed. Cheap enough for the band-transition path: one relaxed
 /// store, no lock, no allocation, and safe to call from inside a free.
 pub fn request_trim(state: super::tracker::MemoryState) {
-    if !ENABLED {
-        return;
-    }
     TRIM_WANTED.store(state as usize, Ordering::Relaxed);
 }
 
@@ -1258,7 +1208,7 @@ pub fn request_trim(state: super::tracker::MemoryState) {
 /// already does the equivalent job for the physical allocator. Trim first: giving memory back
 /// under pressure outranks preparing more of it.
 pub fn service() -> bool {
-    if !ENABLED || !ready() {
+    if !ready() {
         return false;
     }
     let wanted = TRIM_WANTED.swap(usize::MAX, Ordering::Relaxed);
@@ -1341,7 +1291,7 @@ pub fn trim(state: super::tracker::MemoryState) {
 /// Takes the depot lock. That is affordable exactly because of where it is called: the caller is
 /// about to take the physical allocator's lock, which costs orders more.
 pub fn headroom() -> usize {
-    if !ENABLED || !ready() {
+    if !ready() {
         return 0;
     }
     // Net of [`ZERO_RESERVE`], for the same reason the free path is: an over-fetch sized against

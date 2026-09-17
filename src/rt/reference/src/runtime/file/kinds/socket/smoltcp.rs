@@ -32,16 +32,9 @@ use crate::runtime::file::kinds::socket::engine::{
 
 pub type SocketBuffer<'a> = RingBuffer<'a, u8>;
 
-/// Which branch of `UdpSocket::read_from` produced a WouldBlock, and whether `recv()` itself
-/// failed after `can_recv()` said yes. The three together account for every read outcome.
+/// `UdpSocket::read_from` outcomes after `can_recv()` said yes: whether `recv()` itself failed.
 static UDP_RECV_OK: AtomicU64 = AtomicU64::new(0);
 static UDP_RECV_ERR: AtomicU64 = AtomicU64::new(0);
-static UDP_NOT_READY: AtomicU64 = AtomicU64::new(0);
-
-/// UDPNOTREADY socket-identity dump (readiness-loss hunt, resolved: the bug was in
-/// `net_test_peer`'s kevent receipt handling). It walks the whole socketset under the core lock,
-/// so keep it off for any measurement.
-const UDP_NOTREADY_DIAG: bool = false;
 
 const RX_BUF_SIZE: usize = 65536;
 /// Parity with rx, up from 8 KiB.
@@ -830,35 +823,6 @@ impl UdpSocket {
                 self.inner.rx_shutdown.store(true, Ordering::SeqCst);
                 Ok((0, None))
             } else {
-                let n = UDP_NOT_READY.fetch_add(1, Ordering::Relaxed) + 1;
-                if UDP_NOTREADY_DIAG && n.is_power_of_two() {
-                    // smoltcp's own trace names sockets by *endpoint*, so two sockets bound to the
-                    // same address print identically. If ingress enqueued into one handle and this
-                    // read polls another, can_recv() is honest and the datagrams are simply in a
-                    // socket nobody reads. Print the handle we are reading and every UDP socket in
-                    // the set with its endpoint, so the two can be compared directly.
-                    let me = self.inner.socket_handle;
-                    let mut others = Vec::new();
-                    for (h, sock) in core.socket_iter() {
-                        if let smoltcp::socket::Socket::Udp(u) = sock {
-                            others.push(format!(
-                                "{:?}{}={:?}/canrecv{}",
-                                h,
-                                if h == me { "*" } else { "" },
-                                u.endpoint(),
-                                u.can_recv() as u8
-                            ));
-                        }
-                    }
-                    tracing::warn!(
-                        "UDPNOTREADY n={} reading={:?} ok={} err={} udpsocks=[{}]",
-                        n,
-                        me,
-                        UDP_RECV_OK.load(Ordering::Relaxed),
-                        UDP_RECV_ERR.load(Ordering::Relaxed),
-                        others.join(" ")
-                    );
-                }
                 Err(ErrorKind::WouldBlock.into())
             }
         })

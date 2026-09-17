@@ -13,7 +13,7 @@ use twizzler_security::{Cap, CtxMapItemType, SecCtxBase, SecCtxFlags, VerifyingK
 
 use crate::{
     memory::context::{
-        KernelMemoryContext, KernelObject, KernelObjectHandle, ObjectContextInfo, kernel_context,
+        KernelMemoryContext, KernelObjectHandle, ObjectContextInfo, kernel_context,
         virtmem::with_each_context,
     },
     mutex::Mutex,
@@ -67,7 +67,6 @@ pub struct SecurityContext {
     /// cache. Nothing but a pointer move happens while it is held, on either path.
     cache: Spinlock<Arc<BTreeMap<ObjID, PermsInfo>>>,
     attached_count: AtomicUsize,
-    active_count: AtomicUsize,
 }
 
 impl Drop for SecurityContext {
@@ -137,16 +136,6 @@ impl SecurityContext {
         .ok()
     }
 
-    pub fn inc_active_count(&self) {
-        self.active_count
-            .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-    }
-
-    pub fn dec_active_count(&self) {
-        self.active_count
-            .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
-    }
-
     pub fn inc_attached_count(&self) {
         self.attached_count
             .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
@@ -155,10 +144,6 @@ impl SecurityContext {
     pub fn dec_attached_count(&self) {
         self.attached_count
             .fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
-    }
-
-    pub fn active_count(&self) -> usize {
-        self.active_count.load(core::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn attached_count(&self) -> usize {
@@ -237,9 +222,6 @@ impl SecurityContext {
                 LookupResult::Found(v_obj) => {
                     let k_ctx = kernel_context();
 
-                    crate::memory::context::kobjcensus::record(
-                        crate::memory::context::kobjcensus::Site::VerifyKey,
-                    );
                     let handle =
                         k_ctx.insert_kernel_object::<VerifyingKey>(ObjectContextInfo::new(
                             v_obj,
@@ -346,7 +328,6 @@ impl SecurityContext {
             obj,
             cache: Spinlock::new(Arc::new(BTreeMap::new())),
             attached_count: AtomicUsize::new(0),
-            active_count: AtomicUsize::new(0),
         }
     }
 
@@ -483,9 +464,6 @@ pub fn get_sctx_stats() -> SctxStats {
     let mut attached_count = 0;
     for (_, ctx) in global.iter() {
         attached_count += ctx.attached_count();
-        // The counter arm of the A/B in `thread::sctx`; when it is maintained it is authoritative
-        // and the thread walk above is the approximation, not the other way round.
-        active_count = active_count.max(ctx.active_count());
     }
     SctxStats {
         nr_sctx: global.len(),
@@ -506,7 +484,7 @@ static KERNEL_SECCTX: Once<SecurityContextRef> = Once::new();
 /// registers an `ArchContext` under `KERNEL_SCTX` at construction. Resolving it rather than
 /// failing is what lets `VirtContext::map_object` install page-table entries for sctx-0 mappings
 /// -- the monitor's, which is nearly every mapping in the system -- instead of leaving all of them
-/// to the fault path (mapperf.md).
+/// to the fault path.
 pub fn kernel_sctx() -> SecurityContextRef {
     KERNEL_SECCTX
         .call_once(|| Arc::new(SecurityContext::new(None)))
@@ -523,7 +501,7 @@ pub fn get_sctx(id: ObjID) -> twizzler_rt_abi::Result<SecurityContextRef> {
     }
     // Hit path: one lock and a clone. `obj` below is used only by the miss arm, so an unconditional
     // `lookup_object` made every hit pay a global object-table lookup for a value it discarded --
-    // and this is on the gate-entry path (pagerperf.md 15: `sys_sctx_attach` costs ~30 us "all to
+    // and this is on the gate-entry path (`sys_sctx_attach` costs ~30 us "all to
     // conclude the thread is already attached").
     //
     // Checking the cache first is only safe because the miss arm below builds its kernel object

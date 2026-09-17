@@ -195,15 +195,11 @@ pub(super) fn live_requests() -> usize {
     LIVE.load(Ordering::Relaxed)
 }
 
-pub(super) struct InflightManager {
+pub(crate) struct InflightManager {
     req_map: RBTree<RequestMapAdapter>,
 }
 
 impl InflightManager {
-    /// Whether a page-data request may coalesce onto one covering only the pages its caller blocks
-    /// on, rather than one covering its whole widened range. See `page_data_request`.
-    const COALESCE_ON_REQUIRED: bool = true;
-
     pub fn new() -> Self {
         Self {
             req_map: RBTree::new(RequestMapAdapter::NEW),
@@ -323,19 +319,17 @@ impl InflightManager {
         // What this gives up is that fault's read-ahead: its speculative pages are never asked for.
         // `installed` in the profile is the check on whether that costs anything -- it held flat at
         // ~11.5k when duplicate transfer was first removed, and a drop here would mean this bought
-        // fewer duplicates with less coverage. Hence the switch: one rebuild reverts it.
-        if Self::COALESCE_ON_REQUIRED {
-            // Only when `required` actually falls in this range. `ensure_in_core` hands the same
-            // required range to every sub-request of a split, and a sub-range that does not contain
-            // it is pure speculation that nobody is waiting for -- coalescing that onto an
-            // unrelated request would drop the read-ahead without anyone having asked to wait.
-            if let Some((rp, rl)) =
-                required.filter(|(p, l)| *p < start + len && *p + *l > start && *l > 0)
-            {
-                if let Some((_, key)) = self.covering_page_data(id, rp, rl) {
-                    super::profile::PAGER_PROFILE.covered_required();
-                    return key;
-                }
+        // fewer duplicates with less coverage.
+        // Only when `required` actually falls in this range. `ensure_in_core` hands the same
+        // required range to every sub-request of a split, and a sub-range that does not contain
+        // it is pure speculation that nobody is waiting for -- coalescing that onto an
+        // unrelated request would drop the read-ahead without anyone having asked to wait.
+        if let Some((rp, rl)) =
+            required.filter(|(p, l)| *p < start + len && *p + *l > start && *l > 0)
+        {
+            if let Some((_, key)) = self.covering_page_data(id, rp, rl) {
+                super::profile::PAGER_PROFILE.covered_required();
+                return key;
             }
         }
 
@@ -424,7 +418,7 @@ impl InflightManager {
         // A range something else is already fetching in full is not worth a second transfer: wait
         // on the request that covers it. Neither lookup above can see this -- an
         // overlapping range never compares equal to the range containing it -- and it is
-        // where the duplicate pages in completions come from (`INPROG.md`: a fifth of what
+        // where the duplicate pages in completions come from (a fifth of what
         // the pager delivers). The waiting works out the same as the prefetch case: the
         // covering request's key is what `setup_wait` compares against and what its
         // completion is removed under.

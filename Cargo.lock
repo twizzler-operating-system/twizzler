@@ -1844,6 +1844,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "debug"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "gdbstub",
+ "gdbstub_arch",
+ "miette",
+ "monitor-api",
+ "tracing",
+ "tracing-log",
+ "tracing-subscriber",
+ "twizzler",
+ "twizzler-abi",
+ "twizzler-rt-abi",
+]
+
+[[package]]
 name = "defmt"
 version = "0.3.100"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2724,6 +2741,28 @@ name = "gcd"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d758ba1b47b00caf47f24925c0074ecb20d6dfcffe7f6d53395c0465674841a"
+
+[[package]]
+name = "gdbstub"
+version = "0.7.8"
+dependencies = [
+ "bitflags 2.9.1",
+ "cfg-if 1.0.4",
+ "log",
+ "managed",
+ "num-traits",
+ "paste",
+]
+
+[[package]]
+name = "gdbstub_arch"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22dde0e1b68787036ccedd0b1ff6f953527a0e807e571fbe898975203027278f"
+dependencies = [
+ "gdbstub",
+ "num-traits",
+]
 
 [[package]]
 name = "generator"
@@ -6676,7 +6715,6 @@ dependencies = [
  "miette",
  "naming",
  "rand 0.10.2",
- "sgtest",
  "tracing",
  "tracing-subscriber",
  "twizzler",
@@ -7438,13 +7476,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sgtest"
-version = "0.1.0"
-dependencies = [
- "secgate",
-]
-
-[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7634,6 +7665,10 @@ name = "simd-adler32"
 version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e320a6c5ad31d271ad523dcf3ad13e2767ad8b1cb8f047f75a8aeaf8da139da2"
+
+[[package]]
+name = "simdtest"
+version = "0.1.0"
 
 [[package]]
 name = "simple-bytes"

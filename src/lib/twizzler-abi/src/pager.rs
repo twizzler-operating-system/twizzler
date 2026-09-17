@@ -96,9 +96,9 @@ pub enum KernelCommand {
     /// The third range is the *required* subrange: the pages a thread is actually blocked on, as
     /// opposed to the widening `ensure_in_core_pager` adds around them to install a large page and
     /// save later faults. The pager transfers and completes it first, so the waiter can be woken
-    /// after tens of kilobytes rather than after the whole request (`pagerperf.md` 11) -- except
+    /// after tens of kilobytes rather than after the whole request -- except
     /// where cutting the transfer that small would cost the region its large-page merge, which the
-    /// pager decides for itself (`largepager.md`). Empty means
+    /// pager decides for itself. Empty means
     /// "no part of this is more urgent than any other" -- a prefetch, or a caller that needs all
     /// of it -- and the request is served in address order.
     PageDataReq(ObjID, ObjectRange, PagerFlags, ObjectRange),
@@ -255,7 +255,7 @@ bitflags::bitflags! {
         /// never filled the field -- and reading the second as the first serves zeros over real
         /// data. It did: setting the kernel's length from an unflagged `size` made every stored
         /// object look empty, and the guest died with `failed to enumerate dependencies for
-        /// libtwz_rt.so` because its libraries read back as zeros (`pagerperf.md` 20).
+        /// libtwz_rt.so` because its libraries read back as zeros.
         const SIZE_VALID = 8;
     }
 }

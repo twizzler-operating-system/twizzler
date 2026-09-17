@@ -257,7 +257,6 @@ fn debug_dump(verbose: bool) {
     );
 
     // Lock-free counters first.
-    crate::spinlock::spinstat::report();
     crate::thread::locktrack::diag::print_counters(true);
     crate::processor::sched::schedmon_dump(0);
     crate::processor::report_exited_backlog();
@@ -276,16 +275,13 @@ fn debug_dump(verbose: bool) {
     crate::clock::print_info();
     crate::thread::check_system_hang();
     crate::thread::check_orphan_threads();
-    crate::thread::locktrack::check_timed_out_mutexes();
     crate::pager::check_timed_out_requests();
 
     if verbose {
         crate::memory::pagetables::print_switch_counters();
         crate::memory::pagetables::print_shootdown_counters();
         crate::memory::context::virtmem::fault::print_fault_profile();
-        crate::interrupt::print_interrupt_profile();
         crate::pager::print_pager_profile();
-        print_syscall_profile();
         // Last, and only here: one block per object, which on a busy system is thousands.
         crate::obj::print_all_objects();
     }
@@ -586,16 +582,6 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
             // every unmap, to reap the at-most-one object this unmap could have made reapable.
             // Reaping is driven by the bsp idle loop instead (see `main`), and by
             // `ObjectControlCmd::Delete`, which still scans inline.
-            //
-            // A/B arm selector; see entryperf.md, §7 and "§8 under suspicion". `true` restores the
-            // synchronous sweep, i.e. pre-§7 behaviour. The deferral is the one change in this tree
-            // whose shape can plausibly produce a multi-millisecond constant -- reclaim that waits
-            // on the bsp idle loop rather than happening inline -- which is why it is tested first
-            // and the interrupt-mask rework is eliminated on arithmetic instead.
-            const SCAN_ON_UNMAP: bool = false;
-            if SCAN_ON_UNMAP {
-                crate::obj::scan_deleted();
-            }
             let (code, val) = convert_result_to_codes(result, zero_ok, one_err);
             context.set_return_values(code, val);
         }
@@ -609,7 +595,6 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
                 crate::memory::pagetables::print_switch_counters();
                 crate::memory::pagetables::print_shootdown_counters();
                 crate::memory::context::virtmem::unmap_census::print();
-                crate::memory::context::virtmem::slotmemo::print();
                 sync::syncbatch::print();
                 sync::requeuebug::print();
                 crate::mutex::contend::print();
@@ -624,34 +609,19 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
                 // as the store's in-memory cache, which is write-back: without this the bytes are
                 // complete in every in-memory sense and still absent from the disk.
                 crate::pager::shutdown_pager();
-                crate::obj::pagetables::tlbfix::print_stats();
                 crate::memory::pagetables::nonleaf_cow_print();
-                print_syscall_profile();
                 crate::memory::context::virtmem::fault::print_fault_profile();
-                crate::interrupt::print_interrupt_profile();
                 crate::pager::print_pager_profile();
                 crate::processor::sched::wakestats::print();
                 crate::processor::sched::wakesrc::print();
                 crate::processor::sched::print_kernel_threads();
                 crate::memory::frame::politestats::print();
-                crate::interrupt::irqoff::print();
-                crate::memory::context::virtmem::mapprofile::print();
-                crate::memory::context::virtmem::unmapprofile::print();
-                crate::memory::context::virtmem::heapprofile::print();
                 crate::obj::id::checkidstats::print();
-                object::mapstats::print();
-                object::createprofile::print();
-                crate::obj::coldfieldstats::print();
-                crate::obj::reapstats::print();
                 object::copystats::print();
                 crate::trace::mgr::signalstats::print();
                 crate::trace::mgr::enqueuestats::print();
                 crate::trace::sink::resolvestats::print();
-                crate::memory::pagetables::table::ptcountdrift::print();
-                crate::memory::pagetables::table::zeroswap::print();
-                crate::memory::pagetables::zeroprobe::print();
                 crate::memory::framecache::stat::print();
-                crate::memory::pagetables::table::wbprobe::print();
                 crate::arch::debug_shutdown(context.arg1::<u64>() as u32);
             }
             logln!(
@@ -959,17 +929,7 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
 /// Turned on by the first reader ([`get_syscall_stats`]) and by the syscall-exit trace point, so
 /// the very first `SysInfo` after boot reports counts with empty timings and every later one is
 /// populated.
-static TIMING_ON: AtomicBool = AtomicBool::new(SYSCALL_PROFILE);
-
-/// Collect the full per-syscall breakdown from boot -- timings on, `ThreadCtrl` split by command,
-/// `ThreadSync` split by op kind, and every count attributed to both the calling security context
-/// and the calling pc -- and dump it at `debug_shutdown`.
-///
-/// Off by default: it forces [`TIMING_ON`] and adds a lock-protected update per syscall, so the
-/// timings it reports are inflated by its own cost. It answers "what is this workload asking the
-/// kernel for, and from where", which is the question that found the address-space scan in
-/// `bootstrap` -- 88% of every boot's syscalls.
-pub const SYSCALL_PROFILE: bool = false;
+static TIMING_ON: AtomicBool = AtomicBool::new(false);
 
 #[inline]
 fn timing_on() -> bool {
@@ -982,8 +942,7 @@ fn timing_on() -> bool {
 /// being traced.
 #[inline]
 fn entry_snapshot_wanted() -> bool {
-    SYSCALL_PROFILE
-        || TRACE_MGR.any_enabled(TraceKind::Thread, THREAD_SYSCALL_ENTRY)
+    TRACE_MGR.any_enabled(TraceKind::Thread, THREAD_SYSCALL_ENTRY)
         || TRACE_MGR.any_enabled(TraceKind::Thread, THREAD_SYSCALL_EXIT)
 }
 
@@ -1011,7 +970,7 @@ pub fn syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
     do_syscall_entry(context);
     let (r1, r2) = context.get_return_values();
     let duration = start.map(|start| (Instant::now() - start).into());
-    add_syscall_stat_sample(num, data.as_ref(), duration);
+    add_syscall_stat_sample(num, duration);
     if let Some(data) = data {
         trace_syscall_exit(data, [r1, r2], duration);
     }
@@ -1026,7 +985,6 @@ pub fn syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
 /// for `SysInfo`.
 pub struct SyscallTracking {
     per_syscall_stats: [TimeStatCollector; Syscall::NumSyscalls as usize],
-    prof: SyscallProfile,
 }
 
 /// The unconditional half of the per-cpu syscall accounting: monotonic counts, updated with
@@ -1052,86 +1010,15 @@ impl SyscallCounts {
     }
 }
 
-/// Instrumentation half of [`SyscallTracking`], live only under [`SYSCALL_PROFILE`].
-pub struct SyscallProfile {
-    /// `ThreadCtrl` by command number.
-    thread_ctrl: [usize; NR_THREAD_CTRL],
-    /// `ThreadSync` ops, by kind, summed over calls.
-    sync_sleeps: usize,
-    sync_wakes: usize,
-    /// Calls carrying at least one sleep op, and the largest op array seen.
-    sync_sleeping_calls: usize,
-    sync_max_len: usize,
-    /// Per-security-context attribution, i.e. per compartment.
-    sctx: [(ObjID, [usize; Syscall::NumSyscalls as usize]); NR_SCTX_SLOTS],
-    /// Hottest call sites (userspace pc) per syscall.
-    sites: [[(u64, usize); NR_SITE_SLOTS]; Syscall::NumSyscalls as usize],
-}
-
-const NR_THREAD_CTRL: usize = 24;
-const NR_SCTX_SLOTS: usize = 16;
-const NR_SITE_SLOTS: usize = 6;
-
 impl SyscallTracking {
     pub fn new() -> Self {
         Self {
             per_syscall_stats: core::array::from_fn(|_| TimeStatCollector::new()),
-            prof: SyscallProfile {
-                thread_ctrl: [0; NR_THREAD_CTRL],
-                sync_sleeps: 0,
-                sync_wakes: 0,
-                sync_sleeping_calls: 0,
-                sync_max_len: 0,
-                sctx: core::array::from_fn(|_| (ObjID::new(0), [0; Syscall::NumSyscalls as usize])),
-                sites: [[(0, 0); NR_SITE_SLOTS]; Syscall::NumSyscalls as usize],
-            },
         }
     }
 }
 
-impl SyscallProfile {
-    fn note(&mut self, entry: &SyscallEntryEvent, sctx: ObjID) {
-        let syscall: Syscall = entry.num;
-        match syscall {
-            Syscall::ThreadCtrl => {
-                let cmd = entry.args[2] as usize;
-                if cmd < NR_THREAD_CTRL {
-                    self.thread_ctrl[cmd] += 1;
-                }
-            }
-            // ThreadSync's op kinds are counted by the sync path itself (`note_thread_sync_ops`),
-            // which has the validated array; only the length is visible from here.
-            Syscall::ThreadSync => {
-                self.sync_max_len = self.sync_max_len.max(entry.args[1] as usize)
-            }
-            _ => {}
-        }
-        // First-come slots, so a caller that starts late can be missed; with six of them and this
-        // few distinct call sites per syscall, in practice they are not.
-        let sites = &mut self.sites[syscall as usize];
-        if let Some(site) = sites.iter_mut().find(|s| s.0 == entry.ip || s.1 == 0) {
-            site.0 = entry.ip;
-            site.1 += 1;
-        }
-
-        for slot in self.sctx.iter_mut() {
-            if slot.0 == sctx || slot.0.raw() == 0 {
-                slot.0 = sctx;
-                slot.1[syscall as usize] += 1;
-                return;
-            }
-        }
-    }
-}
-
-/// `entry` is present only when something asked for the full snapshot (see
-/// [`entry_snapshot_wanted`]); the counts need the number alone, which is why it is passed
-/// separately.
-fn add_syscall_stat_sample(
-    syscall: Syscall,
-    entry: Option<&SyscallEntryEvent>,
-    duration: Option<TimeSpan>,
-) {
+fn add_syscall_stat_sample(syscall: Syscall, duration: Option<TimeSpan>) {
     // The unconditional counts are lock-free; see [`SyscallCounts`]. This used to take the per-cpu
     // spinlock -- an interrupt mask and a ticket acquisition -- on every syscall exit to bump them.
     let counts = &current_processor().syscall_counts;
@@ -1141,164 +1028,14 @@ fn add_syscall_stat_sample(
     if let Some(thread) = current_thread_ref() {
         thread.stats.syscalls.fetch_add(1, Ordering::Relaxed);
     }
-    if duration.is_none() && !SYSCALL_PROFILE {
+    let Some(duration) = duration else {
         return;
-    }
-    // Outside the lock: reading it takes one of its own, and it is only wanted for instrumentation.
-    let sctx = if SYSCALL_PROFILE {
-        current_thread_ref()
-            .map(|t| t.active_sctx_id())
-            .unwrap_or(ObjID::new(0))
-    } else {
-        ObjID::new(0)
     };
     // `Spinlock::lock` masks interrupts for the guard's lifetime, which is what makes this per-cpu
     // record uncontended by construction: only this cpu touches it, and it cannot be preempted off
     // it mid-update.
     let mut stats = current_processor().syscall_stats.lock();
-    if let Some(duration) = duration {
-        stats.per_syscall_stats[syscall as usize].add_sample(duration);
-    }
-    if SYSCALL_PROFILE {
-        // `entry_snapshot_wanted` returns true whenever SYSCALL_PROFILE is set, so this is Some.
-        if let Some(entry) = entry {
-            stats.prof.note(entry, sctx);
-        }
-    }
-}
-
-/// Count one `sys_thread_sync` call's ops by kind. See [`SYSCALL_PROFILE`].
-pub fn note_thread_sync_ops(ops: &[twizzler_abi::syscall::ThreadSync]) {
-    if !SYSCALL_PROFILE {
-        return;
-    }
-    let sleeps = ops
-        .iter()
-        .filter(|op| matches!(op, twizzler_abi::syscall::ThreadSync::Sleep(..)))
-        .count();
-    // See `add_syscall_stat_sample`: the lock already masks interrupts.
-    let mut stats = current_processor().syscall_stats.lock();
-    stats.prof.sync_sleeps += sleeps;
-    stats.prof.sync_wakes += ops.len() - sleeps;
-    if sleeps > 0 {
-        stats.prof.sync_sleeping_calls += 1;
-    }
-}
-
-/// Dump the [`SYSCALL_PROFILE`] breakdown, most-frequent first. Called from `debug_shutdown`.
-pub fn print_syscall_profile() {
-    if !SYSCALL_PROFILE {
-        return;
-    }
-    let stats = get_syscall_stats();
-    let mut order: alloc::vec::Vec<usize> = (0..Syscall::NumSyscalls as usize).collect();
-    order.sort_unstable_by_key(|i| core::cmp::Reverse(stats.nr_syscalls_per_type[*i]));
-
-    logln!("== syscall profile: {} total ==", stats.nr_syscalls);
-    for i in order {
-        let count = stats.nr_syscalls_per_type[i];
-        if count == 0 {
-            continue;
-        }
-        let t = &stats.syscall_times[i];
-        logln!(
-            "  {:>7} {:>4}permille  mean {:>7} ns  max {:>9} ns  total {:>8} us  {:?}",
-            count,
-            count * 1000 / stats.nr_syscalls.max(1),
-            t.mean.as_nanos(),
-            t.max.as_nanos(),
-            (t.mean.as_nanos() as usize * count) / 1000,
-            Syscall::from(i)
-        );
-    }
-
-    let mut sites = [[(0u64, 0usize); NR_SITE_SLOTS]; Syscall::NumSyscalls as usize];
-    let mut thread_ctrl = [0usize; NR_THREAD_CTRL];
-    let (mut sleeps, mut wakes, mut sleeping_calls, mut max_len) = (0, 0, 0, 0);
-    let mut sctx: alloc::vec::Vec<(ObjID, [usize; Syscall::NumSyscalls as usize])> =
-        alloc::vec::Vec::new();
-    with_each_active_processor(|p| {
-        let stats = p.syscall_stats.lock();
-        for i in 0..NR_THREAD_CTRL {
-            thread_ctrl[i] += stats.prof.thread_ctrl[i];
-        }
-        sleeps += stats.prof.sync_sleeps;
-        wakes += stats.prof.sync_wakes;
-        sleeping_calls += stats.prof.sync_sleeping_calls;
-        max_len = core::cmp::max(max_len, stats.prof.sync_max_len);
-        for (s, per_cpu) in sites.iter_mut().zip(stats.prof.sites.iter()) {
-            for (ip, count) in per_cpu.iter().filter(|s| s.1 > 0) {
-                if let Some(slot) = s.iter_mut().find(|e| e.0 == *ip || e.1 == 0) {
-                    slot.0 = *ip;
-                    slot.1 += count;
-                }
-            }
-        }
-        for (id, counts) in stats.prof.sctx.iter() {
-            if id.raw() == 0 {
-                continue;
-            }
-            if let Some(e) = sctx.iter_mut().find(|e| e.0 == *id) {
-                for i in 0..Syscall::NumSyscalls as usize {
-                    e.1[i] += counts[i];
-                }
-            } else {
-                sctx.push((*id, *counts));
-            }
-        }
-    });
-
-    logln!("== ThreadCtrl by command ==");
-    let mut order: alloc::vec::Vec<usize> = (0..NR_THREAD_CTRL).collect();
-    order.sort_unstable_by_key(|i| core::cmp::Reverse(thread_ctrl[*i]));
-    for i in order {
-        if thread_ctrl[i] == 0 {
-            continue;
-        }
-        logln!("  {:>7}  cmd {}", thread_ctrl[i], i);
-    }
-    logln!(
-        "== ThreadSync: {} calls, {} sleep ops, {} wake ops, {} calls with a sleep, max array {} ==",
-        stats.nr_syscalls_per_type[Syscall::ThreadSync as usize],
-        sleeps,
-        wakes,
-        sleeping_calls,
-        max_len
-    );
-
-    logln!("== call sites (pc, and offset within its object) ==");
-    for i in 0..Syscall::NumSyscalls as usize {
-        if stats.nr_syscalls_per_type[i] == 0 {
-            continue;
-        }
-        let mut slots = sites[i];
-        slots.sort_unstable_by_key(|s| core::cmp::Reverse(s.1));
-        for (ip, count) in slots.iter().filter(|s| s.1 > 0) {
-            logln!(
-                "  {:>7}  {:?} at {:x} (slot {} off {:x})",
-                count,
-                Syscall::from(i),
-                ip,
-                ip / twizzler_abi::object::MAX_SIZE as u64,
-                ip % twizzler_abi::object::MAX_SIZE as u64
-            );
-        }
-    }
-
-    logln!("== syscalls by security context ==");
-    sctx.sort_unstable_by_key(|e| core::cmp::Reverse(e.1.iter().sum::<usize>()));
-    for (id, counts) in sctx {
-        let total: usize = counts.iter().sum();
-        logln!("  sctx {}: {} total", id, total);
-        let mut order: alloc::vec::Vec<usize> = (0..Syscall::NumSyscalls as usize).collect();
-        order.sort_unstable_by_key(|i| core::cmp::Reverse(counts[*i]));
-        for i in order.into_iter().take(6) {
-            if counts[i] == 0 {
-                continue;
-            }
-            logln!("      {:>7}  {:?}", counts[i], Syscall::from(i));
-        }
-    }
+    stats.per_syscall_stats[syscall as usize].add_sample(duration);
 }
 
 /// Total syscalls executed since boot. The liveness signal for
@@ -1311,20 +1048,13 @@ pub fn nr_syscalls() -> usize {
 }
 
 /// Per-syscall (count, total nanoseconds) summed over cpus, for [`crate::perfmark`] to difference.
-/// A/B: restore the old behaviour in which taking a snapshot switched timing on, to measure what
-/// the instrument was costing every number ever recorded with it.
-pub const SNAPSHOT_ENABLES_TIMING: bool = false;
-
 pub fn syscall_snapshot() -> [(usize, u64); Syscall::NumSyscalls as usize] {
-    if SNAPSHOT_ENABLES_TIMING {
-        TIMING_ON.store(true, Ordering::Relaxed);
-    }
     // Deliberately does NOT set `TIMING_ON`, unlike `get_syscall_stats`. `crate::perfmark::mark`
     // calls this, every sysbench bench brackets its body with a mark, and `Mark::new` runs before
     // `b.iter()` -- so switching timing on here put two clock reads and a per-cpu lock update on
     // every syscall of every bench, including the first. The instrument enabled the overhead it
     // then reported. Counts are collected unconditionally and are what the marker mostly uses;
-    // ask for times with `SYSCALL_PROFILE`.
+    // ask for times with the trace subsystem.
     let mut out = [(0usize, 0u64); Syscall::NumSyscalls as usize];
     with_each_active_processor(|p| {
         let stats = p.syscall_stats.lock();

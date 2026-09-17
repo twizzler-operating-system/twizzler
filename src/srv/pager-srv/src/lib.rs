@@ -1,11 +1,7 @@
 #![feature(io_error_more)]
-#![feature(test)]
 #![feature(thread_local)]
 
-use std::{
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
+use std::sync::{Arc, OnceLock};
 
 use disk::Disk;
 use memstore::virtio::init_virtio;
@@ -28,9 +24,7 @@ use crate::data::PagerData;
 
 mod data;
 mod disk;
-mod dispatch_stats;
 mod handle;
-mod heapdiag;
 mod helpers;
 // in-progress
 #[allow(unused)]
@@ -38,7 +32,6 @@ mod memstore;
 mod nvme;
 mod physrw;
 mod request_handle;
-mod stats;
 mod threads;
 mod watchdog;
 
@@ -151,7 +144,6 @@ impl PagerContext {
 static PAGER_CTX: OnceLock<PagerContext> = OnceLock::new();
 
 fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
-    heapdiag::arm();
     let (rq, sq, data) = pager_init(q1, q2);
     // After pager_init, which installs the tracing subscriber the watchdog reports through.
     watchdog::start();
@@ -181,19 +173,6 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
     let _ = report_ready().unwrap();
 
     tracing::info!("pager ready");
-    heapdiag::start_sampler();
-
-    //disk::benches::bench_disk(ctx);
-    if false {
-        std::thread::spawn(|| {
-            let pager = PAGER_CTX.get().unwrap();
-            loop {
-                pager.data.print_stats();
-                pager.data.reset_stats();
-                std::thread::sleep(Duration::from_millis(1000));
-            }
-        });
-    }
 
     let bootstrap_id = ctx.paged_ostore(None).map_or(0u128, |po| {
         if let Ok(id) = po.get_config_id() {

@@ -345,7 +345,7 @@ fn schedule_thread_on_cpu(
 
     // Classified before the insert moves `thread`, and stamped on it so the latency can be read
     // when it actually reaches a cpu (`switch_to`). Whole-boot ratios could not attribute the
-    // 3-4 stalls that make every mean in `schedtime.md`; this is per wake.
+    // 3-4 stalls that make every whole-boot mean; this is per wake.
     //
     // A reinsertion is not a wake, and excluding it is load-bearing twice over. `do_schedule`
     // routes the *current* thread back through here with `is_current = false` on the REINSERT
@@ -378,8 +378,7 @@ fn schedule_thread_on_cpu(
                 // hold for a scheduling round trip plus a wake for everyone waiting. Deferred only
                 // within a class: a higher *class* preempts a holder as it always did, so realtime
                 // is never held off by a user thread.
-                if crate::mutex::MUTEX_HOLDER_PRIORITY
-                    && cur.get_mutex_count() > 0
+                if cur.get_mutex_count() > 0
                     && woken_priority.class <= cur.effective_priority().class
                 {
                     wakestats::holder_spared();
@@ -411,7 +410,7 @@ fn schedule_thread_on_cpu(
     } else {
         kind
     };
-    if kind != 0 {
+    if kind != 0 && crate::kdiag_wake() {
         thread.sched.wake_ticks.store(
             crate::instant::Instant::now().raw_ticks().max(1),
             Ordering::Relaxed,
@@ -440,7 +439,7 @@ fn schedule_thread_on_cpu(
     // millisecond at best (one tick) and a whole timeslice when it does not win the tick's
     // `rq_pri >= cur_pri` test, against hand-offs whose median is tens of microseconds.
     //
-    // At smp1 that is *every* wake in the system, which is why `schedtime.md` measures the pager's
+    // At smp1 that is *every* wake in the system, which is why measurements put the pager's
     // lane pickup at 372-456 us there while the same hop costs 25-36 us at smp4.
     //
     // Marked rather than switched: this runs inside the waker's critical section on most paths
@@ -456,7 +455,7 @@ fn schedule_thread_on_cpu(
         // || needs_reschedule(false)`), but no local wake reached it, so an idling cpu sat
         // until the next tick with a runnable thread beside it. 367-370 wakes a boot at
         // smp1, measured at ~400 us mean with a 144-146 ms outlier every run:
-        // the worst latencies anywhere in `schedtime.md`'s data, and the only class where the delay
+        // the worst latencies measured anywhere, and the only class where the delay
         // has no candidate explanation other than "nobody said to stop idling".
         wakestats::WAKE_LOCAL_IDLE => {
             wakestats::local(false, true);
@@ -996,7 +995,6 @@ fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
         cp.current_priority.store(0, Ordering::Release);
     }
     cp.reset_rebalance();
-    crate::thread::locktrack::enter_switch_window();
     // Do NOT publish `thread` as current here. `do_schedule`'s REINSERT branch can already have
     // queued it on another cpu, so publishing before this cpu owns it makes two cpus report the
     // same current thread for the whole prologue -- the cross-cpu producer behind the stale lock
@@ -1250,10 +1248,10 @@ pub fn schedule_maybe_rebalance(dt: Nanoseconds) {
 
 /// Why a woken thread does or does not get the cpu promptly.
 ///
-/// `schedtime.md` measures hand-offs stalling 1-10 ms and, having marked preempt on the local wake
-/// path to no effect, is left with two candidate explanations it cannot separate: the woken thread
-/// loses the priority comparison (so nothing ever wants to preempt for it), or it wins and the mark
-/// is repeatedly swallowed by a critical section. These distinguish them.
+/// The wake-latency investigation measured hand-offs stalling 1-10 ms and, having marked preempt on
+/// the local wake path to no effect, is left with two candidate explanations it cannot separate:
+/// the woken thread loses the priority comparison (so nothing ever wants to preempt for it), or it
+/// wins and the mark is repeatedly swallowed by a critical section. These distinguish them.
 ///
 /// A stall is several ticks, and one tick would bound the wait if the priority test passed at the
 /// tick -- so `lost_priority` being the bulk of `local` says the pager's `User + 48` boost is not
@@ -1341,8 +1339,13 @@ pub mod wakesrc {
     /// The `&'static Location` itself, as a pointer, is the key: two call sites never share one.
     static SITES: [AtomicUsize; NR] = [ZERO_U; NR];
     static COUNTS: [AtomicU64; NR] = [ZERO; NR];
+    static TOTAL: AtomicU64 = AtomicU64::new(0);
 
     pub fn note(loc: &'static Location<'static>) {
+        TOTAL.fetch_add(1, Ordering::Relaxed);
+        if !crate::kdiag_wake() {
+            return;
+        }
         let key = loc as *const _ as *const u8 as usize;
         for i in 0..NR - 1 {
             let cur = SITES[i].load(Ordering::Relaxed);
@@ -1366,12 +1369,12 @@ pub mod wakesrc {
     /// only that: `schedule_resched` charges reschedule requests to `wakeups` as well, so the two
     /// differ by roughly the preempt count.
     pub fn total() -> u64 {
-        COUNTS.iter().map(|c| c.load(Ordering::Relaxed)).sum()
+        TOTAL.load(Ordering::Relaxed)
     }
 
     pub fn print() {
         let total = total();
-        if total == 0 {
+        if total == 0 || !crate::kdiag_wake() {
             return;
         }
         logln!("== wakes by call site ({} total) ==", total);
@@ -1439,10 +1442,6 @@ pub mod wakestats {
 
     pub fn holder_spared() {
         HOLDER_SPARED.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn holder_spared_count() -> u64 {
-        HOLDER_SPARED.load(Ordering::Relaxed)
     }
 
     pub fn preempt(taken: bool) {
@@ -1531,14 +1530,14 @@ pub mod wakestats {
     }
 
     pub fn print() {
-        logln!(
-            "== preempts declined for a mutex holder (same class): {} ==",
-            HOLDER_SPARED.load(Ordering::Relaxed)
-        );
         let local = LOCAL.load(Ordering::Relaxed);
         if local == 0 && REMOTE.load(Ordering::Relaxed) == 0 {
             return;
         }
+        logln!(
+            "== preempts declined for a mutex holder (same class): {} ==",
+            HOLDER_SPARED.load(Ordering::Relaxed)
+        );
         logln!(
             "== wakes: {} local ({} marked preempt, {} lost on priority, {} onto an idle cpu), {} \
              remote ({} signalled) ==",
@@ -1593,11 +1592,9 @@ pub fn schedule_maybe_preempt() {
         return;
     }
     wakestats::preempt(true);
-    let t = crate::interrupt::profile_now();
     let cp = current_processor();
     cp.stats.preempts.fetch_add(1, Ordering::Relaxed);
     schedule(SchedFlags::PREEMPT | SchedFlags::REINSERT);
-    crate::interrupt::record_preempt(t);
 }
 
 pub fn schedule_hardtick() -> Option<u64> {
@@ -1659,11 +1656,9 @@ pub fn current_stat_ticks() -> u64 {
     STAT_TICKS.load(Ordering::SeqCst)
 }
 
-const PRINT_STATS: bool = false;
 pub fn schedule_stattick(dt: Nanoseconds) {
     schedule_maybe_rebalance(dt);
 
-    let s = STAT_COUNTER.fetch_add(1, Ordering::Relaxed);
     let cp = current_processor();
     if cp.is_bsp() {
         STAT_TICKS.fetch_add(1, Ordering::Relaxed);
@@ -1699,43 +1694,4 @@ pub fn schedule_stattick(dt: Nanoseconds) {
     }
 
     cp.rq.clock();
-
-    if PRINT_STATS && s % 200 == 0 {
-        if true {
-            logln!(
-                "STAT {}; {}({}): load {:2},{:2} (ts = {:3}ms), i {:4}, ni {:4}, sw {:4}, w {:4}, p {:4}, h {:4}, s {:4}",
-                cp.id,
-                cur.as_ref().unwrap().id(),
-                cur.unwrap().is_idle_thread(),
-                cp.current_load(),
-                cp.rq.current_timeshare_load(),
-                cp.rq.timeslice(cp.current_priority().class),
-                cp.stats.idle.load(Ordering::SeqCst),
-                cp.stats.non_idle.load(Ordering::SeqCst),
-                cp.stats.switches.load(Ordering::SeqCst),
-                cp.stats.wakeups.load(Ordering::SeqCst),
-                cp.stats.preempts.load(Ordering::SeqCst),
-                cp.stats.hardticks.load(Ordering::SeqCst),
-                cp.stats.steals.load(Ordering::SeqCst),
-            );
-        }
-        if cp.id == 0 {
-            let all_threads = ALL_THREADS.lock();
-            for t in all_threads.iter() {
-                if !t.is_idle_thread() && t.get_state() == ExecutionState::Running {
-                    logln!(
-                        "thread {} on {}: u {:4} s {:4} i {:4}, {:?}, {:x}",
-                        t.objid(),
-                        t.sched.last_cpu.load(Ordering::SeqCst),
-                        t.stats.user.load(Ordering::SeqCst),
-                        t.stats.sys.load(Ordering::SeqCst),
-                        t.stats.idle.load(Ordering::SeqCst),
-                        t.get_state(),
-                        t.flags.load(Ordering::SeqCst)
-                    );
-                }
-            }
-        }
-        //crate::clock::print_info();
-    }
 }

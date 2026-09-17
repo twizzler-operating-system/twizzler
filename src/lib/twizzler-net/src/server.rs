@@ -47,17 +47,6 @@ impl NetServer {
             .then(|| self.client_tx.comp_space_waiter())
     }
 
-    /// `has_pending_msg_from_client`'s queue half, as its two conjuncts.
-    ///
-    /// That bool collapses "nothing was submitted" and "entries are present but carry a turn the
-    /// consumer will not accept" into one false, and only the second is a fault -- entries in that
-    /// state are invisible to `receive`, so no wake can clear them. Reported by net-srv at the
-    /// instant it parks. Note this covers the submission ring only, not the `pending_client_tx`
-    /// staging set that `has_pending_msg_from_client` also consults.
-    pub fn client_tx_pending_parts(&self) -> (u64, u64, bool, bool) {
-        self.client_tx.pending_parts()
-    }
-
     pub fn has_pending_msg_from_client(&self) -> bool {
         self.client_tx.has_pending_msg()
             || self
@@ -139,21 +128,11 @@ impl NetServer {
         let msg = |s| ServerMsg {
             kind: ServerMsgKind::Tx(s),
         };
-        if !crate::NONBLOCK_POLL_QUEUE {
-            self.client_rx
-                .send_packets(packets, msg)
-                .expect("send packets");
-            return;
-        }
         // Same rule as `inject`'s short return, applied to the ring rather than the pool: a
         // backed-up client is dropped, never waited on. This runs under net-srv's `handles` lock,
         // so blocking here stalls the whole switch, not just one client.
-        match self.client_rx.try_send_packets(packets, msg) {
-            Ok(_) => {
-                crate::POLLQ_TX_SUBMITTED
-                    .fetch_add(packets.len() as u64, core::sync::atomic::Ordering::Relaxed);
-            }
-            Err(_) => crate::note_pollq(&crate::POLLQ_TX_DROPPED, "server rx dropped"),
+        if self.client_rx.try_send_packets(packets, msg).is_err() {
+            crate::note_pollq(&crate::POLLQ_TX_DROPPED, "server rx dropped");
         }
     }
 }

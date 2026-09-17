@@ -19,10 +19,7 @@ use naming_core::{
     CwdPath, GetFlags, InlinePath, NameSession, NameStore, NsNode, Result, BUFFER_SLOT_SIZE,
     PATH_MAX,
 };
-use secgate::{
-    util::{Descriptor, HandleMgr, SimpleBuffer},
-    TwzError,
-};
+use secgate::util::{Descriptor, HandleMgr, SimpleBuffer};
 use tracing::Level;
 use twizzler::{error::SecurityError, object::ObjectHandle};
 use twizzler_abi::{
@@ -259,11 +256,6 @@ fn get_kernel_init_info() -> &'static KernelInitInfo {
 // How would this work if I changed the root while handles were open?
 #[secgate::entry(lib = "naming-core")]
 pub fn namer_start(bootstrap: ObjID) -> Result<ObjID> {
-    // The leak instruments below (census, track, NAMING-* reports, GETPHASE) are from the
-    // concluded ~134KB-per-spawn retention hunt; they stay available behind `--diag=naming`.
-    if diag_enabled() {
-        heap_census_arm();
-    }
     // Anyone can call this gate; a second call must not unwind out of an extern "C" entry.
     let _ = tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
@@ -349,8 +341,6 @@ pub fn open_handle() -> Result<Descriptor> {
     };
     if n % 32 == 0 && diag_enabled() {
         let (ns, names, order, pinned) = naming_core::cache_stats();
-        heap_census_line();
-        track_report();
         heap_objects_line();
         base_chunk_line();
         twizzler_abi::klog_println!(
@@ -485,20 +475,15 @@ pub fn link_inline(desc: Descriptor, path: InlinePath, link: InlinePath) -> Resu
 
 #[secgate::entry(lib = "naming-core")]
 pub fn get_inline(desc: Descriptor, path: InlinePath, flags: GetFlags) -> Result<NsNode> {
-    let t_entry = getphase::start();
     let client = client_for(desc)?;
-    let t_lookup = getphase::lap(&t_entry);
     let session = client.session();
-    let t_innerlock = getphase::lap(&t_entry);
 
     // `as_str`, not `to_path`: the path is already sitting in the gate's arguments and
     // `NameSession::get` wants a `&str` back out of whatever it is handed, so the `PathBuf` was an
     // allocate-and-free per lookup purely to change type. Kept because it is less work, not because
     // it is faster -- A/B'd at four rounds a side and the effect is below this instrument's
     // resolution (22 in this file).
-    let res = session.get(path.as_str()?, flags);
-    getphase::record(t_lookup, t_innerlock, getphase::lap(&t_entry));
-    res
+    session.get(path.as_str()?, flags)
 }
 
 #[secgate::entry(lib = "naming-core")]
@@ -666,124 +651,11 @@ pub fn enumerate_names_nsid(
     skip: usize,
     count: usize,
 ) -> Result<usize> {
-    let t_lock = srvenumstats::t0();
     let client = client_for(desc)?;
-    let lock_ns = srvenumstats::ns(t_lock);
-
-    let t_items = srvenumstats::t0();
     let nodes = client
         .session()
         .enumerate_namespace_nsid(id, skip, slot_entry_cap(count))?;
-    let items_ns = srvenumstats::ns(t_items);
-
-    let t_write = srvenumstats::t0();
-    let written = write_enumeration(&client, offset, &nodes)?;
-    srvenumstats::record(lock_ns, items_ns, srvenumstats::ns(t_write), written as u64);
-
-    Ok(written)
-}
-
-/// Where a warm `get_inline` spends its time *inside the server*, so the gate call's own share can
-/// be had by subtracting from `pagepar`'s NAME figure.
-///
-/// This exists because the NAME phase cannot resolve anything under about a microsecond (22), and
-/// the open question -- 3 us solo against ~7 us at four threads on a path whose only work is a
-/// sharded hash lookup -- lives below that. Three clock reads and four shared-cacheline RMWs per
-/// call, which at four threads is itself a contention term: read the *shares*, and expect the
-/// totals to be inflated relative to an uninstrumented run. sysperf.md round 6 is the cautionary
-/// tale for believing otherwise.
-///
-/// Post-rework note: "inner-lock" now measures the session snapshot (a read-lock + clone) rather
-/// than a mutex acquisition; the phase labels are kept so old and new runs line up.
-mod getphase {
-    use std::{
-        sync::atomic::{AtomicU64, Ordering},
-        time::Instant,
-    };
-
-    pub const GETPHASE_STATS: bool = false;
-
-    static COUNT: AtomicU64 = AtomicU64::new(0);
-    static LOOKUP: AtomicU64 = AtomicU64::new(0);
-    static INNERLOCK: AtomicU64 = AtomicU64::new(0);
-    static GET: AtomicU64 = AtomicU64::new(0);
-
-    pub fn start() -> Option<Instant> {
-        GETPHASE_STATS.then(Instant::now)
-    }
-
-    /// Nanoseconds since `t`, cumulative -- the caller differences them.
-    pub fn lap(t: &Option<Instant>) -> u64 {
-        t.map_or(0, |t| t.elapsed().as_nanos() as u64)
-    }
-
-    pub fn record(lookup: u64, innerlock: u64, total: u64) {
-        if !GETPHASE_STATS {
-            return;
-        }
-        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        let l = LOOKUP.fetch_add(lookup, Ordering::Relaxed) + lookup;
-        let i = INNERLOCK.fetch_add(innerlock.saturating_sub(lookup), Ordering::Relaxed)
-            + innerlock.saturating_sub(lookup);
-        let g = GET.fetch_add(total.saturating_sub(innerlock), Ordering::Relaxed)
-            + total.saturating_sub(innerlock);
-        if n.is_power_of_two() && crate::diag_enabled() {
-            twizzler_abi::klog_println!(
-                "GETPHASE {} calls: caller+handles {} ns, inner-lock {} ns, session-get {} ns \
-                 (per call, means)",
-                n,
-                l / n,
-                i / n,
-                g / n,
-            );
-        }
-    }
-}
-
-// Temporary instrumentation for the directory-enumeration latency hunt (pagerperf.md).
-mod srvenumstats {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    /// Master switch for the clock reads; see `getphase::GETPHASE_STATS` next door, which already
-    /// does this. Three `Instant::now()` and four shared-cacheline RMWs ran on every
-    /// `enumerate_names_nsid` gate call regardless of whether anything was ever reported.
-    pub const TIMING: bool = false;
-
-    /// `Instant::now()`, if [`TIMING`] is on.
-    #[inline(always)]
-    pub fn t0() -> Option<std::time::Instant> {
-        TIMING.then(std::time::Instant::now)
-    }
-
-    /// Nanoseconds since `t`, or 0 when [`TIMING`] is off.
-    #[inline(always)]
-    pub fn ns(t: Option<std::time::Instant>) -> u64 {
-        t.map_or(0, |t| t.elapsed().as_nanos() as u64)
-    }
-
-    static COUNT: AtomicU64 = AtomicU64::new(0);
-    static ENTRIES: AtomicU64 = AtomicU64::new(0);
-    static LOCK: AtomicU64 = AtomicU64::new(0);
-    static ITEMS: AtomicU64 = AtomicU64::new(0);
-    static WRITE: AtomicU64 = AtomicU64::new(0);
-
-    pub fn record(lock: u64, items: u64, write: u64, entries: u64) {
-        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        let l = LOCK.fetch_add(lock, Ordering::Relaxed) + lock;
-        let i = ITEMS.fetch_add(items, Ordering::Relaxed) + items;
-        let w = WRITE.fetch_add(write, Ordering::Relaxed) + write;
-        let e = ENTRIES.fetch_add(entries, Ordering::Relaxed) + entries;
-        if TIMING && secgate::statcadence::report_now(n) {
-            secgate::statline!(
-                "SRVENUMSTATS {} calls, {} entries: lock {} us, items {} us, write {} us",
-                n,
-                e,
-                l / 1000,
-                i / 1000,
-                w / 1000,
-            );
-        }
-    }
+    write_enumeration(&client, offset, &nodes)
 }
 
 // ---- naming-srv's own heap census --------------------------------------------------------------
@@ -810,10 +682,6 @@ fn diag_enabled() -> bool {
 }
 
 unsafe extern "C" {
-    fn __twz_rt_diag_heap_census(out: *mut u64, n: usize) -> usize;
-    fn __twz_rt_diag_heap_census_arm() -> u64;
-    fn __twz_rt_diag_heap_track_arm(lo: usize, hi: usize);
-    fn __twz_rt_diag_heap_track_dump(out: *mut u64, n: usize) -> usize;
     fn __twz_rt_diag_heap_objects(out: *mut u64, n: usize) -> usize;
     fn __twz_rt_diag_decommit_stats(out: *mut u64);
     fn __twz_rt_diag_cross_threads() -> u64;
@@ -872,196 +740,6 @@ fn heap_objects_line() {
             } else {
                 "early"
             }
-        );
-    }
-}
-
-const CENSUS_BRANCH: usize = 16;
-const CENSUS_CLASSES: usize = 32;
-const CENSUS_WORDS: usize = CENSUS_BRANCH + CENSUS_CLASSES * 4;
-
-static CENSUS_PREV: Mutex<Option<[u64; CENSUS_WORDS]>> = Mutex::new(None);
-
-/// Arm the runtime's census for this compartment. Called once, from `namer_start`.
-/// Master switch, **off by default**. Same hazard as the pager's and monitor's `heapdiag`: arming
-/// the census makes every alloc and free in this compartment pay two extra atomic adds for the rest
-/// of the boot, and the periodic dump is thousands of console lines. Turn on for a leak run.
-const HEAP_CENSUS_ON: bool = false;
-
-fn heap_census_arm() {
-    if !HEAP_CENSUS_ON {
-        return;
-    }
-    let was = unsafe { __twz_rt_diag_heap_census_arm() };
-    twizzler_abi::klog_println!("NAMING-HEAPCENSUS armed was_already_armed={}", was);
-    track_arm();
-}
-
-// ---- live-block sizes in the `le=512` class ---------------------------------------------------
-//
-// naming retains ~173 blocks of ~376 B across a run -- roughly one per four compartment loads,
-// and the largest repeating population it has once the one-time 512 KiB `early_nots` block is set
-// aside. The census names a size *class*; this names the exact sizes inside it, which is a
-// greppable fingerprint for a call site. Same instrument that identified the monitor's 3328-byte
-// `UpcallFrame`.
-//
-// Sizes only, no dereferencing: a fault here takes naming down with it.
-
-const TRACK_LO: usize = 257;
-const TRACK_HI: usize = 512;
-const TRACK_WORDS: usize = 2048;
-
-static TRACK_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static mut TRACK_BUF: [u64; TRACK_WORDS] = [0; TRACK_WORDS];
-
-/// One allocation *inside* the tracked window, made and freed immediately after arming.
-///
-/// An empty table reads identically whether nothing was retained or the hook never fires. The
-/// monitor's first attempt at this instrument had a control of 131072 B against a [2049, 4096]
-/// window -- it exercised the census and not the tracker, and `live=0` was uninterpretable until
-/// the call sites were read by hand. The control has to sit in the range being reported on.
-const TRACK_CONTROL_SIZE: usize = 384;
-
-fn track_arm() {
-    unsafe { __twz_rt_diag_heap_track_arm(TRACK_LO, TRACK_HI) };
-    // Push, then escape the pointer: `with_capacity` + `black_box(capacity)` is elided outright.
-    let mut v: Vec<u8> = Vec::with_capacity(TRACK_CONTROL_SIZE);
-    v.push(0xa5);
-    core::hint::black_box(v.as_ptr());
-    drop(v);
-    twizzler_abi::klog_println!(
-        "NAMING-TRACK-ARM lo={} hi={} control_alloc_and_free={}",
-        TRACK_LO,
-        TRACK_HI,
-        TRACK_CONTROL_SIZE
-    );
-}
-
-/// Histogram of live block sizes in `[TRACK_LO, TRACK_HI]`.
-#[allow(static_mut_refs)]
-fn track_report() {
-    use std::sync::atomic::Ordering::Relaxed;
-    if TRACK_BUSY.swap(true, Relaxed) {
-        return;
-    }
-    let n = unsafe { __twz_rt_diag_heap_track_dump(TRACK_BUF.as_mut_ptr(), TRACK_WORDS) };
-    if n < 5 {
-        twizzler_abi::klog_println!("NAMING-TRACK unavailable n={}", n);
-        TRACK_BUSY.store(false, Relaxed);
-        return;
-    }
-    let pairs = (n - 5) / 2;
-    let mut size = [0u64; 32];
-    let mut count = [0u64; 32];
-    let mut distinct = 0usize;
-    let mut overflow = 0u64;
-    for i in 0..pairs {
-        let sz = unsafe { TRACK_BUF[i * 2 + 1] };
-        match (0..distinct).find(|&j| size[j] == sz) {
-            Some(j) => count[j] += 1,
-            None if distinct < 32 => {
-                size[distinct] = sz;
-                count[distinct] = 1;
-                distinct += 1;
-            }
-            None => overflow += 1,
-        }
-    }
-    let (inserted, removed, ovf, trunc) = unsafe {
-        (
-            TRACK_BUF[pairs * 2],
-            TRACK_BUF[pairs * 2 + 1],
-            TRACK_BUF[pairs * 2 + 2],
-            TRACK_BUF[pairs * 2 + 4],
-        )
-    };
-    twizzler_abi::klog_println!(
-        "NAMING-TRACK live={} distinct={} unbinned={} inserted={} removed={} slot_overflow={} truncated={}",
-        pairs, distinct, overflow, inserted, removed, ovf, trunc
-    );
-    // Biggest population first would need a sort; the set is <=32 and the reader can sort.
-    for j in 0..distinct {
-        twizzler_abi::klog_println!("NAMING-TRACK-SIZE bytes={} live={}", size[j], count[j]);
-    }
-    TRACK_BUSY.store(false, Relaxed);
-}
-
-/// One line: the branch counters, then the three classes with the largest net bytes this window.
-fn heap_census_line() {
-    let mut cur = [0u64; CENSUS_WORDS];
-    let n = unsafe { __twz_rt_diag_heap_census(cur.as_mut_ptr(), CENSUS_WORDS) };
-    if n != CENSUS_WORDS {
-        twizzler_abi::klog_println!("NAMING-HEAPCENSUS unavailable (not armed)");
-        return;
-    }
-    let mut guard = CENSUS_PREV.lock().unwrap();
-    let prev = guard.unwrap_or([0u64; CENSUS_WORDS]);
-    *guard = Some(cur);
-    drop(guard);
-
-    let d = |i: usize| cur[i] as i64 - prev[i] as i64;
-    // Discarded frees are counted on their branch and never as frees, so a nonzero drop_* here
-    // would mean this service's growth is the runtime throwing frees away rather than retention.
-    twizzler_abi::klog_println!(
-        "NAMING-HEAPCENSUS ferroc={}/{} early_cold={}/{} early_nots={}/{} drop_earlyptr={}/{} drop_nulltls={}/{} drop_nots={}/{}",
-        d(0), d(8), d(1), d(9), d(2), d(10), d(5), d(13), d(6), d(14), d(7), d(15),
-    );
-
-    let mut rows: Vec<(usize, i64, i64, i64)> = Vec::new();
-    for c in 0..CENSUS_CLASSES {
-        let b = CENSUS_BRANCH + c * 4;
-        let (ac, ab, fc, fb) = (d(b), d(b + 1), d(b + 2), d(b + 3));
-        if ac == 0 && fc == 0 {
-            continue;
-        }
-        rows.push((c, ac - fc, ab - fb, ac));
-    }
-    rows.sort_by_key(|r| -(r.2.abs()));
-    for (c, net_count, net_bytes, allocs) in rows.into_iter() {
-        twizzler_abi::klog_println!(
-            "NAMING-HEAPCENSUS-CLASS le={} allocs={} net_count={} net_bytes={}",
-            1u64 << c,
-            allocs,
-            net_count,
-            net_bytes,
-        );
-    }
-
-    // Cumulative since arm, alongside the per-window delta.
-    //
-    // A per-window row cannot be read as retention: a block allocated in window N and freed in
-    // window N+1 shows as +1 then -1, so any single window over-reports. Only the running total
-    // nets those out, and it is the figure that attributes the run. Both are printed because they
-    // answer different questions -- the delta says "is it still happening", the total says "how
-    // much". Reading the first as the second is the mistake this line exists to prevent.
-    let mut tot: Vec<(usize, i64, i64)> = Vec::new();
-    let mut tot_bytes: i64 = 0;
-    for c in 0..CENSUS_CLASSES {
-        let b = CENSUS_BRANCH + c * 4;
-        let (ac, ab, fc, fb) = (
-            cur[b] as i64,
-            cur[b + 1] as i64,
-            cur[b + 2] as i64,
-            cur[b + 3] as i64,
-        );
-        if ac == 0 && fc == 0 {
-            continue;
-        }
-        tot_bytes += ab - fb;
-        tot.push((c, ac - fc, ab - fb));
-    }
-    tot.sort_by_key(|r| -(r.2.abs()));
-    twizzler_abi::klog_println!(
-        "NAMING-HEAPCENSUS-TOTAL net_bytes={} classes={}",
-        tot_bytes,
-        tot.len()
-    );
-    for (c, net_count, net_bytes) in tot.into_iter() {
-        twizzler_abi::klog_println!(
-            "NAMING-HEAPCENSUS-TOTALCLASS le={} net_count={} net_bytes={}",
-            1u64 << c,
-            net_count,
-            net_bytes,
         );
     }
 }

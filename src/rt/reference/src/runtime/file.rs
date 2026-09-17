@@ -40,128 +40,6 @@ use twizzler_rt_abi::{
 };
 
 use super::{ReferenceRuntime, OUR_RUNTIME};
-
-/// DIAG: call counts and time for the runtime entry points a compile might be paying for.
-///
-/// Written to attribute a PC-sampled profile that named first `memcmp` and then `twz_rt_futex_wake`
-/// as ~27% of a compile's CPU. Both names were wrong -- the profile had been symbolized against a
-/// `libtwz_rt.so` that had been rebuilt out from under it, so the PCs and the symbol table came
-/// from different binaries. These counters are what established that: naming paths measured 0.06%
-/// of wall, and `futex_wake` 0.133 s across a whole build against a claimed 2.4 s in one compile.
-///
-/// Kept because the measurements are cheap and the question recurs. Gating matches
-/// [`super::object::mapstats`]. Reported from `post_main_hook` *and* from `exit()`, because
-/// `process::exit` skips the former and rustc exits that way -- a post-main-only report measures
-/// cargo and never the process of interest.
-pub(crate) mod namestats {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    /// Off: these print on *every* compartment exit, and a build exits ~25 of them.
-    pub const REPORT_ON: bool = false;
-    /// Off: the counters are free relaxed adds, the `Instant::now()` pairs feeding them are not.
-    /// `futex_wake` is called ~22k times in a build, so leaving this on times a syscall with two
-    /// clock reads.
-    pub const TIMING: bool = false;
-
-    #[inline(always)]
-    pub fn t0() -> Option<std::time::Instant> {
-        TIMING.then(std::time::Instant::now)
-    }
-
-    pub struct Stat {
-        calls: AtomicU64,
-        ns: AtomicU64,
-    }
-
-    impl Stat {
-        pub const fn new() -> Self {
-            Self {
-                calls: AtomicU64::new(0),
-                ns: AtomicU64::new(0),
-            }
-        }
-
-        #[inline(always)]
-        pub fn record(&self, t: Option<std::time::Instant>) {
-            self.calls.fetch_add(1, Ordering::Relaxed);
-            if let Some(t) = t {
-                self.ns
-                    .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
-            }
-        }
-
-        /// Records on drop, so the several early returns in these functions all count.
-        #[inline(always)]
-        pub fn guard(&'static self) -> Guard {
-            Guard(self, t0())
-        }
-
-        fn get(&self) -> (u64, u64) {
-            (
-                self.calls.load(Ordering::Relaxed),
-                self.ns.load(Ordering::Relaxed),
-            )
-        }
-    }
-
-    pub struct Guard(&'static Stat, Option<std::time::Instant>);
-
-    impl Drop for Guard {
-        #[inline(always)]
-        fn drop(&mut self) {
-            self.0.record(self.1);
-        }
-    }
-
-    pub static CGETENV: Stat = Stat::new();
-    pub static CANON: Stat = Stat::new();
-    pub static RESOLVE: Stat = Stat::new();
-
-    /// `twz_rt_futex_wake` is 27.4% of a compile's CPU (statclock-driven PC sampling, symbolized
-    /// against the booted image). It enters the kernel unconditionally, so the question worth
-    /// measuring first is how many of those syscalls wake nobody -- a wake with no waiter is pure
-    /// overhead and is skippable in userspace, where a wake that *did* have a waiter is not.
-    pub static FUTEX_WAKE: Stat = Stat::new();
-    pub static FUTEX_WAIT: Stat = Stat::new();
-    /// Of `FUTEX_WAKE`, those whose `sys_thread_sync` reported zero threads woken.
-    pub static WAKE_NOBODY: AtomicU64 = AtomicU64::new(0);
-
-    pub fn report() {
-        if !REPORT_ON {
-            return;
-        }
-        let (gc, gn) = CGETENV.get();
-        let (cc, cn) = CANON.get();
-        let (rc, rn) = RESOLVE.get();
-        let (wc, wn) = FUTEX_WAKE.get();
-        let (tc, tn) = FUTEX_WAIT.get();
-        let z = WAKE_NOBODY.load(Ordering::Relaxed);
-        if gc + cc + rc + wc + tc == 0 {
-            return;
-        }
-        secgate::statcadence::report_forced(format_args!(
-            "NAMESTAT cgetenv {} calls {} us; canon_name {} calls {} us; resolve_name {} calls {} us",
-            gc,
-            gn / 1000,
-            cc,
-            cn / 1000,
-            rc,
-            rn / 1000,
-        ));
-        secgate::statcadence::report_forced(format_args!(
-            "FUTEXSTAT wake {} calls {} us ({} ns ea), {} woke nobody ({} permille); \
-             wait {} calls {} us ({} ns ea)",
-            wc,
-            wn / 1000,
-            wn / wc.max(1),
-            z,
-            z * 1000 / wc.max(1),
-            tc,
-            tn / 1000,
-            tn / tc.max(1),
-        ));
-    }
-}
 use crate::runtime::file::kinds::kconsole::KernelConsoleFile;
 
 mod file_desc;
@@ -659,8 +537,6 @@ pub fn get_naming_handle() -> Option<&'static DynamicNamingHandle> {
     }
     // Handle creation is once per process now, but never latch a failure: this compartment may
     // predate the namer (init does) and must succeed on retry once it is up.
-    let _diag = crate::runtime::core::PRE_MAIN_PHASE_STATS;
-    let _t0 = std::time::Instant::now();
     if NAMING_UP.get().is_none() {
         // Weakly-bound gates prove naming-srv was loaded before this compartment, so the
         // monitor lookup -- one gate call -- is only spent when this compartment predates
@@ -670,17 +546,7 @@ pub fn get_naming_handle() -> Option<&'static DynamicNamingHandle> {
         }
         let _ = NAMING_UP.set(());
     }
-    let _t_lookup = _t0.elapsed();
     let handle = dynamic_naming_factory()?;
-    secgate::statlog::record_on(
-        _diag,
-        "NAMEHDL",
-        _t0.elapsed().as_micros() as u64,
-        &[
-            _t_lookup.as_micros() as u64,
-            (_t0.elapsed() - _t_lookup).as_micros() as u64,
-        ],
-    );
     // A racing initializer loses here; its handle drops and closes its descriptor.
     if RUNTIME_NAMER.set(handle).is_ok() {
         // Only the winner collects. `swap` makes the token single-use on this side too, so a
@@ -700,23 +566,9 @@ pub fn get_naming_handle() -> Option<&'static DynamicNamingHandle> {
 /// Set the working namespace for this compartment: per-descriptor state on the server, and the
 /// compartment holds exactly one descriptor.
 pub fn set_naming_namespace(path: &std::path::Path) -> Result<()> {
-    let _t0 = std::time::Instant::now();
     let handle = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
-    let _t_handle = _t0.elapsed();
     handle.change_namespace(path)?;
     cwd_memo_invalidate();
-    // Called once per compartment from `pre_main_hook`, i.e. inside `Command::spawn`. Splits
-    // acquiring the naming handle (for a fresh compartment: possibly a compartment lookup, plus
-    // open_handle) from the namespace call itself.
-    secgate::statlog::record_on(
-        crate::runtime::core::PRE_MAIN_PHASE_STATS,
-        "SETNS",
-        _t0.elapsed().as_micros() as u64,
-        &[
-            _t_handle.as_micros() as u64,
-            (_t0.elapsed() - _t_handle).as_micros() as u64,
-        ],
-    );
     Ok(())
 }
 
@@ -785,35 +637,15 @@ fn pty_signal_handler(server: &PtyServerHandle, sig: PtySignal) {
     });
 }
 
-/// Defer a stdio bind's `open` until something actually uses the descriptor.
+/// Defers a stdio bind's `open` until something actually uses the descriptor.
 ///
-/// `init_fds` opens every bind eagerly: an object map plus handler registration per bind, measured
-/// at ~165 us of a spawn (`PREMAIN`, spawnbench.md §47) for descriptors a short-lived program may
-/// never touch -- `nullexit` touches none of them. This wrapper sits in the fd slot in place of the
-/// real `Fd`, so none of the 22 `get_fd_slots()` call sites change, and materializes on the first
-/// operation that needs a real one.
+/// `init_fds` used to open every bind eagerly: an object map plus handler registration per bind
+/// for descriptors a short-lived program may never touch. This sits in the fd slot in place of the
+/// real `Fd` and materializes on the first operation that needs one. `close()` on a bind that was
+/// never used stays a no-op.
 ///
-/// `close()` on a bind that was never used stays a no-op, which is what makes the saving survive
-/// `close_fds` at exit rather than merely moving it there.
-///
-/// Failure is cached as `None`: a bind that cannot be opened reports an error on every use instead
-/// of retrying the failing open per call. That is the one visible semantic change -- an open error
-/// that used to be printed during startup now surfaces at first use.
-/// **SHIPPED on (2026-08-26), on hygiene grounds rather than measured speed** -- spawnbench.md
-/// §59-64. What is established is a **count**: opens per spawn **4.47 -> 1.18**, i.e. 3.29 opens
-/// eliminated, with relocations/spawn flat across the arms as a control. What is *not* established
-/// is any wall-clock win: the clean A/B/A read -0.41% against one baseline and **+1.85% against the
-/// other**, inside a 2.22% drift floor -- the sign reverses with the choice of baseline, so there
-/// is no time effect to claim. Validated by boot (58/58 with this on), not merely compiled.
-///
-/// **Semantic change:** an open error that used to print during startup now surfaces at **first
-/// use** of the descriptor, and failure is cached rather than retried per call. A program that
-/// binds a bad fd and never touches it will never see the error.
-///
-/// Those measurements predate TLBFIX, the pipe-EOF work and the predicate alignment; do not treat
-/// the null as current without re-measuring.
-pub const LAZY_FDS: bool = true;
-
+/// Semantic change from eager opening: an open error surfaces at first use rather than during
+/// startup, and failure is cached as `None` rather than retried per call.
 struct LazyBind {
     kind: OpenKind,
     opts: OperationOptions,
@@ -961,7 +793,7 @@ impl ReferenceRuntime {
             // Lazy path first: it subsumes the dedupe below (two binds that would have shared an
             // Fd now each cost nothing until used) and skips the open entirely for a program that
             // never touches the descriptor.
-            if LAZY_FDS && LazyBind::eligible(kind) {
+            if LazyBind::eligible(kind) {
                 let elem: FdImpl = std::sync::Arc::new(LazyBind {
                     kind,
                     opts: OperationOptions::from_bits_truncate(bi.flags),
@@ -1056,7 +888,6 @@ impl ReferenceRuntime {
         name: &[u8],
         out_name: &mut [u8],
     ) -> Result<usize> {
-        let _g = namestats::CANON.guard();
         if matches!(resolver, twizzler_rt_abi::fd::NameResolver::Socket) {
             let Ok(name) = str::from_utf8(name) else {
                 return Err(TwzError::INVALID_ARGUMENT);
@@ -1109,7 +940,6 @@ impl ReferenceRuntime {
         _resolver: twizzler_rt_abi::fd::NameResolver,
         name: &[u8],
     ) -> Result<ObjID> {
-        let _g = namestats::RESOLVE.guard();
         let name = str::from_utf8(name).map_err(|_| TwzError::INVALID_ARGUMENT)?;
         // One acquire, not two. The handle used to be borrowed once to test whether naming was up,
         // dropped, and borrowed again to do the work -- two round trips through the pool's lock on
@@ -1262,9 +1092,7 @@ impl ReferenceRuntime {
         } else {
             None
         };
-        let t_open = std::time::Instant::now();
         let elem = kinds::open(existing_fd, kind, bind_info, bind_info_len, open_opt)?;
-        let kinds_ns = t_open.elapsed().as_nanos() as u64;
 
         if elem.is_none() && existing_fd.is_none() {
             return Err(TwzError::NOT_SUPPORTED);
@@ -1322,7 +1150,6 @@ impl ReferenceRuntime {
             elem.state.flags.store(existing_flags, Ordering::SeqCst);
         }
 
-        let t_fd = std::time::Instant::now();
         let mut binding = get_fd_slots().write().unwrap();
 
         let fd = if let Some(fd) = existing_fd {
@@ -1334,11 +1161,6 @@ impl ReferenceRuntime {
         .ok_or(ResourceError::OutOfNames)?;
 
         drop(binding);
-        kinds::openstats::record_outer(
-            kinds_ns,
-            t_fd.elapsed().as_nanos() as u64,
-            t_open.elapsed().as_nanos() as u64,
-        );
         if open_opt.contains(OperationOptions::OPEN_FLAG_TAIL) {
             self.seek(fd.try_into().unwrap(), SeekFrom::End(0))?;
         }
@@ -1747,10 +1569,7 @@ impl ReferenceRuntime {
             buf.len()
         );
         let stat = self.fd_get_info(fd).ok_or(ArgumentError::BadHandle)?;
-        let t_acq = std::time::Instant::now();
         let session = get_naming_handle().ok_or(TwzError::NOT_SUPPORTED)?;
-        let acq_ns = t_acq.elapsed().as_nanos() as u64;
-        let t_gate = std::time::Instant::now();
         let end =
             session.enumerate_names_nsid_visit(stat.id.into(), off, buf.len(), |i, name| {
                 let Ok(entry_name) = name.name() else {
@@ -1792,37 +1611,6 @@ impl ReferenceRuntime {
                 };
                 Ok(())
             })?;
-        // Conversion happens inside the visit now, so gate and conv are one measurement.
-        enumstats::record(acq_ns, t_gate.elapsed().as_nanos() as u64, 0, end as u64);
         Ok(end)
-    }
-}
-
-// Temporary instrumentation for the directory-enumeration latency hunt (pagerperf.md).
-mod enumstats {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static COUNT: AtomicU64 = AtomicU64::new(0);
-    static ENTRIES: AtomicU64 = AtomicU64::new(0);
-    static ACQ: AtomicU64 = AtomicU64::new(0);
-    static GATE: AtomicU64 = AtomicU64::new(0);
-    static CONV: AtomicU64 = AtomicU64::new(0);
-
-    pub fn record(acq: u64, gate: u64, conv: u64, entries: u64) {
-        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        let a = ACQ.fetch_add(acq, Ordering::Relaxed) + acq;
-        let g = GATE.fetch_add(gate, Ordering::Relaxed) + gate;
-        let c = CONV.fetch_add(conv, Ordering::Relaxed) + conv;
-        let e = ENTRIES.fetch_add(entries, Ordering::Relaxed) + entries;
-        if secgate::statcadence::report_now(n) {
-            secgate::statline!(
-                "ENUMSTATS {} calls, {} entries: acquire {} us, gate {} us, convert {} us",
-                n,
-                e,
-                a / 1000,
-                g / 1000,
-                c / 1000,
-            );
-        }
     }
 }

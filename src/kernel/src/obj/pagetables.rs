@@ -14,12 +14,10 @@ use crate::{
         frame::{FrameRef, PHYS_LEVEL_LAYOUTS, get_frame, min_level_for_len},
         pagetables::{
             Consistency, ContiguousProvider, DeferredUnmappingOps, FrameSliceProvider, MapInfo,
-            MapReader, Mapper, MappingCursor, MappingFlags, MappingSettings, Table, TlbOrigin,
-            zeroprobe,
+            MapReader, Mapper, MappingCursor, MappingSettings, Table, TlbOrigin,
         },
         tracker::{
-            FrameAllocFlags, FrameAllocator, alloc_frame, allocprofile, free_frame,
-            take_or_new_frame_allocator,
+            FrameAllocFlags, FrameAllocator, alloc_frame, free_frame, take_or_new_frame_allocator,
         },
     },
     obj::{Object, ObjectRef, PageNumber},
@@ -27,70 +25,11 @@ use crate::{
 
 /// Kept at 8: raising it to 16 was measured (`widen2-a`/`widen2-b`) and changed nothing. The same
 /// 18 objects latch either way -- they just latch on `MAX_INVLS` instead, since they exceed both
-/// limits. See unmap.md.
+/// limits.
 const MAX_INVL_TARGETS: usize = 8;
 const MAX_INVLS: usize = 4;
 /// Capacity of the membership set. See [ObjectPageTable::members].
 const MAX_MEMBERS: usize = 32;
-
-/// Precharge the page-table frames a mapping will *actually* need, rather than the most it could
-/// ever need.
-///
-/// `MappingCursor::max_number_new_tables` answers from geometry alone -- one frame per level,
-/// whatever is already installed -- so a 4 KiB `map_page` always asks for `top_level()` frames.
-/// Measured on `page_fault_zero_fill`: **one `Table::populate` per 205 `map_page` calls**
-/// (`populated=8,308` against `calls=1,706,024`), so 99.5% of those requests are borrow-and-return.
-///
-/// With the per-cpu pool knobs on that stopped being nearly free: a per-operation allocator is
-/// built fresh, so the request reaches `precharge`, which reserves and then unparks. The span went
-/// 35 ns -> 620 ns across the flip. Skipping the call entirely when nothing is needed is what
-/// removes it, and [`Table::tables_needed`] is what decides.
-///
-/// The failure that matters is *under*-counting: a short precharge sends `try_allocate` to the
-/// global allocator without `WAIT_OK` while the object's page-table lock is held. That is exactly
-/// what `avoid_alloc` reports -- `avoid-empty=` on `PERFMARK-FA` -- and it must stay 0.
-/// Answer [`ObjectPageTable::count_pages`] from `Mapper`'s exact page counter instead of walking.
-///
-/// The counter is exact (`COUNT_PAGES_VERIFY` ran it against the walk over two full suites:
-/// drift 0) and takes `Object::info` from 37,437 ns to 176 ns, i.e. `sys_object_stat` from
-/// ~37.6 us to ~0.37 us.
-///
-/// It shipped off at first: with it on, the full suite failed ~3/5 with the pager exhausting its
-/// request slots (`spawnbench.md` §23). That was never a defect in this switch — the speedup
-/// removed ~2 s/round of monitor CPU and let the workload reach a latent, independent deadlock in
-/// the pager-memory donation path, since diagnosed and fixed (`pagerwedge.md`: a fragmented
-/// 16k-frame donation took one request slot per range for the whole batch before submitting any,
-/// and >256 ranges held every slot with nothing sent). With that fix in, this switch is safe;
-/// flipping it back off is only a kill switch for the stat speedup, not a wedge mitigation.
-const COUNT_PAGES_COUNTER: bool = true;
-
-/// Run both the counter and the walk on every call and report any disagreement. Must stay 0.
-///
-/// Off: the cache exists precisely to skip the walk. On for validation runs.
-const COUNT_PAGES_VERIFY: bool = false;
-
-const PRECHARGE_EXACT: bool = true;
-
-/// [`PRECHARGE_EXACT`] for the object-table entry points that are not `map_page`.
-///
-/// Held separate from `PRECHARGE_EXACT` so the two can be measured apart: that one is shipped and
-/// validated (-12.7% on `page_fault_zero_fill`), and this one covers different call sites with a
-/// different cost profile -- the predictor walks a *range* here, and on a whole-object cursor the
-/// walk is 1 + 512 entries rather than the 2 that `map_page` pays.
-///
-/// Covers `map_pages` (the pager's ~130-page install), `map_phys`, and `maybe_cow_at` (every COW
-/// write fault). It does **not** cover `setup_cow_range`, `setup_zero_range`,
-/// `cow_clone_page_tables` or `split_to_level`: each allocates on a different rule than `map`
-/// does -- `setup_cow_range` populates the *destination* keyed on the *source*'s presence and
-/// allocates nothing at all for an aligned whole entry -- so each needs its own predictor and its
-/// own argument, not this one applied by name.
-const PRECHARGE_EXACT_RANGE: bool = true;
-
-/// Skip the consistency epilogue when there is nothing to invalidate and nothing to free.
-///
-/// See [`Consistency::is_trivial`] for what "nothing" costs without this. The enqueue itself is
-/// already conditional; this is about the machinery around it.
-const CONSIST_FASTPATH: bool = true;
 
 /// Second-and-later operations parked under one page-table lock hold, merged into the batch the
 /// guard will discharge. See [ObjectPageTable::park].
@@ -115,212 +54,17 @@ pub mod merged_parks {
     }
 }
 
-/// Where a single `map_page` call's time goes, bracketed so that the *gap* is measurable.
-///
-/// Separate from [`crate::memory::tracker::allocprofile`] deliberately. That module's `counters!`
-/// list is indexed positionally by `perfmark`, it belongs to the frame-allocator work, and its
-/// `TIME_ALLOCS` gate can be flipped for an allocator arm -- probes gated on someone else's const
-/// go live inside their measurement. This has its own switch and its own snapshot.
-///
-/// The design rule this follows: **bracket the gap, not the pieces already suspected.** `BODY`
-/// spans the whole function body, so `FILL_MAP_NS - BODY` is prologue/epilogue and the call
-/// itself, and `BODY - sum(spans)` is time between probes rather than inside any of them. The
-/// prior split of this function reported prep/walk/consist summing to 1,164 ns against a 1,712 ns
-/// whole and left 548 ns attributed to nothing; that residual is the thing being measured here,
-/// so it must not be inferred from a subtraction of numbers taken by a different instrument.
+/// [`ObjectPageTable::map_frames`] calls and pages installed by them. `MF_PAGES / MF_CALLS` is
+/// the batch achieved, the falsifier for fault-around batching: ~`ANON_FAULT_AROUND` means the
+/// runs coalesced, ~1 means they did not.
 pub mod mapprobe {
     use core::sync::atomic::{AtomicU64, Ordering};
 
-    /// Off in the committed tree. Costs ~10 clock-read pairs per `map_page`.
-    pub const MAP_PROBE: bool = false;
-
-    macro_rules! counters {
-        ($($name:ident),* $(,)?) => {
-            $(pub static $name: AtomicU64 = AtomicU64::new(0);)*
-            pub const NAMES: &[&str] = &[$(stringify!($name)),*];
-            pub const NR: usize = NAMES.len();
-            pub fn snapshot() -> [u64; NR] {
-                [$($name.load(Ordering::Relaxed)),*]
-            }
-        };
-    }
-
-    counters!(
-        // `map_page`, one record each per call.
-        CALLS,
-        BODY_NS,
-        CONS_NEW_NS,
-        TAKE_FA_NS,
-        PRECHARGE_NS,
-        PROV_NS,
-        WALK_NS,
-        CONSIST_NS,
-        DROP_FA_NS,
-        DROP_PHYS_NS,
-        // `run_consistency`, split. Counted separately because `map_page` is not its only caller
-        // and the reading is only clean in a window where `RC_CALLS == CALLS`.
-        RC_CALLS,
-        RC_SEND_NS,
-        RC_RESET_NS,
-        RC_PARK_NS,
-        // Page tables actually created by `Table::populate`. This is the denominator that says
-        // whether `map_page`'s per-page precharge buys anything: it asks for
-        // `max_number_new_tables` (2 on amd64 object tables) on every call, and a sequential fault
-        // run needs a new leaf table once per 512 pages.
-        POPULATED,
-        // Back-to-back start/record, i.e. the floor under every span above.
-        PROBE_NS,
-        // The *perturbation*, which `PROBE_NS` structurally cannot see: an outer bracket around a
-        // complete inner probe. `PROBE_OUTER_NS - PROBE_NS` is what one `record` call costs the
-        // bracket that encloses it -- the term that lands in `gap` and in nobody's span. Measured
-        // rather than assumed, because assuming it is how the previous split of this function
-        // ended up attributing 548 ns to nothing.
-        PROBE_OUTER_NS,
-        // Appended, not inserted -- `perfmark` indexes this snapshot positionally and putting this
-        // beside `RC_*` where it reads better shifted `PROBE_NS` and `PROBE_OUTER_NS` by one,
-        // which is the same silent break the `allocprofile` list carries a warning about.
-        //
-        // `run_consistency` calls that had nothing to invalidate and nothing to free, i.e. took
-        // the fast path. Read against `RC_CALLS`: on this bench it should be ~all of them, and a
-        // build where it is not is one where the epilogue is doing real work.
-        RC_TRIVIAL,
-        // The predictors themselves -- what asking costs, which is the question `PRECHARGE_EXACT`
-        // never had to answer while its only caller handed it a one-page cursor. Aggregated over
-        // every caller of `Mapper::tables_needed`/`cow_tables_needed`, so `TN_CALLS` against
-        // `CALLS` is what says whose walk this is.
-        //
-        // `TN_ENTRIES / TN_CALLS` is the breadth of the walk and `TN_NS / TN_CALLS` its cost;
-        // `TN_MAX - TN_NEED` is the precharge it removed, measured in the same window rather than
-        // inferred from a second run.
-        TN_CALLS,
-        TN_NS,
-        TN_ENTRIES,
-        TN_NEED,
-        TN_MAX,
-        // Inside `WALK_NS`, which is the largest real span left in `map_page`. Split at the two
-        // branches of `Table::map`'s loop plus the flush `Mapper::map` ends on:
-        //
-        // - `W_DESCEND_NS` is the non-leaf arm -- `populate`, the COW check on the next table (a
-        //   frame lookup), and `next_table_mut`. Recorded **before** the recursive call, so a
-        //   parent's span never contains its child's.
-        // - `W_LEAF_NS` is the terminal arm -- `get_frame` on the target (a second frame lookup),
-        //   `inc_refcount`, and `update_entry`.
-        // - `W_FLUSH_NS` is `consist.flush_cache()`.
-        //
-        // `WALK_NS - (descend + leaf + flush)` is then the loop's own overhead: `get_index`,
-        // `phys.peek`, `can_map_at`, `align_advance`, and the entry reads.
-        //
-        // `Table::map` has callers other than `map_page`, so `W_LEAF_CALLS` is carried as the
-        // denominator: the per-call numbers only mean what they say in a window where it tracks
-        // `CALLS`, the same condition `RC_CALLS` exists to check.
-        W_DESCEND_NS,
-        W_LEAF_NS,
-        W_FLUSH_NS,
-        W_LEAF_CALLS,
-        // Inside `FrameAllocator::precharge`, which is 2,427 ns per `map_page` on the *create*
-        // path against 215 on the fault path -- and asks for **two** frames there. Two frames is
-        // not 2.4 us of work, so the question is which of its four parts is, and none of them has
-        // ever been bracketed.
-        //
-        // `PC_PROV` is `ensure_pool_provisioned` (an `interrupt::with_disabled` plus a TLS read on
-        // every call), `PC_RESERVE` the eager `Vec::reserve` (a kernel-heap allocation every call,
-        // because `FA_NO_TAKE` hands out a fresh allocator with an empty vec), `PC_POOL` the
-        // per-cpu pool draw, and `PC_GLOBAL` the global path behind it -- `consider_reclaim`, the
-        // `idle` CAS loop, and `raw_alloc_frames` under the PFA lock. `PC_GLOBAL` is entered on
-        // ~6% of calls, so its per-call mean is an *amortized* figure and must be read against
-        // `PC_GLOBAL_CALLS`, not against `PC_CALLS`.
-        PC_CALLS,
-        PC_PROV_NS,
-        PC_RESERVE_NS,
-        PC_FETCH_NS,
-        PC_POOL_NS,
-        PC_GLOBAL_NS,
-        PC_GLOBAL_CALLS,
-        // The two `get_frame` calls `map_page` makes per page, and the `populate` beside them.
-        // `get_frame` is a linear scan over every frame indexer (`frame.rs:1547`), and both of
-        // these look a frame up by physical address in order to touch it:
-        //
-        // - `W_COW_GF` is `next_table_frame(idx).is_cow()` -- a whole lookup to read **one bit**,
-        //   on every descent, for a condition that is almost never true here.
-        // - `W_LEAF_GF` is `get_frame(paddr.addr)` + `inc_refcount`, where the caller already
-        //   *had* the `FrameRef`: `map_page` takes `page: FrameRef` and throws it away building a
-        //   `ContiguousProvider` of raw addresses. `ZeroPageProvider` does the same, holding the
-        //   frame in `self.current` and returning only its address.
-        W_POPULATE_NS,
-        W_COW_GF_NS,
-        W_LEAF_GF_NS,
-        // Inside the global refill, which is 25 us an entry and 73% of the create path's
-        // `precharge`. Split so "a refill is expensive" can be attributed rather than asserted.
-        G_RECLAIM_NS,
-        G_CAS_NS,
-        G_RAW_NS,
-        // [`ObjectPageTable::map_frames`]: calls, and pages installed by them. `MF_PAGES /
-        // MF_CALLS` is the batch **achieved**, which is the whole falsifier for fault-around
-        // batching -- ~`ANON_FAULT_AROUND` means the runs coalesced, ~1 means they did not and
-        // any wall-clock movement has some other cause. Both use `add`, not `tick`: `tick` is
-        // gated on `MAP_PROBE` and this has to be readable in the probe-off arm, which is the
-        // only arm that produces a wall clock.
-        MF_CALLS,
-        MF_PAGES,
-    );
+    pub static MF_CALLS: AtomicU64 = AtomicU64::new(0);
+    pub static MF_PAGES: AtomicU64 = AtomicU64::new(0);
 
     pub fn add(c: &AtomicU64, n: u64) {
         c.fetch_add(n, Ordering::Relaxed);
-    }
-
-    /// Counters accumulate **raw ticks**, converted once at print time.
-    ///
-    /// This is not a micro-optimization, it is what makes the residual measurable. The existing
-    /// probes (`allocprofile::record`, `fault::record_stage`) do
-    /// `(Instant::now() - start).into()` and then `as_nanos()`: a u128 multiply plus a u128
-    /// division and modulo by 10^15, then a `Duration` round trip -- **all of it after the second
-    /// clock read**, so it is charged to whatever bracket encloses the probe and to none of the
-    /// spans inside it. Their `PROBE_NS` floor cannot see this: it reports the *interval* between
-    /// two back-to-back readings (7.6 ns), not the *perturbation* the probe adds, which happens
-    /// once the interval has already closed.
-    ///
-    /// That is almost certainly what the 255 ns of `map_page` that remains unbracketed after
-    /// `MAP_DROP_NS` is put back (see `zerofill.md` C2) actually is: four `record` calls inside
-    /// the body, each dropping its conversion into the enclosing `FILL_MAP_NS`. Accumulating
-    /// ticks here is what lets that be tested rather than argued -- with the conversion gone, the
-    /// gap should collapse.
-    pub fn start() -> u64 {
-        if MAP_PROBE {
-            crate::instant::Instant::now().raw_ticks()
-        } else {
-            0
-        }
-    }
-
-    pub fn record(c: &AtomicU64, start: u64) {
-        if !MAP_PROBE {
-            return;
-        }
-        let now = crate::instant::Instant::now().raw_ticks();
-        add(c, now.saturating_sub(start));
-    }
-
-    /// Ticks to nanoseconds, using the clock's own rate. Print path only.
-    pub fn ticks_to_ns(ticks: u64) -> u64 {
-        let now = crate::instant::Instant::now();
-        now.ns_since_ticks(now.raw_ticks().saturating_sub(ticks))
-    }
-
-    /// One count, with no clock read, for the paths that only need a denominator.
-    pub fn tick(c: &AtomicU64) {
-        if !MAP_PROBE {
-            return;
-        }
-        add(c, 1);
-    }
-
-    /// Accumulate `n` only when the probe is on, for counters whose *input* is free to compute but
-    /// whose atomic is not.
-    pub fn add_if_on(c: &AtomicU64, n: u64) {
-        if !MAP_PROBE {
-            return;
-        }
-        add(c, n);
     }
 }
 
@@ -331,8 +75,8 @@ pub mod mapprobe {
 /// without removing anything, so the object's record of where it is mapped stops shrinking. That is
 /// harmless for invalidation, which only over-invalidates as a result -- but it is the *unsafe*
 /// direction for anything that later treats this as authoritative membership, which is why
-/// unmap.md's stage 2 cannot simply inherit the behaviour. Today the drift is silent; this makes it
-/// a number.
+/// membership-based invalidation cannot simply inherit the behaviour. Today the drift is silent;
+/// this makes it a number.
 ///
 /// `Invalidate` and `Send` count the two `new_full_global()` fallbacks, so this also prices what a
 /// membership structure that could not overflow would retire.
@@ -569,7 +313,7 @@ pub struct ObjectPageTable {
         (ArchContextTarget, heapless::Vec<MappingCursor, MAX_INVLS>),
         MAX_INVL_TARGETS,
     >,
-    /// Which contexts have this object mapped -- stage 2 of unmap.md, maintained but not yet used.
+    /// Which contexts have this object mapped -- maintained but not yet used.
     ///
     /// Deliberately *separate* from `invls` rather than derived from it. `invls` carries two facts
     /// at once, "which contexts map this" and "which cursors to invalidate", in one bounded
@@ -577,7 +321,7 @@ pub struct ObjectPageTable {
     /// to be permanent. Membership is one entry per context and nothing else.
     ///
     /// Sized well above `MAX_INVL_TARGETS`, and that is the point: the shared runtime objects
-    /// reach 13 contexts (one per compartment, measured -- see unmap.md), so an 8-entry bound
+    /// reach 13 contexts (one per compartment, measured), so an 8-entry bound
     /// is exceeded by arithmetic rather than by load. 32 leaves room for a machine with more
     /// compartments before `unknown` is reached.
     members: heapless::Vec<ArchContextTarget, MAX_MEMBERS>,
@@ -591,7 +335,7 @@ pub struct ObjectPageTable {
     /// shootdowns issued under it, and then freeing the frames those shootdowns protect.
     ///
     /// Parked here rather than run inline because the wait dominates the lock hold -- a median
-    /// 90 ms per boot of object-origin wait time, all of it with this mutex held (see TLB.md) --
+    /// 90 ms per boot of object-origin wait time, all of it with this mutex held --
     /// and none of it needs the lock. [PtGuard] takes it and runs it after unlocking; living
     /// behind the same mutex as everything else here is what makes that handoff safe.
     deferred: Option<DeferredUnmappingOps>,
@@ -665,155 +409,6 @@ impl Drop for DirtyList {
                 free_frame(frame);
             }
         }
-    }
-}
-
-/// Which arm of `send_consistency`'s escalation each event took.
-///
-/// Not a cost instrument -- it answers only "did the new paths execute", which "the fix works" and
-/// "the fix never ran" are otherwise indistinguishable on. Three counters and one print line.
-pub mod tlbfix {
-    use core::sync::atomic::{AtomicU64, Ordering};
-
-    pub const TLBFIX_STATS: bool = false;
-
-    /// Master switch for the two fast paths in `send_consistency` (skip / per-member). `false`
-    /// restores the unconditional `new_full_global()`, so the fix can be A/B'd against its own
-    /// build without reverting the diff. Added because `tlbfix3` wedged twice consecutively and
-    /// the fast paths are the prime suspect -- see tlbplan-INPROG.md §4i.
-    pub const TLBFIX_ENABLE: bool = true;
-
-    /// Conservative mode: take the fast paths only when the operation has **no frames queued for
-    /// freeing**. `PendingShootdown` gates frame reuse as well as invalidation completion
-    /// (`consistency.rs:500` waits before `free_frame`), so returning an empty pending frees
-    /// immediately. When this is `true` any operation carrying pages falls back to the broadcast,
-    /// which keeps the interlock. Costs the broadcast only on page-freeing operations.
-    pub const TLBFIX_ONLY_WHEN_NO_PAGES: bool = true;
-
-    #[derive(Clone, Copy)]
-    pub enum Outcome {
-        /// Nothing maps the object; no shootdown sent.
-        Skipped = 0,
-        /// Membership known and non-empty; one targeted full invalidation per context.
-        PerMember = 1,
-        /// Membership unknown, or a global page in the batch, or coverage check failed.
-        FullGlobal = 2,
-        /// Membership is empty but `invls` is not: the object *was* mapped and every context has
-        /// since drained. Sends nothing, like `Skipped` -- but justified by
-        /// `drop_member_if_drained`'s reasoning rather than by "never mapped", so it is counted
-        /// apart from it. Previously this fell into `PerMember` and iterated zero targets, which
-        /// produced the same behaviour under a label that denied it.
-        Drained = 3,
-        /// Membership empty, `invls` non-empty, frames queued: one targeted full invalidation per
-        /// context that ever mapped this object, instead of a machine-wide broadcast. Keeps the
-        /// frame-reuse interlock (non-empty pending) without the PGE toggle.
-        DrainedTargeted = 4,
-        /// Drained with frames queued, but `invls` has overflowed so it is a subset rather than a
-        /// superset -- targeting it would be unsound, so this takes the broadcast. Measured
-        /// separately because if it is rare the targeted arm covers essentially everything, and if
-        /// it is common the win is smaller than it looks. (twizzler-8a.)
-        DrainedOverflowed = 5,
-    }
-
-    pub const NR: usize = 6;
-    static COUNTS: [AtomicU64; NR] = [const { AtomicU64::new(0) }; NR];
-
-    /// **The direct test of the frame-reuse hazard** (twizzler-8a). `PendingShootdown` gates frame
-    /// reuse as well as invalidation completion, so a fast path returning an empty pending lets
-    /// `run_all` free queued frames without waiting. These count how many skip/drained events
-    /// carried queued pages -- a **count, not a rate**: zero refutes the mechanism outright from a
-    /// single round; nonzero confirms it and sizes the exposure in absolute terms. Testing it
-    /// through the wedge rate instead would need ~10 rounds to reach 3%, and would confirm on noise
-    /// a quarter of the time at 4.
-    ///
-    /// Must be measured with `TLBFIX_ONLY_WHEN_NO_PAGES = false`, or the guard makes the answer
-    /// zero by construction -- the instrument would then be measuring itself.
-    /// **The test that decides whether the drained arm is recoverable** (twizzler-8a). At the point
-    /// the drained arm would free frames without waiting, how many processors could still reach
-    /// them? Zero across the whole population means the frames were never reachable, the skip was
-    /// sound, and the guard costs ~64% of the win for nothing. Nonzero means it is genuinely unsafe
-    /// and sized exactly. A count, not a rate -- the alternative (do wedges stop under the guard?)
-    /// comes back clean ~26% of the time regardless at the observed failure rate.
-    static DRAINED_REACHABLE: AtomicU64 = AtomicU64::new(0);
-    static DRAINED_UNREACHABLE: AtomicU64 = AtomicU64::new(0);
-    static DRAINED_REACH_SUM: AtomicU64 = AtomicU64::new(0);
-
-    pub fn record_reachable(n: usize) {
-        if !TLBFIX_STATS {
-            return;
-        }
-        if n == 0 {
-            DRAINED_UNREACHABLE.fetch_add(1, Ordering::Relaxed);
-        } else {
-            DRAINED_REACHABLE.fetch_add(1, Ordering::Relaxed);
-            DRAINED_REACH_SUM.fetch_add(n as u64, Ordering::Relaxed);
-        }
-    }
-
-    static SKIP_WITH_PAGES: AtomicU64 = AtomicU64::new(0);
-    static SKIP_NO_PAGES: AtomicU64 = AtomicU64::new(0);
-    static DRAINED_WITH_PAGES: AtomicU64 = AtomicU64::new(0);
-    static DRAINED_NO_PAGES: AtomicU64 = AtomicU64::new(0);
-
-    pub fn record_pages(drained: bool, has_pages: bool) {
-        if !TLBFIX_STATS {
-            return;
-        }
-        match (drained, has_pages) {
-            (false, false) => &SKIP_NO_PAGES,
-            (false, true) => &SKIP_WITH_PAGES,
-            (true, false) => &DRAINED_NO_PAGES,
-            (true, true) => &DRAINED_WITH_PAGES,
-        }
-        .fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn record(o: Outcome) {
-        if !TLBFIX_STATS {
-            return;
-        }
-        COUNTS[o as usize].fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn print_stats() {
-        if !TLBFIX_STATS {
-            emerglogln!("== tlbfix: DISABLED");
-            return;
-        }
-        let s = COUNTS[0].load(Ordering::Relaxed);
-        let p = COUNTS[1].load(Ordering::Relaxed);
-        let f = COUNTS[2].load(Ordering::Relaxed);
-        let d = COUNTS[3].load(Ordering::Relaxed);
-        emerglogln!(
-            "== tlbfix REACH: drained w/ reachable-cpu {}, unreachable {} (mean {} cpus) -- 0 reachable => drained skip was SOUND, guard unnecessary",
-            DRAINED_REACHABLE.load(Ordering::Relaxed),
-            DRAINED_UNREACHABLE.load(Ordering::Relaxed),
-            {
-                let r = DRAINED_REACHABLE.load(Ordering::Relaxed);
-                if r == 0 {
-                    0
-                } else {
-                    DRAINED_REACH_SUM.load(Ordering::Relaxed) / r
-                }
-            },
-        );
-        emerglogln!(
-            "== tlbfix PAGES: skip w/pages {}, skip no-pages {}, drained w/pages {}, drained no-pages {} -- nonzero w/pages CONFIRMS frame-reuse hazard",
-            SKIP_WITH_PAGES.load(Ordering::Relaxed),
-            SKIP_NO_PAGES.load(Ordering::Relaxed),
-            DRAINED_WITH_PAGES.load(Ordering::Relaxed),
-            DRAINED_NO_PAGES.load(Ordering::Relaxed),
-        );
-        emerglogln!(
-            "== tlbfix: skipped(never-mapped) {}, drained(no-send) {}, drained-targeted {}, drained-overflowed {}, per-member {}, full-global {} (total {})",
-            s,
-            d,
-            COUNTS[4].load(Ordering::Relaxed),
-            COUNTS[5].load(Ordering::Relaxed),
-            p,
-            f,
-            s + p + f + d + COUNTS[4].load(Ordering::Relaxed) + COUNTS[5].load(Ordering::Relaxed)
-        );
     }
 }
 
@@ -961,7 +556,6 @@ impl ObjectPageTable {
     /// while overflowed, so the inner lists cannot drain either. Deliberate rather than an
     /// oversight: additions were dropped while full, so the list is incomplete, and letting it
     /// drain back under the limit would resume precise invalidation with a context untracked.
-    /// See unmap.md.
     fn overflowed(&self, site: invl_overflow::Site) -> bool {
         // One walk yields all three facts; this runs on every call, not only latching ones.
         let len = self.invls.len();
@@ -1004,7 +598,7 @@ impl ObjectPageTable {
     }
 
     /// Targets whose cursor list is non-empty, against the number of slots occupied. Both are
-    /// needed to tell a widely-shared object from one that cycled: see unmap.md.
+    /// needed to tell a widely-shared object from one that cycled.
     pub fn invls_live(&self) -> usize {
         self.invls
             .iter()
@@ -1122,26 +716,18 @@ impl ObjectPageTable {
     }
 
     pub fn run_consistency(&mut self, mut consist: Consistency) {
-        mapprobe::tick(&mapprobe::RC_CALLS);
-        if CONSIST_FASTPATH && consist.is_trivial() {
+        if consist.is_trivial() {
             // Dropping `consist` here still flushes any dirty cache line through
             // `ArchCacheLineMgr`'s Drop, which is the one thing that must not be skipped. The
             // `DeferredUnmappingOps` this would otherwise park is empty, and both `take_deferred`
             // callers only ever `run_all()` it, so not parking it is indistinguishable.
-            mapprobe::tick(&mapprobe::RC_TRIVIAL);
             return;
         }
-        let t_m = mapprobe::start();
         let pending = self.send_consistency(&mut consist);
-        mapprobe::record(&mapprobe::RC_SEND_NS, t_m);
-        let t_m = mapprobe::start();
         consist.tlb_mut().reset();
-        mapprobe::record(&mapprobe::RC_RESET_NS, t_m);
-        let t_m = mapprobe::start();
         consist.set_pending(pending);
         let ops = consist.into_deferred();
         self.park(ops);
-        mapprobe::record(&mapprobe::RC_PARK_NS, t_m);
     }
 
     /// Send the accumulated invalidations to every context this object is mapped into -- one
@@ -1152,24 +738,11 @@ impl ObjectPageTable {
     /// global. Global is the expensive word: `should_target` returns true for every processor when
     /// it is set, which defeats the PCID revocation that normally reduces the target set to zero or
     /// one, and every receiver then does a CR4.PGE toggle and a full flush. Measured at ~2200 of
-    /// those per boot against the arch mapper's ~320 (see TLB.md). Sending all of them before
+    /// those per boot against the arch mapper's ~320. Sending all of them before
     /// waiting for any is what keeps the precise version from costing N serial rounds instead.
     fn send_consistency(&self, consist: &mut Consistency) -> PendingShootdown {
         if !consist.tlb().has_pending() {
             return PendingShootdown::none();
-        }
-        // A/B control arm (many-syncwedge20; raw logs pruned 2026-09-12, see
-        // target/results/PRUNED.md -- verdict preserved in syncwedge-0910.md): every
-        // object-table send goes machine-wide
-        // full+global, bypassing BOTH the tlbfix fast paths and the precise per-cursor path
-        // below. STALE-PARK collapsing to ~0 under this arm localizes the stale-translation
-        // source to this function's targeting; persistence exonerates all of it at once.
-        // Not a shippable state -- ~55k broadcasts/boot (tlbplan-INPROG.md).
-        const FORCE_FULL_GLOBAL_AB: bool = false;
-        if FORCE_FULL_GLOBAL_AB {
-            let mut tlb = ArchTlbMgr::new_full_global();
-            tlb.set_origin(TlbOrigin::Object);
-            return tlb.finish_send();
         }
         // `add_invalidate` drops silently once its bounded lists fill, so past MAX_INVL_TARGETS
         // contexts (or MAX_INVLS cursors within one) this object no longer knows where all of its
@@ -1189,8 +762,7 @@ impl ObjectPageTable {
             //   * membership covers every live `invls` target -- the invariant says it must
             //     (`add_invalidate` calls `add_member` unconditionally), and this checks rather
             //     than assumes it, since a violation here would be silent and durable.
-            if tlbfix::TLBFIX_ENABLE
-                && !consist.tlb().is_global()
+            if !consist.tlb().is_global()
                 && let Some(members) = self.members()
                 && self
                     .invls
@@ -1212,20 +784,9 @@ impl ObjectPageTable {
                     // That exact fall-through has now been introduced twice in this function; the
                     // arm-count telling us `per-member` had risen from ~20k to ~56k is the only
                     // reason it was caught the second time.
-                    tlbfix::record_reachable(crate::arch::memory::pagetables::count_reachable(
-                        self.invls.iter().map(|(t, _)| *t),
-                    ));
-                    if !(tlbfix::TLBFIX_ONLY_WHEN_NO_PAGES && has_pages) {
-                        // Safe to send nothing: either no frames are queued (so `run_all`'s wait
-                        // was gating nothing), or the guard is off because reachability said the
-                        // frames were never reachable.
-                        if self.invls.is_empty() {
-                            tlbfix::record_pages(false, has_pages);
-                            tlbfix::record(tlbfix::Outcome::Skipped);
-                        } else {
-                            tlbfix::record_pages(true, has_pages);
-                            tlbfix::record(tlbfix::Outcome::Drained);
-                        }
+                    if !has_pages {
+                        // Safe to send nothing: no frames are queued, so `run_all`'s wait was
+                        // gating nothing.
                         return PendingShootdown::none();
                     }
                     // Frames are queued and we cannot prove they are unreachable, so the
@@ -1257,7 +818,6 @@ impl ObjectPageTable {
                     // original bug: a value carrying a guarantee documented somewhere other than
                     // where it is consumed. (twizzler-8a.)
                     if !overflowed {
-                        tlbfix::record(tlbfix::Outcome::DrainedTargeted);
                         let mut pending = PendingShootdown::none();
                         for (target, _) in self.invls.iter() {
                             let mut tlb = ArchTlbMgr::new(*target);
@@ -1269,7 +829,6 @@ impl ObjectPageTable {
                     }
                     // `invls` has overflowed and is no longer a complete list. Nothing cheaper is
                     // sound here, so take the broadcast.
-                    tlbfix::record(tlbfix::Outcome::DrainedOverflowed);
                     let mut tlb = ArchTlbMgr::new_full_global();
                     tlb.set_origin(TlbOrigin::Object);
                     return tlb.finish_send();
@@ -1277,7 +836,6 @@ impl ObjectPageTable {
                 // One full invalidation per mapping context. Cpus running that address space are
                 // IPI'd and reload cr3, which flushes exactly that PCID; cpus that are not have
                 // their claim revoked by `finish_send` and flush on the way back in.
-                tlbfix::record(tlbfix::Outcome::PerMember);
                 let mut pending = PendingShootdown::none();
                 for target in members {
                     let mut tlb = ArchTlbMgr::new(*target);
@@ -1287,7 +845,6 @@ impl ObjectPageTable {
                 }
                 return pending;
             }
-            tlbfix::record(tlbfix::Outcome::FullGlobal);
             let mut tlb = ArchTlbMgr::new_full_global();
             tlb.set_origin(TlbOrigin::Object);
             return tlb.finish_send();
@@ -1326,87 +883,19 @@ impl ObjectPageTable {
     }
 
     pub fn map_page(&mut self, offset: u64, page: FrameRef) -> Result<(), TwzError> {
-        self.map_page_probed(offset, page, false)
-    }
-
-    /// [`Self::map_page`], where `hw_dirty` asks for the entry's dirty bit to mean "the cpu wrote
-    /// this" rather than "may need writeback".
-    ///
-    /// [`Table::map`](crate::memory::pagetables) ordinarily ORs `DIRTY` into every new leaf, which
-    /// makes the bit useless as a record of writes. Pass `true` only for an object with no backing
-    /// store: a persistent object's dirty list drives writeback (`region.rs` gates both use sites
-    /// on `use_pager()`), and suppressing the bit there would drop a flush. For an anonymous
-    /// object the list is collected and discarded, so the hardware bit is free to mean what it
-    /// says -- which is what lets the unmap path recycle a never-written page without re-zeroing
-    /// it.
-    pub fn map_page_probed(
-        &mut self,
-        offset: u64,
-        page: FrameRef,
-        probe: bool,
-    ) -> Result<(), TwzError> {
-        // Raw counters, not fault stages: an earlier split of this function with `record_stage`
-        // put 800 ns in the three spans while the call as a whole measured 35 us, and the two
-        // instruments disagreeing is itself the thing to rule out. These are the same probe the
-        // caller times the whole call with.
-        // `mapprobe` brackets the *whole* body as well as each piece, so the residual is measured
-        // rather than inferred: see [`mapprobe`]. The `allocprofile` records below are the frame
-        // allocator work's own instrument and stay where they are.
-        let t_body = mapprobe::start();
-        mapprobe::tick(&mapprobe::CALLS);
-        let t_probe_outer = mapprobe::start();
-        let t_probe = mapprobe::start();
-        mapprobe::record(&mapprobe::PROBE_NS, t_probe);
-        mapprobe::record(&mapprobe::PROBE_OUTER_NS, t_probe_outer);
-
-        let t = allocprofile::start();
-        let t_m = mapprobe::start();
         let mut consist = Consistency::new_object_tables();
         let cursor = MappingCursor::new(VirtAddr::new(offset).unwrap(), page.size());
-        mapprobe::record(&mapprobe::CONS_NEW_NS, t_m);
-        let t_m = mapprobe::start();
         let mut fa = take_or_new_frame_allocator();
-        mapprobe::record(&mapprobe::TAKE_FA_NS, t_m);
-        let t_m = mapprobe::start();
-        let need = if PRECHARGE_EXACT {
-            self.mapper.tables_needed(&cursor)
-        } else {
-            cursor.max_number_new_tables(Self::top_level(), 0)
-        };
+        let need = self.mapper.tables_needed(&cursor);
         if need > 0 {
             fa.precharge(need, FrameAllocFlags::WAIT_OK);
         }
-        mapprobe::record(&mapprobe::PRECHARGE_NS, t_m);
-        let t_m = mapprobe::start();
-        let settings = if probe && zeroprobe::ENABLED {
-            MappingSettings::default_user().with_flags(MappingFlags::USER | MappingFlags::PROBE)
-        } else {
-            MappingSettings::default_user()
-        };
+        let settings = MappingSettings::default_user();
         let mut phys = ContiguousProvider::new(page.start_address(), page.size(), settings);
-        mapprobe::record(&mapprobe::PROV_NS, t_m);
-        allocprofile::record(&allocprofile::MAP_PREP_NS, t);
-        let t = allocprofile::start();
-        let t_m = mapprobe::start();
         let r = self.mapper.map(cursor, &mut phys, &mut consist, &mut fa);
-        mapprobe::record(&mapprobe::WALK_NS, t_m);
-        allocprofile::record(&allocprofile::MAP_WALK_NS, t);
-        let t = allocprofile::start();
-        let t_m = mapprobe::start();
         self.run_consistency(consist);
-        mapprobe::record(&mapprobe::CONSIST_NS, t_m);
-        allocprofile::record(&allocprofile::MAP_CONSIST_NS, t);
-        // Explicit, and timed: everything above sums to well under a microsecond while the call
-        // as a whole measures 35 us after mapping churn, and this drop is the only thing left.
-        let t = allocprofile::start();
-        let t_m = mapprobe::start();
         drop(fa);
-        mapprobe::record(&mapprobe::DROP_FA_NS, t_m);
-        let t_m = mapprobe::start();
         drop(phys);
-        mapprobe::record(&mapprobe::DROP_PHYS_NS, t_m);
-        allocprofile::record(&allocprofile::MAP_DROP_NS, t);
-        mapprobe::record(&mapprobe::BODY_NS, t_body);
         r
     }
 
@@ -1430,7 +919,6 @@ impl ObjectPageTable {
         &mut self,
         offset: u64,
         frames: &[FrameRef],
-        probe: bool,
         installed: &mut usize,
     ) -> Result<(), TwzError> {
         *installed = 0;
@@ -1442,22 +930,11 @@ impl ObjectPageTable {
         let mut consist = Consistency::new_object_tables();
         let cursor = MappingCursor::new(VirtAddr::new(offset).unwrap(), len);
         let mut fa = take_or_new_frame_allocator();
-        let need = if PRECHARGE_EXACT_RANGE {
-            self.mapper.tables_needed(&cursor)
-        } else {
-            cursor.max_number_new_tables(Self::top_level(), 0)
-        };
+        let need = self.mapper.tables_needed(&cursor);
         if need > 0 {
             fa.precharge(need, FrameAllocFlags::WAIT_OK);
         }
-        // Same settings `map_page_probed` builds, and for the same reason: `zeroprobe` reads the
-        // flag off `paddr.settings` per installed entry, so carrying it here gives one probed
-        // leaf per page exactly as the per-page path did.
-        let settings = if probe && zeroprobe::ENABLED {
-            MappingSettings::default_user().with_flags(MappingFlags::USER | MappingFlags::PROBE)
-        } else {
-            MappingSettings::default_user()
-        };
+        let settings = MappingSettings::default_user();
         mapprobe::add(&mapprobe::MF_CALLS, 1);
         mapprobe::add(&mapprobe::MF_PAGES, frames.len() as u64);
         let mut phys = FrameSliceProvider::new(frames, settings);
@@ -1487,11 +964,7 @@ impl ObjectPageTable {
         let mut consist = Consistency::new_object_tables();
         let cursor = MappingCursor::new(VirtAddr::new(offset).unwrap(), len);
         let mut fa = take_or_new_frame_allocator();
-        let need = if PRECHARGE_EXACT_RANGE {
-            self.mapper.tables_needed(&cursor)
-        } else {
-            cursor.max_number_new_tables(Self::top_level(), 0)
-        };
+        let need = self.mapper.tables_needed(&cursor);
         if need > 0 {
             fa.precharge(need, FrameAllocFlags::WAIT_OK);
         }
@@ -1555,11 +1028,7 @@ impl ObjectPageTable {
     /// measured **37 us to find 16 pages** and was 99.7% of `sys_object_stat`; `HandleMgr` calls
     /// that syscall once per tracked compartment on every handle insert and remove.
     pub fn count_pages(&self) -> usize {
-        let counted = self.mapper.page_count();
-        if let Some(n) = counted
-            && COUNT_PAGES_COUNTER
-            && !COUNT_PAGES_VERIFY
-        {
+        if let Some(n) = self.mapper.page_count() {
             return n;
         }
         let cursor = MappingCursor::new(VirtAddr::new(0).unwrap(), self.max_len());
@@ -1571,16 +1040,6 @@ impl ObjectPageTable {
                 acc + mi.len() / PageNumber::PAGE_SIZE
             }
         });
-        // The counterfactual. A counter that misses an update is silently wrong forever and
-        // nothing else checks `ObjectInfo::pages`, so the walk stays available and, with this on,
-        // every call runs both and reports any disagreement. Must stay 0.
-        if (COUNT_PAGES_VERIFY || COUNT_PAGES_COUNTER) && counted.is_some_and(|n| n != walked) {
-            logln!(
-                "[obj] count_pages drift: counter {} walked {}",
-                counted.unwrap(),
-                walked
-            );
-        }
         walked
     }
 
@@ -1845,11 +1304,7 @@ impl ObjectPageTable {
         for i in 0..npages {
             let cursor =
                 MappingCursor::new(VirtAddr::new(offset + (i * page) as u64).unwrap(), page);
-            need += if PRECHARGE_EXACT_RANGE {
-                self.mapper.cow_tables_needed(&cursor)
-            } else {
-                cursor.max_number_new_tables(Self::top_level(), 0)
-            };
+            need += self.mapper.cow_tables_needed(&cursor);
         }
         if need > 0 {
             fa.precharge(need, FrameAllocFlags::WAIT_OK);
@@ -1896,11 +1351,7 @@ impl ObjectPageTable {
         let cursor =
             MappingCursor::new(VirtAddr::new(offset).unwrap(), PHYS_LEVEL_LAYOUTS[0].size());
         let mut fa = take_or_new_frame_allocator();
-        let need = if PRECHARGE_EXACT_RANGE {
-            self.mapper.cow_tables_needed(&cursor)
-        } else {
-            cursor.max_number_new_tables(Self::top_level(), 0)
-        };
+        let need = self.mapper.cow_tables_needed(&cursor);
         if need > 0 {
             fa.precharge(need, FrameAllocFlags::WAIT_OK);
         }
@@ -2012,8 +1463,8 @@ impl ObjectPageTable {
     }
 
     /// `anon`: the object has no backing store, so the swap may clear `DIRTY` and let a later
-    /// call recognise an untouched page. Same flag `map_page_probed` takes, and for the same
-    /// reason -- see `SKIP_CLEAN_SWAP`.
+    /// call recognise an untouched page. Same flag `map_page` takes, and for the same
+    /// reason -- see the clean-skip arm of `Table::setup_zero_range`.
     pub fn setup_zero_range(
         &mut self,
         offset: u64,
@@ -2047,11 +1498,7 @@ impl Object {
         let len = (end.raw() - start.raw()) as usize;
         let cursor = MappingCursor::new(VirtAddr::new(offset as u64).unwrap(), len);
         let mut fa = take_or_new_frame_allocator();
-        let need = if PRECHARGE_EXACT_RANGE {
-            pt.mapper.tables_needed(&cursor)
-        } else {
-            cursor.max_number_new_tables(pt.mapper.start_level(), 0)
-        };
+        let need = pt.mapper.tables_needed(&cursor);
         if need > 0 {
             fa.precharge(need, FrameAllocFlags::WAIT_OK);
         }
@@ -2131,7 +1578,7 @@ impl Object {
 ///
 /// A large page today is a property of delivery, not of state: it exists only where 512 aligned,
 /// contiguous pages arrive in a single pager completion, and a region filled 4 KiB at a time stays
-/// 4 KiB forever however contiguous it turns out to be (`largepager.md`). `promotable` is what a
+/// 4 KiB forever however contiguous it turns out to be. `promotable` is what a
 /// promotion pass would convert and is the number that decides whether promotion is worth building.
 /// `unaligned` is what it could not convert, and so sizes the pager-side object-keyed allocation
 /// that would make promotion always possible.

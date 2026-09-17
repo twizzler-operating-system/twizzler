@@ -44,7 +44,6 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
-use ferroc::heap;
 use intrusive_collections::{LinkedList, LinkedListLink, intrusive_adapter};
 use twizzler_abi::syscall::MemoryStats;
 
@@ -52,10 +51,7 @@ use super::{MemoryRegion, MemoryRegionKind, PhysAddr};
 use crate::{
     arch::{
         VirtAddr,
-        memory::{
-            frame::{self, FRAME_SIZE},
-            phys_to_virt,
-        },
+        memory::{frame::FRAME_SIZE, phys_to_virt},
     },
     memory::tracker::{FrameAllocator, is_low_mem},
     once::Once,
@@ -120,7 +116,7 @@ struct AllocationRegion {
     ///
     /// Splitting is one-way without this: a large frame broken up to satisfy 4 KiB allocations
     /// never reforms, so the level-1 list drains and every later large-frame request fails --
-    /// which is what makes objects assemble regions 4 KiB at a time (`promote.md`). The
+    /// which is what makes objects assemble regions 4 KiB at a time. The
     /// counter is what lets a fully-free group be *found* rather than scanned for, so the free
     /// path stays a single increment and all the work happens on the allocation that would
     /// otherwise fail.
@@ -907,17 +903,7 @@ impl Frame {
         let slice = unsafe { core::slice::from_raw_parts_mut(ptr, self.size()) };
         slice.fill(0);
         self.set_flags(PhysicalFrameFlags::ZEROED, true);
-        // The contents are no longer the poison pattern; see `FREE_POISON`.
-        self.info.fetch_and(!POISON_BIT, Ordering::SeqCst);
         self.unlock();
-    }
-
-    fn set_poisoned(&self) {
-        self.info.fetch_or(POISON_BIT, Ordering::SeqCst);
-    }
-
-    fn take_poisoned(&self) -> bool {
-        self.info.fetch_and(!POISON_BIT, Ordering::SeqCst) & POISON_BIT != 0
     }
 
     /// Double-free tripwire for frames parked in a per-cpu precharge pool (tracker.rs). Set
@@ -1237,20 +1223,6 @@ impl PhysicalFrameAllocator {
     }
 }
 
-/// Answer `get_frame` from precomputed bounds instead of rebuilding them per call.
-///
-/// [`FrameIndexer::contains`] recomputed its upper bound every time as `start.offset(len)`, which
-/// is `PhysAddr::offset` -> `PhysAddr::new` -> `get_phys_addr_width()` -> a `Once::call_once`
-/// (an atomic load), plus a `checked_add`, a `Result` and an `unwrap`. That runs once per
-/// *indexer*, [`get_frame`] scans every indexer, and the map path calls `get_frame` twice per
-/// mapped page: `W_COW_GF_NS` = 82 ns and `W_LEAF_GF_NS` = 44 ns per `map_page` (`many-pfdiag`).
-/// Bounds are fixed at construction, so none of it has to be recomputed.
-///
-/// Gated so the two bodies can be measured against each other in one source tree. `W_COW_GF_NS`
-/// is the clean read on this change alone -- the COW lookup has no other fix in flight, while
-/// `W_LEAF_GF_NS` also moves with [`PROVIDER_CARRIES_FRAME`].
-const FRAME_LOOKUP_FAST: bool = true;
-
 #[doc(hidden)]
 static PFA: Once<Spinlock<PhysicalFrameAllocator>> = Once::new();
 
@@ -1305,16 +1277,6 @@ impl FrameIndexer {
     }
 
     fn get_frame(&self, pa: PhysAddr) -> Option<FrameRef> {
-        if !FRAME_LOOKUP_FAST {
-            if !self.contains(pa) {
-                return None;
-            }
-            let index = (pa - self.start) / FRAME_SIZE;
-            assert!(index < self.frame_array_len);
-            let frame = &self.frame_array()[index as usize];
-            // Safety: the frame array is static for the life of the kernel
-            return Some(unsafe { transmute(frame) });
-        }
         let raw = pa.raw();
         if raw < self.start_raw || raw >= self.end_raw {
             return None;
@@ -1338,9 +1300,6 @@ impl FrameIndexer {
     }
 
     fn contains(&self, pa: PhysAddr) -> bool {
-        if !FRAME_LOOKUP_FAST {
-            return pa >= self.start && pa < (self.start.offset(self.len).unwrap());
-        }
         let raw = pa.raw();
         raw >= self.start_raw && raw < self.end_raw
     }
@@ -1497,27 +1456,6 @@ pub fn dirty_pt_frames() -> u64 {
     DIRTY_PT_FRAMES.load(Ordering::Relaxed)
 }
 
-const OVERLAP_CHECK: bool = true;
-
-/// Write-after-free detector. `check_overlap` sees a frame handed out at two levels, but not the
-/// other way corruption enters: a stale free of a frame whose current owner holds it at refcount
-/// zero (a precharge pool, a not-yet-mapped object page) passes every assert on the free path,
-/// puts the frame on the free list with two owners, and the second owner's ZEROED request memsets
-/// the first owner's memory. So: fill every level-0 non-zeroed frame with a pattern as it enters
-/// the free list, and verify the pattern (or, for zeroed-list frames, the zeroes) at the next
-/// hand-out -- any write in between panics at hand-out, naming the frame, instead of surfacing as
-/// a wild jump much later.
-///
-/// The bit tracking "this frame holds the pattern" lives in `info` above the flags byte; `reset`
-/// clears it wholesale, and `zero()` clears it when it rewrites the contents, so split, merge,
-/// coalesce, and the background zeroer only lose coverage, never false-positive.
-///
-/// Costs a 4 KiB write per free and a 4 KiB read per alloc: a diagnostic, not a shipping default.
-/// (A poison-armed sweep also runs slow enough to trip the 25s sleep diagnostics and the bench
-/// watchdog under mass frees -- `fa-poison` round 1.)
-const FREE_POISON: bool = false;
-
-const POISON_BIT: u64 = 1 << 16;
 /// See [Frame::mark_pooled].
 const POOLED_BIT: u64 = 1 << 17;
 
@@ -1528,47 +1466,7 @@ const POOLED_BIT: u64 = 1 << 17;
 /// so [Frame::adjust_pt_count]'s `fetch_add` can never carry out of the field.
 const PT_COUNT_SHIFT: u64 = 18;
 const PT_COUNT_MASK: u64 = 0x3ff << PT_COUNT_SHIFT;
-const POISON_PATTERN: u64 = 0xF4EE_F4EE_F4EE_F4EE;
-
-fn poison_on_free(frame: FrameRef) {
-    if !FREE_POISON || frame.get_level() != 0 || frame.is_zeroed() {
-        return;
-    }
-    let ptr: *mut u64 = frame.virtaddr().as_mut_ptr();
-    let words = frame.size() / size_of::<u64>();
-    unsafe { core::slice::from_raw_parts_mut(ptr, words) }.fill(POISON_PATTERN);
-    frame.set_poisoned();
-}
-
-fn check_poison_on_alloc(frame: FrameRef) {
-    if !FREE_POISON {
-        return;
-    }
-    let expect = if frame.take_poisoned() {
-        POISON_PATTERN
-    } else if frame.is_zeroed() && frame.get_level() == 0 {
-        0
-    } else {
-        return;
-    };
-    let ptr: *const u64 = frame.virtaddr().as_ptr();
-    let words = frame.size() / size_of::<u64>();
-    let slice = unsafe { core::slice::from_raw_parts(ptr, words) };
-    if let Some(idx) = slice.iter().position(|w| *w != expect) {
-        panic!(
-            "frame {:?} was written while on the free list: offset {:x} holds {:x}, expected {:x}",
-            frame,
-            idx * size_of::<u64>(),
-            slice[idx],
-            expect
-        );
-    }
-}
-
 pub(super) fn check_overlap(frame: FrameRef, whence: &str) {
-    if !OVERLAP_CHECK {
-        return;
-    }
     let pa = frame.start_address();
     let level = frame.get_level();
     for l in (level + 1)..NR_LEVELS {
@@ -1605,13 +1503,10 @@ pub(super) fn check_overlap(frame: FrameRef, whence: &str) {
 /// The post-allocation half of [`raw_alloc_frame`], shared with [`raw_alloc_frames`].
 fn finish_raw_alloc(frame: FrameRef, flags: PhysicalFrameFlags) {
     check_overlap(frame, "alloc");
-    check_poison_on_alloc(frame);
     if flags.contains(PhysicalFrameFlags::ZEROED) && !frame.is_zeroed() {
         use crate::memory::tracker::allocprofile;
-        let t = allocprofile::start();
         frame.zero();
         allocprofile::add(&allocprofile::ZEROED_INLINE, 1);
-        allocprofile::record(&allocprofile::ZERO_NS, t);
     }
     if flags.contains(PhysicalFrameFlags::ZEROED) {
         assert!(frame.is_zeroed());
@@ -1645,7 +1540,6 @@ pub(super) fn raw_free_frame(frame: FrameRef) {
     assert!(frame.get_flags().contains(PhysicalFrameFlags::ALLOCATED));
     assert!(!frame.get_flags().contains(PhysicalFrameFlags::IS_WIRED));
     check_overlap(frame, "free");
-    poison_on_free(frame);
     frame.set_pt(false);
     frame.set_cow(false);
     assert_eq!(frame.refcount(), 0);

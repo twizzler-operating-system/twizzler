@@ -23,10 +23,7 @@ use crate::{
         tracker::FrameAllocFlags,
     },
     mutex::{LockGuard, Mutex},
-    obj::{
-        LookupFlags, ObjectRef, PageNumber, PtGuard,
-        pagetables::{DirtyList, ObjectPageTable},
-    },
+    obj::{LookupFlags, ObjectRef, PageNumber, PtGuard, pagetables::DirtyList},
     once::{Once, OnceWait},
     processor::sched::{SchedFlags, schedule},
     spinlock::Spinlock,
@@ -51,9 +48,7 @@ pub fn live_requests() -> usize {
     inflight::live_requests()
 }
 
-pub use queues::{
-    init_pager_queue, is_pager_queue, sender_kview, sender_occupancy, sender_slot_diag,
-};
+pub use queues::{init_pager_queue, is_pager_queue, sender_occupancy};
 pub use request::Request;
 
 /// Ceiling on frames loaned to the pager, and the level the top-up paths steer toward, on a
@@ -119,11 +114,6 @@ pub fn default_pager_outstanding_frames() -> usize {
     DEFAULT_PAGER_OUTSTANDING_FRAMES.min(max_pager_outstanding_frames())
 }
 
-/// A/B: shard the inflight manager by object id. `false` routes every selection to shard 0, which
-/// reproduces the single-mutex behaviour with the sharded code compiled in -- one tree state, both
-/// arms.
-pub const INFLIGHT_SHARDED: bool = true;
-
 /// Shard count. Object ids are content-derived hashes, so their low bits index shards uniformly
 /// with no hash step (the same argument `obj::omap` makes).
 const INFLIGHT_SHARDS: usize = 16;
@@ -143,9 +133,6 @@ fn inflight_mgr() -> &'static ShardedInflight {
 /// Which shard owns requests for `id`. `None` -- only [`ReqKind::Pages`], the pager-memory
 /// donation request, which names no object -- goes to shard 0.
 fn shard_idx(id: Option<ObjID>) -> usize {
-    if !INFLIGHT_SHARDED {
-        return 0;
-    }
     match id {
         Some(id) => (id.raw() as usize) % INFLIGHT_SHARDS,
         None => 0,
@@ -238,126 +225,12 @@ pub fn check_timed_out_requests() {
     }
 }
 
-/// A/B knob for the speculative prefetch below. Setting it false reproduces the pre-prefetch path
-/// exactly, which is what makes any measurement of it one rebuild apart.
-const PREFETCH_ON_LOOKUP: bool = false;
-
-/// Speculatively page in an object's first region, just after the pager first described it.
-///
-/// Issued from the thread that did the waiting, never from the completion thread: this can block
-/// donating memory to the pager, and the completion thread is the only one draining completions.
-///
-/// The request covers the first large-page region minus its first page -- page zero is the null
-/// page and is never backed. That also keeps every page of it off the large-page branch in
-/// `pager_compl_handle_page_data`, which only fires on a 2MB-aligned object page.
-///
-/// Nothing waits on this: `get_pages_and_wait` skips the wait for a prefetch, so a failure here
-/// costs the caller nothing but the submission.
-fn prefetch_first_region(obj: &ObjectRef) {
-    if !PREFETCH_ON_LOOKUP || !obj.use_pager() {
-        return;
-    }
-    let pages = PHYS_LEVEL_LAYOUTS[1].size() / PageNumber::PAGE_SIZE - 1;
-    let mut used_pager = false;
-    let _ = ensure_in_core(
-        obj,
-        obj.lock_page_tables(),
-        &[(PageNumber::base_page(), pages)],
-        PagerFlags::PREFETCH,
-        true,
-        &mut used_pager,
-        None,
-    );
-}
-
-/// A/B knob for the map-time prefetch below, in the habit of the one above.
-const PREFETCH_ON_MAP: bool = false;
-
-/// Start the page-in for the region *after* the one the object's first fault will read ahead into.
-///
-/// **It has to start past that window, and this is the whole design.** Seeding pages inside it does
-/// not help the first fault -- it *disables* it. `ensure_in_core_pager` widens a touch to a whole
-/// read-ahead window only when the region is untouched (`is_empty_at_level(.., 1)`), so 16 seeded
-/// pages made the first fault read that test as "region already in use", abandon the 1024-page
-/// request, and fall back to per-page probing: faults went 87-103 -> 117-324 on `pagepar`, page-in
-/// calls doubled, and fewer regions arrived contiguously enough to merge into large pages. The
-/// map-time seed and the fault-time read-ahead are coupled through that one predicate, and the only
-/// way to have both is to keep them on disjoint regions.
-///
-/// So: the first fault owns `[0, READAHEAD_REGIONS)` and this owns the window after it, driven
-/// through the same widening from that region's first page. Same code, so the request is byte-for-
-/// byte the one a fault landing there would issue -- which means when the reader does arrive it
-/// coalesces onto this in `add_request` rather than duplicating it.
-///
-/// Issued without [PagerFlags::PREFETCH] on purpose: that flag is what the pager routes and caps
-/// on, and `speculative` carries the only part the kernel needs (nobody is blocked, so do not
-/// wait, and do not spend to make it succeed).
-///
-/// Gated on the object being longer than that window. Without the gate a small file's prefetch is
-/// entirely past EOF, which commits holes rather than data -- the failure `pagerperf.md` 18
-/// suspected of the reverted extent-warming attempt.
-pub fn prefetch_on_map(obj: &ObjectRef) {
-    if !PREFETCH_ON_MAP || !obj.use_pager() || !obj.claim_map_prefetch() {
-        return;
-    }
-    let window = (PHYS_LEVEL_LAYOUTS[1].size() / PageNumber::PAGE_SIZE)
-        * crate::obj::Object::READAHEAD_REGIONS;
-    let start = PageNumber::from_offset(window * PageNumber::PAGE_SIZE);
-    match obj.known_len() {
-        Some(len) if len > start.as_byte_offset() as u64 => {}
-        // Either not a sized object at all, or one that ends inside the first fault's own window.
-        // Both are nothing to speculate about.
-        _ => {
-            mapprefetch::skipped();
-            return;
-        }
-    }
-    mapprefetch::issued();
-    let _ = obj.ensure_in_core_pager(
-        obj.lock_page_tables(),
-        start,
-        1,
-        &mut false,
-        &mut false,
-        PagerFlags::empty(),
-        true,
-        false,
-    );
-}
-
-/// Whether the map-time prefetch fires at all, and how often it finds the head already there.
-///
-/// It has to be counted here rather than read off the pager's counters, because clearing
-/// [PagerFlags::PREFETCH] is precisely what makes these requests indistinguishable from demand
-/// faults on the wire -- `REQSTATS` will call every one of them demand.
-mod mapprefetch {
-    use core::sync::atomic::{AtomicU64, Ordering};
-
-    static ISSUED: AtomicU64 = AtomicU64::new(0);
-    static SKIPPED: AtomicU64 = AtomicU64::new(0);
-
-    pub fn skipped() {
-        SKIPPED.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn issued() {
-        let n = ISSUED.fetch_add(1, Ordering::Relaxed) + 1;
-        if n.is_power_of_two() {
-            log::info!(
-                "MAPPREFETCH: {} issued, {} skipped (too short, or not a sized object)",
-                n,
-                SKIPPED.load(Ordering::Relaxed),
-            );
-        }
-    }
-}
-
 pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
     if id.raw() == 0 {
         return None;
     }
     // Only prefetch for an object we actually had to ask the pager about. A lookup that hits
-    // in-kernel on the first pass is the common case by far (`pagerperf.md` 17: 27 of 256 maps
+    // in-kernel on the first pass is the common case by far (measured: 27 of 256 maps
     // reached the pager at all), and speculating on every one of those would be speculating on
     // objects that have been resident for a long time already.
     let mut asked_pager = false;
@@ -374,9 +247,6 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
                     (looked_up - entered).as_nanos() as u64,
                     !asked_pager,
                 );
-                if asked_pager {
-                    prefetch_first_region(&arc);
-                }
                 return Some(arc);
             }
             crate::obj::LookupResult::WasDeleted => return None,
@@ -414,7 +284,6 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
         let thread = current_thread_ref().unwrap();
         if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
             drop(mgr);
-            crate::thread::locktrack::warn_if_blocking_with_mutexes("pager request");
             finish_blocking(guard);
         };
         let woke = Instant::now();
@@ -431,7 +300,7 @@ pub fn lookup_object_and_wait(id: ObjID) -> Option<ObjectRef> {
 /// Only "is this below ordinary userspace" is conveyed, not the priority itself: the pager uses it
 /// to keep low-priority paging off the lanes it reserves for demand faults, which is a routing
 /// decision, not a scheduling one. Full priority inheritance through the pager wants the requesting
-/// thread's actual priority and is a larger design (see `pagerplan.md` stage 4).
+/// thread's actual priority and is a larger design.
 ///
 /// Applied where the wire request is built, not where the [ReqKind] is -- see the note at that call
 /// site for why this must stay out of the coalescing key.
@@ -507,7 +376,7 @@ fn submit_page_request<'a>(
     // the pager to ack a donation, and every range after the first waits here as well -- so by the
     // time a range is submitted its presence data can be several completions old. Asking anyway is
     // where the residual duplicate transfer came from: pages another request installed during the
-    // window, re-requested and thrown away on arrival (`INPROG.md`).
+    // window, re-requested and thrown away on arrival.
     //
     // Only the head, because that is where they are: the arrivals are the earlier request's range,
     // which is a prefix of this one. A hole in the middle would need this range to become two, and
@@ -656,7 +525,7 @@ fn wait_for_page_requests(
     // Wait for the pages the caller actually asked for, not for the whole request.
     //
     // `ensure_in_core_pager` widens a one-page touch to an entire large-page region -- 1024
-    // pages is the shape that reaches the pager on a first touch (`pagerperf.md` 11) -- and the
+    // pages is the shape that reaches the pager on a first touch -- and the
     // request completes as a unit, so a thread that needed one page slept for four megabytes of
     // transfer. `required` is what that thread asked for before the widening; once it is
     // backed, the rest of the request is nobody's critical path and finishes behind us.
@@ -708,7 +577,6 @@ fn wait_for_page_requests(
                 continue;
             };
             drop(mgr);
-            crate::thread::locktrack::warn_if_blocking_with_mutexes("pager request");
             waitstats::park();
             finish_blocking(guard);
         },
@@ -723,7 +591,6 @@ fn wait_for_page_requests(
                 // every batch, so this returns on the first of them rather than at DONE.
                 if let Some(guard) = mgr.setup_wait(inflight, &thread) {
                     drop(mgr);
-                    crate::thread::locktrack::warn_if_blocking_with_mutexes("pager request");
                     waitstats::park();
                     finish_blocking(guard);
                 }
@@ -758,7 +625,6 @@ fn cmd_object(req: ReqKind, obj: Option<&ObjectRef>) {
     let thread = current_thread_ref().unwrap();
     if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
         drop(mgr);
-        crate::thread::locktrack::warn_if_blocking_with_mutexes("pager request");
         finish_blocking(guard);
     };
 }
@@ -779,7 +645,7 @@ pub fn del_object(id: ObjID) {
 /// outstanding request, so the DONE branch that removes an entry can be the drop that issues the
 /// delete. That parks the *only* thread draining completions on a completion it will never get to
 /// process: the pager finishes the delete and goes idle, the kernel keeps that request and whatever
-/// else was in flight inflight forever, and everything behind the pager stops (`sysbench.md` F7).
+/// else was in flight inflight forever, and everything behind the pager stops.
 /// The same drop also lands under that map's spinlock, where blocking is not merely a stall.
 ///
 /// So the drop only names the object and this thread does the round trip. The delete is
@@ -859,79 +725,10 @@ pub fn create_object(id: ObjID, create: &ObjectCreate, nonce: u128) -> Result<()
     }
 }
 
-/// Who blocks in `do_sync_region`, for how long, and on which of its two waits.
-///
-/// Every written file's `close()` reaches here with `wait = true`: `RawFile::shutdown` sends
-/// `ASYNC_DURABLE | DURABLE`, and `region.rs`'s `ctrl` passes the *ASYNC* bit as the `wait`
-/// argument -- so the async-named flag is precisely what makes the call synchronous. For a
-/// `.rmeta` that close lands inside rustc's `generate_crate_metadata` timer.
-///
-/// The two waits are counted apart deliberately. `queue_ns` is backpressure -- waiting on a
-/// *previous* sync for the same object, which is queueing, not service; request slots are shared
-/// with page-ins too. `wait_ns` is this call's own completion. One blended number invites reading
-/// it as "the pager needs N ms to write this much data", which it is not.
-pub mod syncwait {
-    use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
-
-    /// Off by default: this times two blocking paths in the pager.
-    pub const SYNC_WAIT_STATS: bool = false;
-
-    pub static CALLS: AtomicU64 = AtomicU64::new(0);
-    /// Of `CALLS`, those that asked to block.
-    pub static WAITED: AtomicU64 = AtomicU64::new(0);
-    pub static QUEUE_NS: AtomicU64 = AtomicU64::new(0);
-    pub static QUEUE_HITS: AtomicU64 = AtomicU64::new(0);
-    pub static WAIT_NS: AtomicU64 = AtomicU64::new(0);
-    pub static WAIT_HITS: AtomicU64 = AtomicU64::new(0);
-    pub static MAX_NS: AtomicU64 = AtomicU64::new(0);
-
-    pub fn record_queue(ns: u64) {
-        QUEUE_NS.fetch_add(ns, Relaxed);
-        QUEUE_HITS.fetch_add(1, Relaxed);
-        MAX_NS.fetch_max(ns, Relaxed);
-    }
-
-    pub fn record_wait(ns: u64) {
-        WAIT_NS.fetch_add(ns, Relaxed);
-        WAIT_HITS.fetch_add(1, Relaxed);
-        MAX_NS.fetch_max(ns, Relaxed);
-    }
-
-    pub fn report() {
-        if !SYNC_WAIT_STATS {
-            return;
-        }
-        let calls = CALLS.load(Relaxed);
-        if calls == 0 {
-            return;
-        }
-        let (q, w) = (QUEUE_NS.load(Relaxed), WAIT_NS.load(Relaxed));
-        logln!(
-            "== sync-region waits: {} calls, {} asked to block; queue {} us over {} hits, \
-             own-sync {} us over {} hits, total {} ms, max single {} us ==",
-            calls,
-            WAITED.load(Relaxed),
-            q / 1000,
-            QUEUE_HITS.load(Relaxed),
-            w / 1000,
-            WAIT_HITS.load(Relaxed),
-            (q + w) / 1_000_000,
-            MAX_NS.load(Relaxed) / 1000,
-        );
-    }
-}
-
 fn do_sync_region(obj: &ObjectRef, req: ReqKind, wait: bool) {
     // Covers both waits below -- the one for a previous sync and the one for ours. The first is a
     // wait on a request this thread did not submit, which counts all the same: what the counter
     // means is "a thread of this class is blocked on the completion thread".
-    if syncwait::SYNC_WAIT_STATS {
-        use core::sync::atomic::Ordering::Relaxed;
-        syncwait::CALLS.fetch_add(1, Relaxed);
-        if wait {
-            syncwait::WAITED.fetch_add(1, Relaxed);
-        }
-    }
     let _boost = boost::WaitBoost::new();
     // Backpressure: wait for any sync already in flight for this object before submitting
     // another. Every SyncRegion is unique (see `SyncRegionInfo`), so nothing coalesces them, and
@@ -951,12 +748,7 @@ fn do_sync_region(obj: &ObjectRef, req: ReqKind, wait: bool) {
         let thread = current_thread_ref().unwrap();
         if let Some(guard) = mgr.setup_wait(&prev, &thread) {
             drop(mgr);
-            crate::thread::locktrack::warn_if_blocking_with_mutexes("pager request");
-            let t = syncwait::SYNC_WAIT_STATS.then(Instant::now);
             finish_blocking(guard);
-            if let Some(t) = t {
-                syncwait::record_queue((Instant::now() - t).as_nanos() as u64);
-            }
         } else {
             // Declined: the previous sync is done but not yet removed. Give the completion
             // thread a chance to remove it rather than spinning on the lookup.
@@ -988,12 +780,7 @@ fn do_sync_region(obj: &ObjectRef, req: ReqKind, wait: bool) {
     let thread = current_thread_ref().unwrap();
     if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
         drop(mgr);
-        crate::thread::locktrack::warn_if_blocking_with_mutexes("pager request");
-        let t = syncwait::SYNC_WAIT_STATS.then(Instant::now);
         finish_blocking(guard);
-        if let Some(t) = t {
-            syncwait::record_wait((Instant::now() - t).as_nanos() as u64);
-        }
     };
 }
 
@@ -1571,7 +1358,6 @@ pub fn provide_pager_memory(min_frames: usize, wait: bool) {
             let thread = current_thread_ref().unwrap();
             if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
                 drop(mgr);
-                crate::thread::locktrack::warn_if_blocking_with_mutexes("pager request");
                 finish_blocking(guard);
             };
         }
@@ -1590,7 +1376,6 @@ fn wait_oldest_donation(inflights: &mut Vec<Inflight>) -> bool {
     let thread = current_thread_ref().unwrap();
     if let Some(guard) = mgr.setup_wait(&inflight, &thread) {
         drop(mgr);
-        crate::thread::locktrack::warn_if_blocking_with_mutexes("pager request");
         finish_blocking(guard);
     }
     true

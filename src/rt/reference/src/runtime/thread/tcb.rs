@@ -77,7 +77,7 @@ pub(super) extern "C" fn trampoline(arg: usize) -> ! {
 /// TLS regions from exited threads, waiting for the next spawn.
 ///
 /// Same shape as the monitor's super-TLS pool and for the same reason: `SPAWNRT`'s tls phase is
-/// 2.4 us median but 94 us mean with a 31 ms max (`sysperf.md` round 7, lead 4b). A 2-4 us median
+/// 2.4 us median but 94 us mean with a 31 ms max. A 2-4 us median
 /// is not worth a pool; a mean 40x the median is, and it is the same story as every other
 /// allocation on this path -- a fresh span from the base allocator whose pages nothing has touched,
 /// so the region's first write faults.
@@ -109,10 +109,6 @@ pub(super) mod tlspool {
     /// Regions held before further returns go back to the allocator.
     const MAX: usize = 8;
 
-    /// A/B switch for measuring what recycling is worth; `false` restores allocating and freeing
-    /// each region.
-    const RECYCLE: bool = true;
-
     #[derive(Clone, Copy)]
     struct Entry {
         base: usize,
@@ -127,9 +123,6 @@ pub(super) mod tlspool {
     /// Keyed on the layout because it is per TLS generation: a region built for one generation is
     /// the wrong size for another, and matching on the layout is what keeps them apart.
     pub(in crate::runtime) fn take(layout: Layout) -> Option<*mut u8> {
-        if !RECYCLE {
-            return None;
-        }
         let mut pool = POOL.lock();
         for slot in pool.iter_mut() {
             if let Some(e) = *slot {
@@ -144,7 +137,7 @@ pub(super) mod tlspool {
 
     /// Returns false if the pool is full and the caller should free the region itself.
     pub(in crate::runtime) fn put(base: *mut u8, layout: Layout) -> bool {
-        if !RECYCLE || base.is_null() {
+        if base.is_null() {
             return false;
         }
         let mut pool = POOL.lock();

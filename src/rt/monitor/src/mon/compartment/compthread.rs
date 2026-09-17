@@ -115,16 +115,4 @@ impl StackObject {
     pub fn initial_stack_ptr(&self) -> usize {
         self.stack_comp_start() + self.stack_size
     }
-
-    /// Get the entry frame for this thread into a given compartment.
-    pub fn get_entry_frame(&self, ctx: ObjID, entry: usize, arg: usize) -> UpcallFrame {
-        UpcallFrame::new_entry_frame(
-            self.initial_stack_ptr(),
-            self.stack_size(),
-            0,
-            ctx,
-            entry,
-            arg,
-        )
-    }
 }

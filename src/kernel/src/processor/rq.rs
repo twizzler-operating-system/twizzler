@@ -403,7 +403,7 @@ impl<const N: usize> RunQueue<N> {
     /// The queues bucket a thread by the priority it had at insert, and `take` never reaches a
     /// lower class while a higher one has work -- so a donation that crosses classes leaves its
     /// target stranded (a Background thread in the idle-class queue starves forever behind any
-    /// spinning User thread; the round357 wedge in smp1hang.md). Mirrors the take_* bookkeeping
+    /// spinning User thread). Mirrors the take_* bookkeeping
     /// exactly, except `current_priority` is left alone: stale-high is the safe direction, and
     /// the caller re-inserts immediately, which raises it as needed.
     ///

@@ -41,11 +41,7 @@ use crate::{
     processor::{mp::all_processors, sched::schedule_thread},
     spinlock::Spinlock,
     syscall::sync::finish_blocking,
-    thread::{
-        Thread, ThreadRef, current_thread_ref,
-        locktrack::{self, with_lock_tracker},
-        priority::Priority,
-    },
+    thread::{Thread, ThreadRef, current_thread_ref, locktrack, priority::Priority},
     time::TimeStatCollector,
 };
 
@@ -61,25 +57,12 @@ const PAUSE_REPORT_AFTER: Duration = Duration::from_secs(2);
 /// Report an unresolved wait *from the waiter*, which is the one thread guaranteed to still be
 /// running when it matters.
 ///
-/// The owner's own wait edge is the part nothing else records. `check_timed_out_mutexes` prints it,
-/// but it runs only from the bsp idle loop -- and reaping exited threads is what takes these locks,
-/// so that thread is routinely one of the stuck ones. Every stuck-mutex transcript so far has named
-/// an owner and nothing whatsoever about it, which is exactly one edge short of a cycle.
+/// The owner's own wait edge is the part nothing else records. Every stuck-mutex transcript so far
+/// has named an owner and nothing whatsoever about it, which is exactly one edge short of a cycle.
 ///
-/// `try_lock`, never block: this runs inside `lock`'s wait loop, where anything that can block
-/// wedges the cpu with interrupts masked.
+/// Never block: this runs inside `lock`'s wait loop, where anything that can block wedges the cpu
+/// with interrupts masked.
 fn report_stuck_owner(caller: &Location<'static>, iters: usize, owner: &ThreadRef) {
-    let tracker = owner.lock_tracker();
-    let sampled = match tracker.try_lock() {
-        // Both accessors yield only ids and 'static locations, so nothing borrows the tracker past
-        // this point.
-        Some(inner) => {
-            let intent = (inner.intended_mutex(), inner.intended_spinlock());
-            tracker.unlock();
-            Some(intent)
-        }
-        None => None,
-    };
     // 0 for "no current thread": `IdCounter` asserts ids are non-zero, so it cannot collide.
     let waiter = current_thread_ref().map(|t| t.id()).unwrap_or(0);
     let this_cpu = locktrack::diag::this_cpu();
@@ -103,18 +86,13 @@ fn report_stuck_owner(caller: &Location<'static>, iters: usize, owner: &ThreadRe
     let mutex_wait = owner.get_mutex_wait();
     // Read after the flag, per `set_mutex_wait`'s store order.
     let waiting_at = owner.mutex_wait_at();
-    let complete = if tracker.is_complete() {
-        "complete"
-    } else {
-        "INCOMPLETE"
-    };
     // One console write, so a second cpu reporting concurrently cannot split this line in half.
     macro_rules! stall {
         ($edge:literal $(, $arg:expr)* $(,)?) => {
             emerglogln!(
                 concat!(
                     "mutex stall: t{} (cpu {}) waited {} at {}; owner t{} ({:?}, {}, rq {}, ",
-                    "idle {}, mutex_wait {}, tracker {}) ",
+                    "idle {}, mutex_wait {}) ",
                     $edge,
                 ),
                 waiter,
@@ -127,7 +105,6 @@ fn report_stuck_owner(caller: &Location<'static>, iters: usize, owner: &ThreadRe
                 rq,
                 owner.is_idle_thread(),
                 mutex_wait,
-                complete,
                 $($arg,)*
             )
         };
@@ -177,37 +154,14 @@ fn report_stuck_owner(caller: &Location<'static>, iters: usize, owner: &ThreadRe
             );
         }
     }
-    match sampled {
-        Some((Some((at, Some((next, next_at)))), _)) => stall!(
-            "is itself waiting at {} for a mutex held by t{} taken at {}",
-            at,
-            next,
-            next_at,
+    // `mutex_wait_at` is set by `lock` itself, so it names the site the owner is waiting at but
+    // not the holder; the chain may continue past a point this report cannot name.
+    match waiting_at {
+        Some(at) => stall!("is itself waiting for a mutex at {}, holder unknown", at),
+        None if mutex_wait => stall!(
+            "is in a mutex wait with no site recorded -- edge unknown, chain is longer than shown",
         ),
-        Some((Some((at, None)), _)) => stall!("is itself waiting at {}, holder unknown", at),
-        // A spinlock edge keeps the owner `Running` and leaves `intended_to_mutexlock` empty, so
-        // without this arm it reads identically to an owner that is waiting for nothing at all.
-        Some((None, Some(at))) => stall!("is spinning for the spinlock at {}", at),
-        // `mutex_wait` is set by `lock` itself and cleared only on acquisition, so the two
-        // disagreeing means the owner *is* in a mutex wait whose intent record was lost, and the
-        // chain continues past a point this report cannot name. Called out rather than left to
-        // read as "waiting for nothing", which is what made one observed chain ambiguous.
-        //
-        // `mutex_wait_at` is set by `lock` rather than by the tracker, so it survives
-        // `DISABLE_LOCK_TRACKING` -- which is on in every build, making this the arm that every
-        // observed chain-through-an-owner actually takes. It names the site but not the holder;
-        // the holder needs the tracker.
-        Some((None, None)) if mutex_wait => match waiting_at {
-            Some(at) => stall!("is itself waiting for a mutex at {}, holder unknown", at),
-            None => stall!(
-                "is in a mutex wait with no intent recorded -- edge unknown, chain is longer than shown",
-            ),
-        },
-        Some((None, None)) => stall!("is not waiting on a mutex or a spinlock"),
-        None => match waiting_at {
-            Some(at) => stall!("tracker busy; is waiting for a mutex at {}", at),
-            None => stall!("tracker busy"),
-        },
+        None => stall!("is not waiting on a mutex"),
     }
 }
 
@@ -341,7 +295,6 @@ pub struct Mutex<T> {
     /// path can stamp it; diagnostic-only, and a racing reader can see a stamp one acquisition
     /// stale.
     locked_at: AtomicPtr<Location<'static>>,
-    safe_with_spinlocks: bool,
 }
 
 impl<T> Mutex<T> {
@@ -357,12 +310,7 @@ impl<T> Mutex<T> {
             }),
             cell: UnsafeCell::new(data),
             locked_at: AtomicPtr::new(Location::caller() as *const _ as *mut _),
-            safe_with_spinlocks: false,
         }
-    }
-
-    pub fn set_safe_with_spinlocks(&mut self, safe: bool) {
-        self.safe_with_spinlocks = safe;
     }
 
     /// Get a mut reference to the contained data. Does not perform locking, but is safe because we
@@ -389,9 +337,7 @@ impl<T> Mutex<T> {
     #[track_caller]
     pub fn lock(&self) -> LockGuard<'_, T> {
         let timing = timing_on();
-        // The tracker stamps its records with this too, so read the clock when either wants it.
-        // Both tests fold to nothing when tracking is compiled out and timing is off.
-        let start_time = if locktrack::enabled() || timing {
+        let start_time = if timing {
             Instant::now()
         } else {
             Instant::zero()
@@ -432,29 +378,8 @@ impl<T> Mutex<T> {
         // whoever is current at drop time: those are two independent resolutions of
         // `current_thread_ref()`, and they diverge across the switch window (where a thread is
         // current on two cpus at once), when one side has no current thread at all, and whenever a
-        // guard crosses threads. Same reason `tracker_index` rides the guard.
+        // guard crosses threads.
         let charged = current_thread.cloned();
-
-        // Once a tracker has dropped any bookkeeping its held-lock list can name locks that were
-        // released, so the check below would be reporting on a record, not on reality.
-        let tracker_trustworthy = locktrack::current_tracker().is_none_or(|t| t.is_complete());
-        with_lock_tracker(|lt| {
-            // Derived from tracker state, which can be incomplete (see locktrack::diag), so this
-            // reports rather than halts. The hazard it names -- sleeping on a mutex while holding a
-            // spinlock -- is real, and now shows up as a hang the harness catches instead.
-            if !self.safe_with_spinlocks
-                && tracker_trustworthy
-                && lt.spinlock_count() != 0
-                && locktrack::diag::MUTEX_WITH_SPINLOCK.hit()
-            {
-                emerglogln!(
-                    "locktrack: mutex locked at {} while holding a spinlock",
-                    caller
-                );
-                lt.print_locks();
-            }
-            lt.intend_to_lock_mutex(caller, start_time)
-        });
 
         // Uncontended fast path: one CAS installs this thread's pointer as the owner. Everything
         // below is contention machinery -- interrupt masking, the critical section, the queue
@@ -480,13 +405,11 @@ impl<T> Mutex<T> {
                     if spins != 0 {
                         spinstats::won(spins);
                     }
-                    let tracker_index = with_lock_tracker(|lt| lt.record_mutex_lock());
                     return LockGuard {
                         lock: self,
                         prev_donated_priority: current_donated_priority,
                         start_time,
                         timed: timing,
-                        tracker_index,
                         charged,
                     };
                 }
@@ -533,7 +456,6 @@ impl<T> Mutex<T> {
                     i,
                     current_thread.as_ref().map(|t| t.is_idle_thread())
                 );
-                current_thread_ref().map(|ct| ct.print_locks());
             }
             // Nothing may be called from here that takes another lock. This loop runs with
             // interrupts disabled for its whole duration, and the calling thread is mid-acquisition
@@ -541,8 +463,7 @@ impl<T> Mutex<T> {
             // mutex while waiting for another mutex" assert or wedges the cpu with interrupts
             // masked. `check_timed_out_requests()` used to run here and does exactly that
             // (`inflight_mgr().lock()`); it is a timeout sweep the idle thread already drives, so
-            // a contended waiter is the wrong place to drive it from. `check_timed_out_mutexes()`
-            // above was commented out for the same reason.
+            // a contended waiter is the wrong place to drive it from.
             let guard = current_thread.as_ref().map(|ct| ct.enter_critical());
             {
                 let mut queue = self.queue.lock();
@@ -615,9 +536,6 @@ impl<T> Mutex<T> {
                     queue.owner = Some(owner);
                 }
                 if let Some(ref cur_owner) = queue.owner {
-                    with_lock_tracker(|lt| {
-                        lt.intended_mutex_owned_by(cur_owner.id(), self.locked_at());
-                    });
                     // Sampled here where the owner is in hand, reported after the queue lock is
                     // dropped -- emerglogln takes no lock, but holding this one across a console
                     // write is a needless widening.
@@ -697,8 +615,7 @@ impl<T> Mutex<T> {
                                 let owner_pri = owner.effective_priority();
                                 if pri > &owner_pri {
                                     owner.donate_priority(pri.clone());
-                                } else if MUTEX_HOLDER_PRIORITY
-                                    && pri.class == owner_pri.class
+                                } else if pri.class == owner_pri.class
                                     && owner_pri.value + 1 < crate::thread::priority::MAX_PRIORITY
                                 {
                                     // Same-class contention, which is all of it for the pager and
@@ -740,14 +657,12 @@ impl<T> Mutex<T> {
         if timing {
             add_lock_time_sample(Instant::now() - start_time);
         }
-        let tracker_index = with_lock_tracker(|lt| lt.record_mutex_lock());
         crate::interrupt::set(int_state);
         LockGuard {
             lock: self,
             prev_donated_priority: current_donated_priority,
             start_time,
             timed: timing,
-            tracker_index,
             charged,
         }
     }
@@ -849,7 +764,6 @@ pub struct LockGuard<'a, T> {
     /// Whether `start_time` is a real reading. Carried rather than re-tested at drop, so a reader
     /// turning timing on mid-hold cannot record a hold time measured from boot.
     timed: bool,
-    tracker_index: Option<usize>,
     /// Thread charged with `inc_mutex_count` at acquisition, decremented at release regardless of
     /// who is current then.
     charged: Option<ThreadRef>,
@@ -877,9 +791,6 @@ impl<T> Drop for LockGuard<'_, T> {
             }
         } else if let Some(thread) = current_thread_ref() {
             thread.remove_donated_priority();
-        }
-        if let Some(index) = self.tracker_index {
-            with_lock_tracker(|lt| lt.record_mutex_unlock(index));
         }
         self.lock.release(self.charged.as_ref());
         if self.timed {
@@ -1278,12 +1189,6 @@ mod test {
 /// is what keeps a descheduled owner from turning this into a spinlock. Zero disables the spin,
 /// restoring the old behaviour for an A/B against one tree.
 const MUTEX_SPIN_LIMIT: u32 = 200;
-
-/// A/B for the two priority changes that go with the spin: boosting a same-class owner when a
-/// waiter gives up spinning and parks (`mutex.rs`), and declining to preempt a mutex holder for a
-/// same-class waker (`sched.rs`). One switch for both, since they address the same case from the
-/// two ends and measuring them apart says little.
-pub const MUTEX_HOLDER_PRIORITY: bool = true;
 
 /// Outcome of the spin above: `won` after spinning, against `lost` (spun out and parked). The
 /// ratio is what says whether the budget is right -- all-lost means it is wasted work, all-won

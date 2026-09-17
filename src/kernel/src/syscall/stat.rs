@@ -1,8 +1,7 @@
 use core::sync::atomic::Ordering;
 
 use twizzler_abi::syscall::{
-    InfoKind, KallocCensus, KernelStats, LockStats, MemoryStats, SctxStats, SysInfo, SyscallStats,
-    ThreadStats,
+    InfoKind, KernelStats, LockStats, MemoryStats, SctxStats, SysInfo, SyscallStats, ThreadStats,
 };
 
 use crate::processor::mp::all_processors;
@@ -75,11 +74,6 @@ pub fn write_sys_info_values(ptr: *mut u8, kind: InfoKind) -> Result<()> {
             *stats = crate::obj::get_object_stats();
             Ok(())
         }
-        InfoKind::KallocCensus => {
-            let census: &mut KallocCensus = unsafe { &mut *(ptr as *mut KallocCensus) };
-            crate::memory::kalloc_census::fill(census);
-            Ok(())
-        }
         InfoKind::KernelStats => {
             let stats: &mut KernelStats = unsafe { &mut *(ptr as *mut KernelStats) };
             *stats = KernelStats::default();
@@ -115,12 +109,6 @@ pub fn write_sys_info_values(ptr: *mut u8, kind: InfoKind) -> Result<()> {
                 });
                 stats.steal_ns = steal;
             }
-            Ok(())
-        }
-        InfoKind::KallocTrack => {
-            let ctl: &mut twizzler_abi::syscall::KallocTrackCtl =
-                unsafe { &mut *(ptr as *mut twizzler_abi::syscall::KallocTrackCtl) };
-            crate::memory::kalloc_track::control(ctl);
             Ok(())
         }
     }

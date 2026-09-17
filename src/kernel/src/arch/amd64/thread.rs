@@ -433,12 +433,7 @@ pub(super) fn xsave_mask() -> (u64, u64) {
 /// on the buffer address, so saving into a *different* buffer (the upcall frame) correctly falls
 /// back to writing the component out.
 pub(super) fn use_xsaveopt() -> bool {
-    /// A/B switch.
-    const USE_XSAVEOPT_IF_AVAILABLE: bool = true;
     static USE_XSAVEOPT: AtomicU8 = AtomicU8::new(0);
-    if !USE_XSAVEOPT_IF_AVAILABLE {
-        return false;
-    }
     match USE_XSAVEOPT.load(Ordering::Relaxed) {
         0 => {
             let has = x86::cpuid::CpuId::new()

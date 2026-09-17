@@ -44,8 +44,12 @@ use crate::{
 /// notably -- always runs the live lookup, so memoization never bypasses the gate-permission
 /// checks and never depends on context-wide state the fingerprint cannot see.
 ///
-/// Off until the VERIFY-armed validation sweep passes; flip with [`RELOC_MEMO_VERIFY`] for that
-/// run, then ship true.
+/// **Off: the 2026-09-17 validation failed on boot rate, not on soundness.** With this on, verify
+/// mode saw ~400 replays per `relocate_all` and zero disagreements over 444 records, and every
+/// boot that reached the suite passed 68/68 -- but 8 of 12 release-kvm-smp2 boots died at monitor
+/// bootstrap in `mlibc::thread_key_set` with `thread_ptr = 0` (the known TLS bring-up race),
+/// against 0 of 6 with it off. Whether the memo miswrites a TLS relocation or only shifts timing
+/// into that race is unresolved; do not ship without answering that.
 pub(crate) const RELOC_MEMO: bool = false;
 
 /// Verify mode: every replayed resolution also runs the live lookup and the two are compared
@@ -53,23 +57,6 @@ pub(crate) const RELOC_MEMO: bool = false;
 /// through the `reloc_all` debug line as `memo_bad`. Must read 0; run a full `--tests` sweep with
 /// this on before trusting a change to the memo or to the lookup rules it shadows.
 pub(crate) const RELOC_MEMO_VERIFY: bool = false;
-
-/// Sizing switch: emit the `RELOCMEM` record per `relocate_all` without arming the memo or
-/// verify. Sizes the resolve share of a load on the current tree -- misses, cache hits,
-/// `resolve_time`, and global fallbacks -- to bound what any lookup optimization can buy
-/// (spawnbench.md §45's null made this measurement the gate for further work here).
-pub(crate) const RELOC_STATS: bool = false;
-
-/// Sizing switch for the per-library relocation phase split (`RELOCPHA`).
-///
-/// The four-way split (prep / relr / resolve / apply) has existed in `relocate_single` for a while
-/// -- as a `tracing::debug!`, which is **invisible in a release boot**, so it has never been read
-/// on a real spawn. spawnbench.md §56 needs exactly it: `relocate` is the single largest block in
-/// a spawn (~909 us) and §34's account of it is refuted on both halves -- resolve is measured at
-/// 158 us, and the DSO set carries only ~1-2k relocations total (zero `R_X86_64_RELATIVE`), so
-/// "apply" cannot be hundreds of microseconds either. This promotes the existing split to a record
-/// so the ~600-750 us with no owner can be attributed rather than guessed at.
-pub(crate) const RELOC_PHASES: bool = false;
 
 /// One library source object's memoized resolutions; see [`RELOC_MEMO`].
 pub(crate) struct LibReplayMemo {
@@ -447,28 +434,31 @@ impl Context {
         let deps_list = self.build_deps_search_list(lib.id());
 
         // Arm the resolution memo for this library: replay if a memo exists and its deps
-        // fingerprint matches, otherwise record into a fresh one. See [`RELOC_MEMO`].
+        // fingerprint matches, otherwise record into a fresh one. See [`RELOC_MEMO_VERIFY`].
         reloc_cache.memo = None;
         reloc_cache.record = None;
-        if RELOC_MEMO {
-            if let Some(fp) = self.deps_fingerprint(lib, deps_list.as_slice()) {
-                let src = lib.full_obj.id();
-                if let Ok(memos) = self.reloc_memo.lock() {
-                    if let Some(m) = memos.get(&src) {
-                        if m.fingerprint == fp {
-                            reloc_cache.memo = Some(m.clone());
-                        }
+        let fp = if RELOC_MEMO {
+            self.deps_fingerprint(lib, deps_list.as_slice())
+        } else {
+            None
+        };
+        if let Some(fp) = fp {
+            let src = lib.full_obj.id();
+            if let Ok(memos) = self.reloc_memo.lock() {
+                if let Some(m) = memos.get(&src) {
+                    if m.fingerprint == fp {
+                        reloc_cache.memo = Some(m.clone());
                     }
                 }
-                if reloc_cache.memo.is_none() {
-                    reloc_cache.record = Some((
-                        src,
-                        LibReplayMemo {
-                            fingerprint: fp,
-                            syms: HashMap::new(),
-                        },
-                    ));
-                }
+            }
+            if reloc_cache.memo.is_none() {
+                reloc_cache.record = Some((
+                    src,
+                    LibReplayMemo {
+                        fingerprint: fp,
+                        syms: HashMap::new(),
+                    },
+                ));
             }
         }
         let _start_2 = Instant::now();
@@ -565,23 +555,6 @@ impl Context {
             _apply.as_micros(),
             reloc_cache.misses - _misses_0,
             reloc_cache.hits - _hits_0,
-        );
-        // Same four numbers as the debug line above, which a release boot cannot see. Tag is 8
-        // chars deliberately: `statlog` packs it through `tag8` into a single u64 and silently
-        // truncates anything longer, so a longer name would not match its own grep.
-        // Anon variant: dynlink links into bootstrap (see `record_on_anon`).
-        secgate::statlog::record_on_anon(
-            RELOC_PHASES,
-            "RELOCPHA",
-            _start_1.elapsed().as_micros() as u64,
-            &[
-                (_start_2 - _start_1).as_micros() as u64,
-                _relr_time.as_micros() as u64,
-                _resolve.as_micros() as u64,
-                _apply.as_micros() as u64,
-                (reloc_cache.misses - _misses_0) as u64,
-                (reloc_cache.hits - _hits_0) as u64,
-            ],
         );
 
         Ok(())
@@ -683,24 +656,6 @@ impl Context {
             reloc_cache.hits,
             reloc_cache.memo_hits,
             reloc_cache.memo_bad,
-        );
-        // Engagement + soundness evidence for verify runs, and the sizing record for
-        // `RELOC_STATS` (`RELOCMEM`): n = replayed; vals = [disagreed, live misses, cache hits,
-        // resolve_us, global fallbacks]. The debug line above is invisible in a release boot, and
-        // a green sweep with zero replays would otherwise read as "memo verified" when the truth
-        // is "memo never ran". Anon variant: dynlink links into bootstrap (see `record_on_anon`).
-        secgate::statlog::record_on_anon(
-            RELOC_MEMO_VERIFY || RELOC_STATS,
-            "RELOCMEM",
-            reloc_cache.memo_hits as u64,
-            &[
-                reloc_cache.memo_bad as u64,
-                reloc_cache.misses as u64,
-                reloc_cache.hits as u64,
-                reloc_cache.resolve_time.as_micros() as u64,
-                self.global_fallbacks
-                    .swap(0, core::sync::atomic::Ordering::Relaxed),
-            ],
         );
         // A verify-mode disagreement is a memoization soundness bug: never silent, whatever the
         // logging level.

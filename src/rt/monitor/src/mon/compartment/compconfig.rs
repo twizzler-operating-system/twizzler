@@ -27,12 +27,6 @@ impl CompConfigObject {
         }
     }
 
-    /// Read the comp config data.
-    pub(crate) fn read_comp_config(&self) -> SharedCompConfig {
-        // Safety: no other compartment can write this.
-        unsafe { self.get_comp_config().read() }
-    }
-
     /// Get a pointer to this comp config data.
     pub fn get_comp_config(&self) -> *const SharedCompConfig {
         self.handle.monitor_data_base() as *const SharedCompConfig

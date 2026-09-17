@@ -158,7 +158,7 @@ impl Accumulator {
 pub(super) const BATCH: usize = 512;
 
 /// A per-cpu generator plus its batch buffer. See [`BATCH`].
-pub(crate) struct PerCpuRng {
+pub struct PerCpuRng {
     generator: Generator,
     buf: [u8; BATCH],
     /// Bytes of `buf` already handed out. `buf[..pos]` is zeroed.

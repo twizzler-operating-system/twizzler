@@ -44,7 +44,7 @@ pub struct Engine {
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum SockKind {
+pub(crate) enum SockKind {
     Tcp,
     Udp,
 }
@@ -54,7 +54,7 @@ pub(super) enum SockKind {
 /// out of that group, so no individual `SocketHandle` can name the thing a poller registered
 /// against.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(super) enum WaitKey {
+pub(crate) enum WaitKey {
     Sock(SocketHandle),
     Group(u64),
 }
@@ -145,7 +145,7 @@ pub(super) fn udp_socket_ready(socket: &SmolUdpSocket<'_>, rx_shutdown: bool) ->
 /// nothing to do costs one relaxed load, and makes the busy case one pass instead of N.
 static TRACKING_LEN: AtomicUsize = AtomicUsize::new(0);
 
-pub(super) struct Core {
+pub(crate) struct Core {
     socketset: SocketSet<'static>,
     ifaceset: Vec<IfaceSet>,
     tracking: Vec<(SocketHandle, u16, SockKind)>,
@@ -254,19 +254,6 @@ static ENGINE_FAST_OK: AtomicU64 = AtomicU64::new(0);
 /// the second separates "blocked and never woken" from "woken repeatedly, still not ready".
 static ENGINE_CALLS: AtomicU64 = AtomicU64::new(0);
 static ENGINE_WAKES: AtomicU64 = AtomicU64::new(0);
-/// Arm selector for the wait-set change, so control and treatment differ by a constant in the
-/// source rather than by a checkout.
-///
-/// Both arms must run on the *same* toolchain. The pending rustc swap makes `cfg(unix)` true for
-/// this target, which changes which std source compiles -- `library/test`'s exit-status reporting
-/// among it -- so any rate compared across that boundary is confounded, and the pre-swap
-/// `pollsleep1` baseline (5 stalls in 12 rounds) cannot serve as the control for a post-swap fix.
-///
-/// `POLL_WAIT_COMPLETIONS = false` + `POLL_FALLBACK_MS = Some(50)` reproduces the pre-fix
-/// behaviour exactly. A const rather than an env var deliberately: an environment arm is invisible
-/// to `git diff` and to every mtime audit, which is the "flag flipped before your window" case
-/// that no provenance check can see.
-const POLL_WAIT_COMPLETIONS: bool = true;
 /// `None`: the wait set is the whole set, so there is no periodic wake.
 ///
 /// This was `Some(50)` as a backstop against a missed wake wedging a compartment forever, from
@@ -299,11 +286,6 @@ static POLL_SLEEPS: AtomicU64 = AtomicU64::new(0);
 /// healthy compartment is the instrument's own positive control: it idles on the 50ms fallback,
 /// so `maxsleepms` near 50 with `overslept=0` proves the timing path is live and calibrated
 /// rather than merely silent.
-/// Watchdog ticks completed. Reported on every probe line so its liveness is a *number* on a
-/// line the poll thread prints, not an absence of lines the watchdog failed to print. Absence
-/// could not distinguish "no stall" from "this thread never ran", which is the trap that has
-/// already cost three instruments today.
-static WATCHDOG_TICKS: AtomicU64 = AtomicU64::new(0);
 static POLL_OVERSLEPT: AtomicU64 = AtomicU64::new(0);
 static POLL_MAX_SLEEP_MS: AtomicU64 = AtomicU64::new(0);
 /// Where the poll thread is. Written only; the watchdog that read it was a diagnostic and is
@@ -329,11 +311,6 @@ static POLL_SLEEP_EXIT: AtomicU64 = AtomicU64::new(0);
 static POLL_SLEEP_T0_MS: AtomicU64 = AtomicU64::new(0);
 /// Timeout requested for the in-flight sleep, ms. `u64::MAX` = none requested.
 static POLL_SLEEP_REQ_MS: AtomicU64 = AtomicU64::new(u64::MAX);
-/// Watchdog `sleep()` entered vs returned. The watchdog is a 0-op timed `sys_thread_sync`; if it
-/// stops returning, the compartment loses its only outside observer, so it needs its own pair.
-static WD_SLEEP_ENTER: AtomicU64 = AtomicU64::new(0);
-static WD_SLEEP_EXIT: AtomicU64 = AtomicU64::new(0);
-
 /// Raw rx-ring state sampled where `any_ready` is computed, i.e. on the pass that decides whether
 /// to sleep.
 ///
@@ -531,33 +508,6 @@ static EXT_CORE: AtomicU64 = AtomicU64::new(u64::MAX);
 /// machine stopping at one statement. This splits that statement apart so the count names a line.
 static POLL_SUB: AtomicU64 = AtomicU64::new(0);
 
-/// Arm selector: emit the three probes that run **while the engine core mutex is held**.
-///
-/// `pollprobe` ends in `sys_kernel_console_write`. Three of its call sites -- "poll", "fast",
-/// "wake" -- are inside the lock, and the "poll" one is gated on `is_power_of_two()`, so it fires
-/// on exactly the 1st, 2nd, 4th, 8th... poll. Every frozen peer this session stopped at
-/// `polls=8 iters=7 sleeps=6`, and `sub=1` with `phase=3` places the thread between
-/// `POLL_PHASE.store(3)` and the first `POLL_SUB.store(10)` -- a gap whose only substantial
-/// content is that console write. A constant rather than a distribution is what a fixed-count gate
-/// predicts and a race does not.
-///
-/// There is prior measurement for the pattern in this same subsystem: `net-srv`'s `deliver_local`
-/// records that a probe logging under its locks "took the suite from 13/50 failures to 50/50".
-///
-/// `false` removes only the in-lock probes; every probe outside the lock stays, so the failure
-/// count is still readable from sysbench's own markers.
-/// 2026-08-30: set `false`. Two reasons, and the second matters more than the first.
-/// A synchronous console write inside the engine's core mutex perturbs the subsystem being
-/// measured -- 87 fired inside the lock in one bench window. And per the analysis above it is a
-/// candidate *cause* of the peer freeze, not merely noise, so a measurement taken with it on
-/// cannot distinguish the bug from the instrument. Flip it back to reproduce that hypothesis
-/// deliberately; do not leave it on for baselines.
-/// Whether the stall watchdog thread runs. See its spawn site: a wakeup every 2s per network
-/// compartment, forever, purely to diagnose a poll-thread stall.
-const STALL_WATCHDOG: bool = false;
-
-const PROBE_UNDER_LOCK: bool = false;
-
 /// Emit the engine's liveness counters from whatever thread calls this, plus the one thing the
 /// poll thread cannot report about itself: whether it is wedged, and whether frames are waiting.
 ///
@@ -567,9 +517,7 @@ const PROBE_UNDER_LOCK: bool = false;
 ///
 /// `try_lock`, never `lock`: blocking here would turn one wedged thread into two and destroy the
 /// reporter along with the subject. Failing to take it is not an error, it *is* a reading -- it
-/// means the poll thread is holding the core mutex, which is the blocking-queue-submit-under-the-
-/// lock case (live whenever `NONBLOCK_POLL_QUEUE` is false). The three outcomes are three
-/// different bugs:
+/// means the poll thread is holding the core mutex. The three outcomes are three different bugs:
 ///
 ///   core=locked        -- poll thread wedged inside `Core::poll` holding the mutex
 ///   core=free rxpend=1 -- frames delivered and sitting unconsumed; an engine wait/wake defect
@@ -687,7 +635,7 @@ pub(crate) fn pollprobe(site: &str) {
         // `sctx` joins this line to the kernel's `[hang]` records, which carry the same id. Without
         // it the two instruments describe the same frozen compartment in vocabularies that cannot
         // be matched up -- octet on one side, thread ids on the other.
-        "POLLPROBE octet={} sctx={:x} site={} extcore={} sub={} calls={} fastok={} polls={} wakes={} txwake={} closewake={} tcpdrops={} dropstate={} spinbreaks={} nbslow={} iters={} sleeps={} phase={} overslept={} maxsleepms={} wdticks={} slpin={} slpout={} slpage={} slpreq={} wdin={} wdout={} engms={} rxbell={} rxtail={} rxne={} rxturn={} udpacc={} devtx={} mkcalls={} mkrise={} mklevel={} mknoent={} txbell={} txtail={} ringw={} ringnw={}",
+        "POLLPROBE octet={} sctx={:x} site={} extcore={} sub={} calls={} fastok={} polls={} wakes={} txwake={} closewake={} tcpdrops={} dropstate={} spinbreaks={} nbslow={} iters={} sleeps={} phase={} overslept={} maxsleepms={} slpin={} slpout={} slpage={} slpreq={} engms={} rxbell={} rxtail={} rxne={} rxturn={} udpacc={} devtx={} mkcalls={} mkrise={} mklevel={} mknoent={} txbell={} txtail={} ringw={} ringnw={}",
         ENGINE_OCTET.load(Ordering::Relaxed),
         secgate::get_sctx_id().raw(),
         site,
@@ -708,15 +656,12 @@ pub(crate) fn pollprobe(site: &str) {
         POLL_PHASE.load(Ordering::Relaxed),
         POLL_OVERSLEPT.load(Ordering::Relaxed),
         POLL_MAX_SLEEP_MS.load(Ordering::Relaxed),
-        WATCHDOG_TICKS.load(Ordering::Relaxed),
         POLL_SLEEP_ENTER.load(Ordering::Relaxed),
         POLL_SLEEP_EXIT.load(Ordering::Relaxed),
         // -1 rather than 0 for "no sleep in flight": 0 is a legitimate age, and a field that
         // renders both as the same number is the defect this whole probe exists to avoid.
         sleep_inflight_ms().map(|v| v as i64).unwrap_or(-1),
         POLL_SLEEP_REQ_MS.load(Ordering::Relaxed) as i64,
-        WD_SLEEP_ENTER.load(Ordering::Relaxed),
-        WD_SLEEP_EXIT.load(Ordering::Relaxed),
         // Engine age. Separates the two live hypotheses: ~20000 means the engine was built at
         // bind and its poll thread then did almost nothing (starvation); ~400 means the engine
         // itself was only constructed moments ago (late start). Zeroed at `pollprobe("init")`.
@@ -1149,10 +1094,7 @@ impl Engine {
                     // merely a safety net.
                     for iface in core.ifaceset.iter() {
                         waiters.push(ThreadSync::new_sleep(iface.device.rx_waiter()));
-                        if POLL_WAIT_COMPLETIONS {
-                            waiters
-                                .push(ThreadSync::new_sleep(iface.device.tx_completions_waiter()));
-                        }
+                        waiters.push(ThreadSync::new_sleep(iface.device.tx_completions_waiter()));
                         // Self-gating: `None` unless a completion is actually owed, which cannot
                         // happen in the blocking control arm.
                         if let Some(w) = iface.device.rx_completion_space_waiter() {
@@ -1261,83 +1203,6 @@ impl Engine {
                 }
             });
 
-        // Stall watchdog. Reports from a *different* thread than the one it describes, which is
-        // the whole point: `pollprobe` is called from inside `Core::poll`, so every `site=poll`
-        // line reports `phase=3` tautologically and cannot say where the poll thread is. This
-        // reads the same word from outside.
-        //
-        // The predicate used to be "POLL_ITERS did not advance in 2s", justified by the poll
-        // loop sleeping at most `FALLBACK` (50ms) per pass and so advancing at >=20/s
-        // unconditionally. `POLL_FALLBACK_MS` is now `None` -- the loop sleeps on the wait set
-        // and on smoltcp's own deadline, which for an idle compartment is neither -- so a quiet
-        // engine legitimately sits still for far longer than 2s and that predicate fires
-        // constantly. Measured: 450 STALL lines in an 8-round sweep where every round passed
-        // 57/57 with no network failure at all. A detector that cries wolf 450 times cannot
-        // report the one real stall, so removing the fallback without fixing this would have
-        // silently retired the watchdog rather than merely making it noisy.
-        //
-        // The replacement does not depend on how long a sleep is *allowed* to be, only on
-        // whether the one in flight has outlived what it asked for: `ENTER > EXIT` means a sleep
-        // is in progress, and `slpage` is its age against `slpreq`. A sleep that has run past
-        // several times its own requested timeout is stuck whatever the fallback constant says.
-        // An engine sleeping on an untimed wait set (`slpreq == u64::MAX`) is idle by design and
-        // is not a stall; that case is now what the rx-pending check below is for.
-        //
-        // The heartbeat is the positive control: without it "never stalled" and "watchdog thread
-        // never ran" are the same silence, which is the trap the phase reading above already set
-        // once today.
-        // Diagnostic scaffolding from the UDP-loss investigation, off by default.
-        //
-        // This thread wakes every 2s for the life of the process, in *every* compartment with
-        // a network engine -- 18 of them in a bench boot. That is a permanent periodic wakeup
-        // on an otherwise idle machine, paid to watch for a stall whose cause is now known:
-        // `wait_ready` read an already-readable fd as a failed registration (net_test_peer).
-        // Nothing in the runtime depends on it.
-        //
-        // Turn it on to investigate a suspected poll-thread stall. Note its predicate needs
-        // `POLL_FALLBACK_MS` to be `Some` to mean anything: with the fallback `None` an idle
-        // engine legitimately sits still well past 2s, which is what made it emit 450 STALL
-        // lines in an 8-round sweep where every round passed.
-        if STALL_WATCHDOG {
-            let _ = std::thread::Builder::new()
-                .name("net-stall-wd".into())
-                .spawn(|| {
-                    let mut last = u64::MAX;
-                    let mut ticks: u64 = 0;
-                    loop {
-                        WD_SLEEP_ENTER.fetch_add(1, Ordering::Relaxed);
-                        std::thread::sleep(std::time::Duration::from_secs(2));
-                        WD_SLEEP_EXIT.fetch_add(1, Ordering::Relaxed);
-                        ticks += 1;
-                        WATCHDOG_TICKS.fetch_add(1, Ordering::Relaxed);
-                        let iters = POLL_ITERS.load(Ordering::Relaxed);
-                        // Stalled = not advancing AND demonstrably owing work: either a timed sleep
-                        // has overrun its own request, or frames are queued
-                        // that nothing is collecting.
-                        let overdue = sleep_inflight_ms().is_some_and(|age| {
-                            let req = POLL_SLEEP_REQ_MS.load(Ordering::Relaxed);
-                            req != u64::MAX && age > req.saturating_mul(4).max(2000)
-                        });
-                        let rx_waiting = matches!(EXT_CORE.load(Ordering::Relaxed), 1);
-                        if iters == last && (overdue || rx_waiting) {
-                            pollprobe("STALL");
-                        } else if ticks == 1 || ticks % 30 == 0 {
-                            // Tick 1, not just every 30th. A peer compartment lives ~20s and the
-                            // 60s heartbeat never fired inside one, so
-                            // the control covered only the two
-                            // long-lived compartments and said nothing about the ones under test --
-                            // "no stall" and "watchdog never ran here" were the same silence in
-                            // exactly the population this exists to
-                            // describe. One line per compartment at ~2s
-                            // arms it per path, inside the window.
-                            pollprobe("alive");
-                        }
-                        last = iters;
-                    }
-                })
-                .unwrap();
-        }
-
         Self {
             core,
             waiter,
@@ -1431,14 +1296,7 @@ impl Engine {
         }
         let mut core = self.core.lock().unwrap();
         if let Ok(r) = f(&mut *core) {
-            if (ENGINE_FAST_OK.fetch_add(1, Ordering::Relaxed) + 1).is_power_of_two() {
-                // Flag inside the body, never in the condition: `&&` would short-circuit the
-                // fetch_add away and the counter would read 0 in the off arm -- indistinguishable
-                // from never reaching here.
-                if PROBE_UNDER_LOCK {
-                    pollprobe("fast");
-                }
-            }
+            ENGINE_FAST_OK.fetch_add(1, Ordering::Relaxed);
             if egress {
                 // Guard first: wake() is a syscall, and holding the core mutex across it would
                 // serialise every other socket operation behind the poll thread waking up.
@@ -1497,15 +1355,7 @@ impl Engine {
                     // find no waiter -- a lost wakeup, and a hang rather than a slow path.
                     self.wake();
                     core = self.waiter.wait(core).unwrap();
-                    if (ENGINE_WAKES.fetch_add(1, Ordering::Relaxed) + 1).is_power_of_two() {
-                        // Flag inside the body, never in the condition: `&&` would short-circuit
-                        // the fetch_add away and the counter would read 0
-                        // in the off arm -- indistinguishable from never
-                        // reaching here.
-                        if PROBE_UNDER_LOCK {
-                            pollprobe("wake");
-                        }
-                    }
+                    ENGINE_WAKES.fetch_add(1, Ordering::Relaxed);
                 }
                 Err(e) => return Err(e),
             }
@@ -1605,14 +1455,6 @@ impl Core {
     /// If `handle` refers to a UDP or DNS socket, or to a socket already removed from the set.
     pub fn get_mutable_socket(&mut self, handle: SocketHandle) -> &mut Socket<'static> {
         self.socketset.get_mut(handle)
-    }
-
-    /// Every socket in the set, for identity checks: smoltcp's traces name sockets by endpoint,
-    /// which cannot distinguish two sockets bound to the same address.
-    pub fn socket_iter(
-        &self,
-    ) -> impl Iterator<Item = (SocketHandle, &smoltcp::socket::Socket<'static>)> {
-        self.socketset.iter()
     }
 
     pub fn get_mutable_udp_socket(&mut self, handle: SocketHandle) -> &mut SmolUdpSocket<'static> {
@@ -1789,14 +1631,7 @@ impl Core {
     }
 
     fn poll(&mut self, waiter: &Condvar) -> bool {
-        if (ENGINE_POLLS.fetch_add(1, Ordering::Relaxed) + 1).is_power_of_two() {
-            // Flag inside the body, never in the condition: `&&` would short-circuit the
-            // fetch_add away and the counter would read 0 in the off arm -- indistinguishable
-            // from never reaching here.
-            if PROBE_UNDER_LOCK {
-                pollprobe("poll");
-            }
-        }
+        ENGINE_POLLS.fetch_add(1, Ordering::Relaxed);
         POLL_SUB.store(10, Ordering::Relaxed);
         let mut res = false;
         for ifaceset in &mut self.ifaceset {

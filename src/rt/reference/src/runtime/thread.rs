@@ -59,7 +59,6 @@ impl ReferenceRuntime {
         expected: u32,
         timeout: Option<core::time::Duration>,
     ) -> twz_error {
-        let _g = crate::runtime::file::namestats::FUTEX_WAIT.guard();
         // No need to wait if the value already changed.
         if futex.load(core::sync::atomic::Ordering::Relaxed) != expected {
             return 0;
@@ -87,18 +86,12 @@ impl ReferenceRuntime {
     /// how many operations were immediately ready, and the single-wake fast path returns 1 for a
     /// wake that found nobody. `ThreadSync::Wake`'s own result is the thread count.
     pub fn futex_wake(&self, futex: &core::sync::atomic::AtomicU32, count: usize) -> Result<usize> {
-        use crate::runtime::file::namestats;
-        let _g = namestats::FUTEX_WAKE.guard();
         let mut ops = [ThreadSync::new_wake(ThreadSyncWake::new(
             ThreadSyncReference::Virtual32(futex),
             count,
         ))];
         sys_thread_sync(&mut ops, None)?;
-        let woken = ops[0].get_result();
-        if matches!(woken, Ok(0)) {
-            namestats::WAKE_NOBODY.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        }
-        woken
+        ops[0].get_result()
     }
 
     pub fn yield_now(&self) {

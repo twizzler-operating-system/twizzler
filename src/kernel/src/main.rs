@@ -54,10 +54,7 @@ extern crate alloc;
 extern crate bitflags;
 
 use alloc::boxed::Box;
-use core::{
-    sync::atomic::{AtomicBool, AtomicU32, Ordering},
-    time::Duration,
-};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use ::log::LevelFilter;
 use arch::BootInfoSystemTable;
@@ -77,11 +74,7 @@ use crate::{
     obj::scan_deleted,
     pager::check_timed_out_requests,
     processor::mp::current_processor,
-    syscall::sync::sys_thread_sync,
-    thread::{
-        check_orphan_threads, entry::start_new_init, locktrack::check_timed_out_mutexes,
-        priority::Priority,
-    },
+    thread::{check_orphan_threads, entry::start_new_init, priority::Priority},
 };
 
 /// A collection of information made available to the kernel by the bootloader or arch-dep modules.
@@ -171,18 +164,20 @@ pub fn kdiag_fault() -> bool {
     KDIAG_FAULT.load(Ordering::SeqCst)
 }
 
+/// `--diag=wake`: wake-to-run latency stamps (two clock reads per wake) and per-call-site wake
+/// attribution (a slot scan per wake). Off, `KernelStats::thread_wakes` still counts.
+pub fn kdiag_wake() -> bool {
+    KDIAG_WAKE.load(Ordering::SeqCst)
+}
+
 /// `--diag=pager`: kernel-side pager/large-page milestone reports (PAGERWAIT, LARGEPAGE, SPLITS).
 pub fn kdiag_pager() -> bool {
     KDIAG_PAGER.load(Ordering::SeqCst)
 }
 
-/// `--diag=invls`: per-object invalidation-latch reports (the `== invls latched object` lines).
-/// The latch itself and its counters are unaffected; the syscall-triggered summary stays
-/// unconditional.
-pub fn kdiag_wake() -> bool {
-    KDIAG_WAKE.load(Ordering::SeqCst)
-}
-
+/// `--diag=invls`: per-object invalidation-latch reports (the `== invls latched object` lines) and
+/// the membership self-check on every released mapping. The latch itself and its counters are
+/// unaffected; the syscall-triggered summary stays unconditional.
 pub fn kdiag_invls() -> bool {
     KDIAG_INVLS.load(Ordering::SeqCst)
 }
@@ -291,17 +286,10 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
         core::mem::size_of::<crate::obj::Object>(),
         core::mem::size_of::<crate::thread::Thread>(),
     );
-    // Every A/B arm on the fault path is a const, and `many.py`'s source fingerprint can only say
-    // the tree did not change -- not that this image was built from it. A line the arm prints for
-    // itself is the check that survives a stale target dir or a peer's concurrent build.
     logln!(
-        "[kernel] fault tunables: fault_around {} fill_batch {}/{} large_anon {} fault_profile {} slot_memo {}",
+        "[kernel] fault tunables: fault_around {} fill_batch_max {}",
         crate::memory::context::virtmem::region::ANON_FAULT_AROUND,
-        crate::obj::data::FILL_BATCH,
         crate::obj::data::FILL_BATCH_MAX,
-        crate::obj::data::TRY_LARGE_ANON_PAGES,
-        crate::memory::context::virtmem::fault::FAULT_PROFILE,
-        crate::memory::context::virtmem::fault::FAULT_SLOT_MEMO,
     );
     let cmdline = boot_info.get_cmd_line();
     for opt in cmdline.split(" ") {
@@ -349,12 +337,6 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
         }
         if opt == "--reap=legacy" {
             REAP_THREAD.store(false, Ordering::SeqCst);
-        }
-        if opt == "--kalloc-census" {
-            memory::kalloc_census::enable();
-        }
-        if let Some(spec) = opt.strip_prefix("--kalloc-trap=") {
-            memory::kalloc_census::set_trap(spec);
         }
     }
 
@@ -455,7 +437,7 @@ extern "C" fn background_worker() {
 ///
 /// This used to run on the bsp's idle thread, which `wait()`ed for the tests here -- ahead of the
 /// idle loop, where every hang diagnostic lives behind `is_bsp()`. So for the whole kernel-test
-/// phase `check_orphan_threads`, `check_system_hang` and `check_timed_out_mutexes` were all
+/// phase `check_orphan_threads` and `check_system_hang` were all
 /// switched off, and that is the window in which a test that wedges the system wedges it: the
 /// transcript simply stops, because nothing was left running that could describe it. `bsp_watchdog`
 /// does not cover it either -- it needs the bsp's tick to stall, and a bsp spinning in that wait
@@ -488,15 +470,6 @@ extern "C" fn boot_sequence() {
     crate::thread::exit(0);
 }
 
-/// A/B knob for the schedmon perturbation question. It used to have a second cost besides its 30s
-/// wake: the timeout entry kept a wheel window occupied, and `hard_advance` could not tell an
-/// occupied window from a due one, so it signalled the INTERRUPT-priority timeout thread roughly
-/// twice a second for the whole boot -- a scheduling perturbation inside the very subsystem the
-/// release-smp1 wedge lives in. Entries further out than a wheel revolution are invisible to the
-/// tick path now (`TimeoutQueue::far_occupied`), so this is one wake per 30s again. Arm B builds
-/// with this false.
-const SCHEDMON_ENABLED: bool = true;
-
 /// Spawn the scheduler monitor: `schedmon_dump` every 30s from a REALTIME thread, so it keeps
 /// reporting when a spinning USER thread starves the idle loop (which is where every other hang
 /// diagnostic lives). Sleeps on the timeout queue, so a transcript whose `[schedmon]` heartbeat
@@ -524,7 +497,7 @@ pub fn idle_main() -> ! {
     if current_processor().is_bsp() {
         machine::machine_post_init();
         start_entropy_contribution_thread();
-        if SCHEDMON_ENABLED && (is_test_mode() || is_diag_mode()) {
+        if is_diag_mode() {
             start_schedmon();
         }
 
@@ -560,16 +533,27 @@ pub fn idle_main() -> ! {
             // The rest are diagnostics, and they are not free: each walks every thread or every
             // inflight request under that structure's lock, from the idle loop, on every scan.
             // `check_system_hang` additionally reports on threads that are merely idle -- service
-            // threads parked on a condvar cross its 25s threshold in every boot. They no longer
-            // spend the whole report budget doing it (see `MAX_THREAD_HANG_REPORTS`), but they do
-            // still cost a table each. Restricted to test mode, where a sweep is reading the
-            // transcript and the cost buys something -- or to an explicit `--diag`, for an
-            // autostart run that is being debugged.
+            // threads parked on a condvar cross its threshold in every boot -- so it is behind an
+            // explicit `--diag` only, like schedmon.
             if is_test_mode() || is_diag_mode() {
-                check_timed_out_mutexes();
+                // Arm losses are silent now that the re-arm recovers from them, so report the
+                // count when it moves. A healthy boot prints nothing.
+                {
+                    static LAST_ARMLOSS: AtomicU32 = AtomicU32::new(0);
+                    let (n, worst) = crate::clock::armloss::read();
+                    if n as u32 != LAST_ARMLOSS.swap(n as u32, Ordering::Relaxed) {
+                        emerglogln!(
+                            "[armloss] bsp timer arms never delivered: {} (worst {} us overdue)",
+                            n,
+                            worst / 1000,
+                        );
+                    }
+                }
                 check_timed_out_requests();
                 check_orphan_threads();
-                crate::thread::check_system_hang();
+                if is_diag_mode() {
+                    crate::thread::check_system_hang();
+                }
                 crate::obj::promotion_census();
                 crate::processor::report_exited_backlog();
             }
@@ -591,8 +575,27 @@ pub fn idle_main() -> ! {
             // may be holding, and a watchdog that hangs before printing is no watchdog.
             crate::thread::locktrack::diag::print_counters(true);
             crate::thread::check_system_hang();
-            check_timed_out_mutexes();
             check_orphan_threads();
+            // Which of the two wedge shapes is this? Measured on five captures of this report
+            // (stab0917/repro0917/pipefix0917): `spinlock long pause` and `ipi stall` were BOTH
+            // silent in every one, and both of those fire on their own -- so the bsp is not
+            // spinning anywhere, and the "spinning with interrupts masked" premise above does not
+            // fit. The remaining shape is a bsp halted with no timer armed, which looks identical
+            // from here because every instrument we have reports on spinning.
+            //
+            // An IPI separates them: a masked bsp cannot answer, an idle one can. Non-waiting, so
+            // this cannot itself wedge the reporter if the bsp really is deaf -- the line simply
+            // never appears.
+            crate::processor::ipi::ipi_exec(
+                crate::interrupt::Destination::Bsp,
+                alloc::boxed::Box::new(|| {
+                    emerglogln!(
+                        "[watchdog] bsp answered an ipi: it is idle with interrupts on, not \
+                         spinning masked -- so its timer was never rearmed"
+                    );
+                }),
+                false,
+            );
             emerglogln!("[watchdog] end of report");
         }
         iter = iter.wrapping_add(1);

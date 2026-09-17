@@ -61,9 +61,9 @@ pub struct ProcessorStats {
     pub page_faults: AtomicU64,
     /// Shootdown IPIs to this cpu that were elided because its vcpu was preempted and the
     /// invalidation was handed to the hypervisor instead (KVM PV TLB flush). Counted against the
-    /// cpu that was spared, like the aspace counters. Zero on bare metal, on a quiet host, and
-    /// with the `PV_TLB_FLUSH` knob off -- so a contended validation boot reading zero means the
-    /// elision path never ran, not that it is cheap.
+    /// cpu that was spared, like the aspace counters. Zero on bare metal and on a quiet host --
+    /// so a contended validation boot reading zero means the elision path never ran, not that it
+    /// is cheap.
     pub tlb_pv_elided: AtomicU64,
 }
 
@@ -92,9 +92,6 @@ pub struct Processor {
     /// This cpu's page-fault stage breakdown, on the same per-cpu terms. See
     /// [`crate::memory::context::virtmem::fault::FaultTracking`].
     pub fault_stats: Spinlock<crate::memory::context::virtmem::fault::FaultTracking>,
-    /// This cpu's interrupt counts and timings, on the same per-cpu terms. See
-    /// [`crate::interrupt::InterruptTracking`].
-    pub interrupt_stats: Spinlock<crate::interrupt::InterruptTracking>,
     /// This cpu's random generator and its batch buffer, on the same per-cpu terms as the stats
     /// above. See [`crate::random`]: `getrandom` used to route every request -- including the
     /// nonce for every object create -- through one global sleeping mutex, holding it across the
@@ -109,7 +106,6 @@ impl Processor {
             syscall_stats: Spinlock::new(crate::syscall::SyscallTracking::new()),
             syscall_counts: crate::syscall::SyscallCounts::new(),
             fault_stats: Spinlock::new(crate::memory::context::virtmem::fault::FaultTracking::new()),
-            interrupt_stats: Spinlock::new(crate::interrupt::InterruptTracking::new()),
             rng: Spinlock::new(crate::random::PerCpuRng::new()),
             running: AtomicBool::new(false),
             is_idle: AtomicBool::new(false),

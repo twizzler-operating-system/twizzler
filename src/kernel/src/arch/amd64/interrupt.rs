@@ -222,7 +222,7 @@ unsafe extern "C" fn common_handler_entry(
     // For an interrupt taken *in* the kernel there are no entry registers to set -- that is the
     // user-entry path above -- but this frame is what names the kernel pc for a sample. Swapped
     // rather than stored so a nested interrupt restores its parent's frame on the way out.
-    let prev_kframe = if user || !crate::thread::SAMPLE_KERNEL_IP {
+    let prev_kframe = if user {
         0
     } else {
         current_thread_ref()
@@ -230,10 +230,7 @@ unsafe extern "C" fn common_handler_entry(
             .unwrap_or(0)
     };
     generic_isr_handler(ctx, number, user);
-    if !user
-        && crate::thread::SAMPLE_KERNEL_IP
-        && let Some(t) = current_thread_ref()
-    {
+    if !user && let Some(t) = current_thread_ref() {
         t.arch.restore_kernel_frame(prev_kframe);
     }
 
@@ -529,7 +526,6 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
     // and demoting it trades a loud release failure for a silent release-only divergence. It costs
     // one `pushfq`/`pop`.
     assert!(!get());
-    let t_int = crate::interrupt::profile_now();
     let ctx = unsafe { ctx.as_mut().unwrap() };
     if number == Exception::DoubleFault as u64 || number == Exception::MachineCheck as u64 {
         /* diverging */
@@ -652,7 +648,6 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
     if number >= 32 {
         crate::interrupt::count_interrupt();
     }
-    crate::interrupt::record_interrupt(number, t_int);
     crate::interrupt::post_interrupt();
 }
 

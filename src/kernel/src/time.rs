@@ -88,18 +88,8 @@ where
 static CLOCK_CACHE: [Once<Arc<dyn ClockHardware + Send + Sync>>; MAX_CLOCKS] =
     [const { Once::new() }; MAX_CLOCKS];
 
-/// A/B: answer [`read_clock`] from the cache rather than by taking [`TICK_SOURCES`].
-///
-/// With this off, every `sys_read_clock_info` takes the one global tick-source spinlock, which is
-/// what the syscall did before -- so every cpu in the system serialized against every other to ask
-/// the time.
-pub const CACHED_CLOCK_READ: bool = true;
-
 /// Read tick source `idx`, without taking [`TICK_SOURCES`] once it has been read before.
 pub fn read_clock(idx: usize) -> Option<Ticks> {
-    if !CACHED_CLOCK_READ {
-        return Some(TICK_SOURCES.lock().get(idx)?.as_ref()?.read());
-    }
     let cache = CLOCK_CACHE.get(idx)?;
     if let Some(clock) = cache.poll() {
         return Some(clock.read());

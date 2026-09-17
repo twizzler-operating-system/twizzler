@@ -27,7 +27,7 @@ mod utils;
 /// rustc fingerprint is the compiler's version output, which is likewise unchanged. What follows is
 /// a tree of artifacts built by a compiler that no longer exists, which surfaces as `can't find
 /// crate` for something you never touched if you are lucky, and as one build silently linking two
-/// toolchains if you are not. Both happened here; see pagerperf.md section 22.
+/// toolchains if you are not. Both happened here.
 ///
 /// The flag itself is inert: a path remap from a prefix that cannot occur to itself. What matters
 /// is only that it is part of RUSTFLAGS, which cargo *does* fold into its fingerprints.

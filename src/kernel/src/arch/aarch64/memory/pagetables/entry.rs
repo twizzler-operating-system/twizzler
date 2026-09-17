@@ -232,7 +232,7 @@ bitflags::bitflags! {
         const USER_NO_EXECUTE = 1 << 54;
 
         // [58:55] => Ignored/Reserved for software use
-        /// Software bit, see [`crate::memory::pagetables::zeroprobe`].
+        /// Software bit: installed zeroed, so the hardware `DIRTY` bit records real writes.
         const PROBED = 1 << 55;
         const SHARED_PAGE_TABLE = 1 << 58;
         // [62:59] => PBHA

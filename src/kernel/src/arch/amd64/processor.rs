@@ -100,11 +100,10 @@ pub fn init(tls: VirtAddr) {
         if use_pcid {
             cr4 |= x86::controlregs::Cr4::CR4_ENABLE_PCID;
         }
-        let use_fsgsbase = USE_FSGSBASE_IF_AVAILABLE
-            && x86::cpuid::CpuId::new()
-                .get_extended_feature_info()
-                .map(|f| f.has_fsgsbase())
-                .unwrap_or(false);
+        let use_fsgsbase = x86::cpuid::CpuId::new()
+            .get_extended_feature_info()
+            .map(|f| f.has_fsgsbase())
+            .unwrap_or(false);
         if use_fsgsbase {
             cr4 |= x86::controlregs::Cr4::CR4_ENABLE_FSGSBASE;
         }
@@ -573,9 +572,6 @@ mod tests {
         }
     }
 }
-
-/// A/B switch: use `wrfsbase` for FS_BASE writes when the hardware offers it.
-pub const USE_FSGSBASE_IF_AVAILABLE: bool = true;
 
 /// Whether this machine's cpus have CR4.FSGSBASE set, so `wrfsbase` is legal.
 static USE_FSGSBASE: AtomicBool = AtomicBool::new(false);

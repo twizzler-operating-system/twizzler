@@ -56,7 +56,7 @@ workspace as separate **collections**, each with its own target triple, selected
 
 | Collection | Triple shape | Selector | Examples |
 |---|---|---|---|
-| Tools | host triple | `"tool"` | xtask, image_builder, initrd_gen, serialtest |
+| Tools | host triple | `"tool"` | xtask, image_builder, initrd_gen |
 | Kernel | `arch-machine-none` | `"kernel"` | `src/kernel` |
 | Userspace (default) | `arch-machine-twizzler` | *(unset)* | most `src/lib`, `src/srv`, `src/bin` crates — dynamically linked against the `reference` runtime |
 | Userspace-static | `arch-machine-twizzler-minruntime` | `"static"` | `bootstrap`, `twizzler-minruntime` itself |
@@ -86,7 +86,7 @@ L2  One layer up
 
 L3  Cross-compartment / device-facing clients
     monitor-api  (dynlink, secgate)
-    naming-core, pager-dynamic, devmgr, logboi, pager, sgtest, twizzler-io   (secgate / monitor-api)
+    naming-core, pager-dynamic, devmgr, logboi, pager, twizzler-io   (secgate / monitor-api)
     nvme-rs (standalone protocol library, no internal deps)
 
 L4  Protocol libraries built on L3
@@ -101,8 +101,8 @@ L5  Runtimes (link L0-L4 into a running program)
     twizzler-minruntime  (twizzler-abi, twizzler-rt-abi only — no dynlink/monitor-api/secgate)
 
 L6  System servers (src/srv/*, cdylibs loaded by init via the monitor)
-    cache-srv, devmgr-srv, display-srv, logboi-srv, naming-srv, net-srv, pager-srv (+object-store),
-    sgtest-srv — each pairs with its L3/L4 client crate of the same base name
+    cache-srv, devmgr-srv, display-srv, logboi-srv, naming-srv, net-srv, pager-srv (+object-store)
+    — each pairs with its L3/L4 client crate of the same base name
 
 L7  Userspace programs (src/bin/*)
     bootstrap → monitor → init → {logboi,devmgr,pager,naming,cache,net,display}-srv → sshd → shell
@@ -153,7 +153,6 @@ Traced directly from `src/bin/bootstrap/src/main.rs` and `src/bin/init/src/main.
 - `CondVar` / `InnerCondVar` (condvar.rs) — condition variable keyed by thread ObjID over an intrusive `RBTree` of waiting `ThreadRef`s; layered under `Mutex`.
 - `Mutex<T>` / `LockGuard` (mutex.rs) — sleeping mutex; explicitly documented as unsafe to use in critical/interrupt contexts because it can put the current thread to sleep.
 - `GenericSpinlock<T, Relax>` (spinlock.rs) — the base spinning lock, parameterized by a `RelaxStrategy` (`SpinLoop` vs. `Reschedule`, the latter yielding to the scheduler after enough spin iterations).
-- `LockTracker` / `LockTrackerInner` / `Lock` (thread/locktrack.rs) — per-thread bookkeeping of currently-held and intended-to-acquire mutexes/spinlocks, used to detect stuck/deadlocked lock waits.
 - `SecurityContext` / `SecCtxMgr` (security.rs) — capability-based security context object and the per-thread manager tracking active/inactive attached contexts; wraps `twizzler-security`'s `Cap`/`SecCtxBase`.
 - `Inflight` / `InflightManager` / `ReqKind` / `Request` (pager/{inflight,request}.rs) — the kernel-side state machine for requests outstanding to the userspace pager server (page-in, sync, create, delete, pager-memory).
 - `TraceMgr` / `TraceSink` / `TraceEvent<T>` (trace/{mgr,sink}.rs) — the kernel tracing subsystem: per-target sinks (object-backed ring buffers) fed by sync/async enqueue paths and a dedicated flush thread.
@@ -296,7 +295,6 @@ Dispatch table lives in `syscall/mod.rs::syscall_entry`, matching on `twizzler_a
 - **pager**: `pager_start`, `adv_lethe`, `disk_len`, `pager_open_handle`/`close_handle`, and the "external file" namespace-shadowing calls `pager_enumerate_external`/`pager_lookup_external`/`pager_create_external`/`pager_unlink_external`/`pager_readlink_external` (same `Descriptor`+shared-buffer pattern as naming); `pager-dynamic::ExternalFile`/`ExternalKind` describe the external file metadata records returned/enumerated.
 - **devmgr**: single query call `get_devices(DriverSpec) -> ObjID` (a `VecObject<OwnedDevice>`), wrapped client-side by `enumerate_devices()` into an iterable vector object — plus a `devmgr_start()` bootstrap call.
 - **logboi**: `logboi_open_handle`/`logboi_close_handle`/`logboi_post(desc, buf_len)` — log message bytes are written into a `SimpleBuffer` first, then `logboi_post` tells the server how many bytes to consume.
-- **sgtest**: single-call demo — `foo(Foo) -> Result<u32, TwzError>`.
 
 ### Critical relationships
 
@@ -310,8 +308,7 @@ Dispatch table lives in `syscall/mod.rs::syscall_entry`, matching on `twizzler_a
 - `naming-core` depends on `pager-dynamic` directly (not `pager`), i.e. naming-core talks to the pager service using the dynamic-dispatch client pattern regardless of whether `naming` itself is statically or dynamically linked.
 - `pager` (static gatecall stubs) and `pager-dynamic` (dynamic-dispatch client + `ExternalFile` types) both pair with `src/srv/pager-srv`, which depends on `pager`, `twizzler-driver`, `nvme` (nvme-rs) and `devmgr` (confirmed) — i.e. pager-srv is the component that actually drives an NVMe disk (via twizzler-driver + nvme-rs) and exposes it both as raw storage and as the "external file" namespace source consumed by naming-srv.
 - `devmgr` pairs with `src/srv/devmgr-srv` (confirmed dependency: devmgr-srv depends on `twizzler-driver` + `devmgr`) — devmgr-srv is the actual bus/device enumerator; `devmgr` is just the thin query client used by every other driver crate/server (virtio-gpu, virtio-net, pager-srv) to find their device.
-- `sgtest` pairs with `src/srv/sgtest-srv` (confirmed dependency) — a minimal reference pair for how a `#[secgate::gatecall]`-based client/server crate pairing is supposed to look, independent of any real device/service logic.
-- `naming-core`, `pager-dynamic`, and `twizzler-net`'s client-open path (`NetClient`, via `monitor-api`) all use the same `monitor_api::CompartmentHandle::lookup(...)` + `secgate::DynamicSecGate` pattern for cross-compartment calls resolved at runtime, as opposed to the directly-linked `#[secgate::gatecall]` stub pattern used by `naming`, `pager`, `devmgr`, `logboi`, `twizzler-display`, and `sgtest`.
+- `naming-core`, `pager-dynamic`, and `twizzler-net`'s client-open path (`NetClient`, via `monitor-api`) all use the same `monitor_api::CompartmentHandle::lookup(...)` + `secgate::DynamicSecGate` pattern for cross-compartment calls resolved at runtime, as opposed to the directly-linked `#[secgate::gatecall]` stub pattern used by `naming`, `pager`, `devmgr`, `logboi`, and `twizzler-display`.
 
 ---
 
@@ -386,11 +383,11 @@ Monitor-api's public surface (what a client compartment can ask the monitor to d
 - `PagedObjectStore` / `PagedDevice` / `ExternalFileStore` traits (object-store/paged_object_store.rs) — the abstract interfaces pager-srv drives against any storage backend (disk, ext4, Lethe, virtio-mem).
 - `Ext4Store<D>` (object-store/ext4.rs) — object store backend storing each object as a file inside an ext4 image.
 - `LetheObjectStore<D>` (object-store/lethe_object_store.rs) — encrypted, provable-deletion object store (KHF key hierarchy + epoch advance = secure erase).
-- `NvmeController`/`NvmeRequester`/`NvmeRequest` (pager-srv/nvme/*, duplicated in genrandom & mnemosyne) — the NVMe block-device driver: identify, DMA/PRP management, submit/poll commands.
+- `NvmeController`/`NvmeRequester`/`NvmeRequest` (pager-srv/nvme/*) — the NVMe block-device driver: identify, DMA/PRP management, submit/poll commands.
 - `DisplayInfo`/`DisplayClient` (display-srv/lib.rs) — display server's global GPU/framebuffer state and per-client window handle.
 - `LogClient`/`Logger` (logboi-srv/lib.rs) — per-client log buffer and the server's client-handle table.
 - `Namer`/`SbObjects` (naming-srv/lib.rs) — naming server's wrapper around `naming_core::NameStore` plus shared simple-buffer objects for client communication.
-- `NameStore`/`NameSession`/`NsNode`/`NsNodeKind` (naming-core, used throughout) — the actual in-memory/persistent namespace tree naming-srv serves and naming-test/ls/ptest/sqlite_test exercise directly.
+- `NameStore`/`NameSession`/`NsNode`/`NsNodeKind` (naming-core, used throughout) — the actual in-memory/persistent namespace tree naming-srv serves and ptest/sqlite_test exercise directly.
 - `CacheState`/`HeldObject`/`CachedStats` (cache-srv/lib.rs) — cache server's held-object map and per-hold stats returned to clients (also redeclared client-side in `bin/cache/main.rs`).
 - `Client`/`PortAssigner`/`NetworkInfo` (net-srv) — per-connection client state, ephemeral-port allocator, and global smoltcp interface/network config.
 - `DriverSpec`/`OwnedDevice`/`Supported` (devmgr, used by devmgr-srv/pager-srv/net-srv) — device query spec and the returned device handle other servers request through `get_devices`.
@@ -399,7 +396,6 @@ Monitor-api's public surface (what a client compartment can ask the monitor to d
 - `Job`/`Jobs`/`ShellInvoke`/`ShellCommand`/`InvokeCtx` (bin/shell/main.rs) — the shell's job-control and command-invocation model.
 - `Tracer`/`TracingState`/`TraceSource` (bin/trace/tracer.rs) — kernel-tracing session state and captured-event iteration used by the `trace` CLI.
 - `Report`/`ReportStatus`/`ReportInfo`/`TestResult` (unittest-report/lib.rs) — the JSON test-result schema shared between `unittest` and individual test binaries.
-- `FileSystem<S>`/`Superblock`/`FATEntry`/`ONode` (mnemosyne/fat) — mnemosyne's custom on-disk FAT-like filesystem schema and driver.
 - `PersistentHashMap<K,V>` (twizzler::collections::hachage, exercised by persistent-hashmap-test) — an invariant-pointer persistent hash map over a Twizzler object.
 
 ### API surface (server protocols / IPC endpoints)
@@ -413,7 +409,6 @@ All `src/srv/*` servers expose their API as `#[secgate::entry(lib = "...")]` fun
 - **naming-srv** (`lib = "naming"`): `namer_start(bootstrap)`, `open_handle()`/`close_handle(desc)`, `put(desc, name, id)`, `mkns(desc, name, persist)`, `link(desc, name, link)`, `get(desc, name, flags)`, `rename(desc, old, new)`, `remove(desc, name)`, `enumerate_names(...)`/`enumerate_names_nsid(...)`, `change_namespace(desc, name)` — the full namespace CRUD/traversal API.
 - **net-srv** (`lib = "twizzler-net"`): `start_network()`, `twz_net_alloc_port(desc, port)`, `twz_net_release_port(desc, port)`, `twz_net_drop_client(desc)`, `twz_net_open_client(config) -> NetClientOpenInfo` — plus an underlying `ClientMsg`/`ServerMsg`/`ClientRet`/`ServerRet` queue protocol (twizzler-net) for actual socket send/recv traffic once a client is open.
 - **pager-srv** (`lib = "pager"`): `pager_start(q1, q2) -> ObjID` (one-time bootstrap wiring the kernel<->pager queues), `adv_lethe()`, `disk_len(id)`, plus (`handle.rs`) `pager_open_handle`/`pager_close_handle`, `pager_enumerate_external`, `pager_lookup_external`, `pager_create_external`, `pager_unlink_external`, `pager_readlink_external` (name<->object resolution against the on-disk store, used by naming-srv); the high-volume page-in/page-out path itself runs over a `twizzler-queue` (`RequestFromKernel`/`CompletionToKernel`, `RequestFromPager`/`CompletionToPager`), not secgate calls.
-- **sgtest-srv** (`lib = "sgtest"`): `foo(x: Foo) -> u32` — trivial round-trip test gate, no real functionality.
 
 ### Critical relationships
 
@@ -421,9 +416,6 @@ All `src/srv/*` servers expose their API as `#[secgate::entry(lib = "...")]` fun
 - All server compartments are loaded via `monitor_api::CompartmentLoader` with `NewCompartmentFlags::EXPORT_GATES`, and init blocks on each compartment's `CompartmentFlags::READY` flag before proceeding — this is the mechanism enforcing the dependency order above (e.g. naming-srv isn't started until pager-srv signals ready).
 - **naming-srv** depends on **pager-srv** having started (`initialize_namer(bootstrap_id)` takes pager's bootstrap object ID) — pager-srv's `pager_lookup_external`/`pager_create_external`/`pager_enumerate_external`/`pager_unlink_external`/`pager_readlink_external` gates are the mechanism by which naming-srv resolves/creates objects backed by files on the real on-disk filesystem.
 - **pager-srv** and **net-srv** both depend on **devmgr-srv** (`devmgr::enumerate_devices`/`get_devices`) to find their NVMe/virtio-net PCIe devices; **display-srv** talks directly to a virtio-gpu device without going through devmgr in the code inspected.
-- Client programs use per-server client library crates rather than calling secgate gates directly: `bin/cache` (cache-srv, but note it also redeclares the gate signatures locally), `bin/ls`/`bin/shell`/`bin/naming-test`/`bin/sqlite_test`/`bin/persistent-hashmap-test`/`bin/gadget` (naming, via the `naming`/`naming-core` crates), `bin/gadget` (pager, via the `pager` crate's `adv_lethe`), `bin/gfxtest` (display-srv, via `twizzler-display`), `bin/virtio`/`bin/stdnet_test` (bypass net-srv, talking to `virtio-net`/`std::net` directly — `stdnet_test` and `sshd` go through the OS socket layer which net-srv backs), `bin/logboi-test`/`bin/gadget` (logboi, via the `logboi` crate).
+- Client programs use per-server client library crates rather than calling secgate gates directly: `bin/cache` (cache-srv, but note it also redeclares the gate signatures locally), `bin/shell`/`bin/sqlite_test`/`bin/persistent-hashmap-test` (naming, via the `naming`/`naming-core` crates), `bin/gfxtest` (display-srv, via `twizzler-display`), `bin/stdnet_test` (goes through the OS socket layer which net-srv backs, as does `sshd`), `bin/logboi-test` (logboi, via the `logboi` crate).
 - **debug** and **trace** both load and control arbitrary target compartments via `monitor-api::CompartmentLoader`, similarly to how init loads servers — `debug` additionally speaks GDB-remote over the loaded compartment, `trace` attaches kernel tracing to it.
-- **unittest** is itself launched by init and in turn spawns every other test/benchmark binary found in `/initrd` as child processes (matched by name), collecting results/timings via the shared `unittest-report` schema — most of the small one-off test binaries in `src/bin` (`randtest`, `random_validation`, `schedtest`, `object-store-test`, `naming-test`, `stdnet_test`, `ptest`, `persistent-hashmap-test`, `sqlite_test`, etc.) are meant to be run this way rather than launched by end users.
-- **genrandom**, **mnemosyne**, and **pager-srv** each carry their own independent, largely-duplicated copy of the NVMe driver (`nvme/controller.rs`, `dma.rs`, `requester.rs`) — genrandom and mnemosyne talk to the disk directly instead of through pager-srv, useful for raw disk benchmarking/formatting outside the normal paging path.
-- **gadget** is currently disabled: not a workspace member, not in the initrd, and no longer buildable — its `setup_http` demo depended on a vendored `tiny_http` port that was removed along with the `test-tiny-http` harness carrying it.
-- **object-store-test** exercises the `object-store` library crate (which lives under `src/srv/pager-srv/object-store`) directly and independently of `pager-srv`, as a lower-level test of the Lethe/ext4 storage backends.
+- **unittest** is itself launched by init and in turn spawns every other test/benchmark binary found in `/initrd` as child processes (matched by name), collecting results/timings via the shared `unittest-report` schema — most of the small one-off test binaries in `src/bin` (`randtest`, `random_validation`, `schedtest`, `stdnet_test`, `ptest`, `persistent-hashmap-test`, `sqlite_test`, etc.) are meant to be run this way rather than launched by end users.

@@ -8,292 +8,12 @@ use crate::{
     },
     memory::{
         frame::{Frame, FrameRef, PHYS_LEVEL_LAYOUTS, PhysicalFrameFlags, get_frame, split_frame},
-        pagetables::{Mapper, MappingFlags, zeroprobe},
+        pagetables::{Mapper, MappingFlags},
         tracker::{FrameAllocFlags, FrameAllocator, try_alloc_frame, try_alloc_prezeroed_frame},
     },
 };
 
 const LOG_LEVEL: log::Level = log::Level::Debug;
-
-/// Let [`Table::setup_zero_range`] skip runs of absent entries in one step, using the exact
-/// per-table present count, instead of stepping one entry at a time across the whole range.
-///
-/// A const rather than a runtime flag so the walk keeps no branch when it is on; off, `present`
-/// starts at `usize::MAX` and never reaches zero, which reproduces the original walk exactly from
-/// one tree state.
-const ZERO_RANGE_SKIP_ABSENT: bool = true;
-
-/// Recycle a never-written zero page without re-zeroing it.
-///
-/// An anonymous fill allocates a frame already zeroed and installs it here. If the hardware dirty
-/// bit on that entry is still clear when it is torn down, nothing wrote the page and it is still
-/// zero -- so it can go straight to the frame cache's clean side instead of paying a 4 KiB memset
-/// on the way back out.
-///
-/// Two things make this sound, and neither is free:
-///
-/// 1. [`Table::map`] ORs `DIRTY` into every new leaf, so the bit ordinarily means "may need
-///    writeback", not "was written". This suppresses that for the anonymous fill path only, which
-///    is the same thing [`zeroprobe`] does and safe for the same reason: an anonymous object's
-///    dirty list is collected by `MapControlCmd::Sync` and then discarded, because both use sites
-///    in `region.rs` gate on `use_pager()`. Doing it for a pager-backed object would drop a
-///    writeback.
-/// 2. The kernel writes object data through the physical direct map, where the object's own entry
-///    never sees the store -- so a clean bit is not by itself proof. `zeroprobe` measured that hole
-///    directly with a content scan: **0 false positives in ~525k clean entries** across two builds
-///    (`clean+NONZERO`). `framecache::VERIFY_KNOWN_ZERO` re-checks it on demand.
-///
-/// Measured population: ~489k frames per tracetest build, ~30% of the kernel's ~1.6M memsets.
-const REUSE_CLEAN_ZERO: bool = true;
-
-/// Measure how much writeback exists only because of the map-time dirty mark.
-///
-/// A pager-backed object's entries are marked dirty when they are mapped, not when they are
-/// written, because the kernel writes object data through the physical direct map where the
-/// object's own entry never sees the store. So a sync flushes every mapped page, whether or not
-/// anything changed it. With this on, that mark goes into [`EntryFlags::SYNTH_DIRTY`] instead of
-/// `DIRTY`, and the scan reports a page if *either* is set -- identical writeback behaviour, but
-/// the two are now countable apart. `synth_only` is an upper bound on the flushes that could be
-/// dropped: a page written solely through the direct map lands there too, and no bit can see it.
-const WRITEBACK_PROBE: bool = false;
-
-/// Pages the writeback scan reported, split by which bit said so.
-pub mod wbprobe {
-    use core::sync::atomic::{AtomicU64, Ordering};
-
-    pub static HW: AtomicU64 = AtomicU64::new(0);
-    pub static SYNTH_ONLY: AtomicU64 = AtomicU64::new(0);
-    pub static BOTH: AtomicU64 = AtomicU64::new(0);
-
-    pub fn print() {
-        if !super::WRITEBACK_PROBE {
-            return;
-        }
-        let (h, s, b) = (
-            HW.load(Ordering::Relaxed),
-            SYNTH_ONLY.load(Ordering::Relaxed),
-            BOTH.load(Ordering::Relaxed),
-        );
-        let t = h + s + b;
-        if t == 0 {
-            crate::logln!("== writeback probe: no pages reported");
-            return;
-        }
-        crate::logln!(
-            "== writeback probe: {} pages reported dirty; hw-only {} ({}%), synth-only {} ({}%), both {} ({}%)",
-            t,
-            h,
-            h * 100 / t,
-            s,
-            s * 100 / t,
-            b,
-            b * 100 / t
-        );
-    }
-}
-
-/// Zero a resident page by swapping in an already-zeroed frame, instead of dropping it.
-///
-/// The default path clears the entry and frees the frame, so the range becomes *absent* and every
-/// page faults back in on next touch -- one zero-fill fault per page, which is a cost neither the
-/// rewind nor the retire arena policy avoids (both were measured; retire zeroes 29x fewer bytes
-/// and runs 14% slower). Swapping keeps the mapping present: the next touch does not trap, and the
-/// dirty frame goes back to the allocator for its background zeroer.
-///
-/// **Only for a private, writable, non-COW leaf.** Replacing a read-only or COW entry in place
-/// leaves a private, non-COW frame behind a read-only entry: the write path declines to copy it
-/// (`maybe_cow_at` acts only on COW frames) and nothing else resolves the fault, so it repeats
-/// forever. Sharing implies COW here -- `setup_cow_range` is what raises a frame's refcount, and it
-/// sets `IS_COW` at the same time -- so the COW check covers the shared case too.
-///
-/// Allocation is `try_alloc_frame` without `WAIT_OK`, under the object's page-table lock: a dry
-/// pool must fall back rather than block, which is why the result is an `Option` the caller
-/// handles rather than a precharge the caller must get right.
-const ZERO_RANGE_SWAP_ZEROED: bool = true;
-
-/// Leave a resident frame alone when it is already zero, instead of swapping another zero frame
-/// over it.
-///
-/// `PROBED` marks an entry installed with a zeroed frame, and it is only ever set for anonymous
-/// objects -- `map_page_probed`'s flag is `!use_pager()`, and the swap arm below sets it only on
-/// the `anon` path. So `PROBED` with a clear hardware `DIRTY` means nothing has written the page
-/// since it was installed, and it still reads as zero. Swapping it costs a frame free, a
-/// clean-frame allocation, an `update_entry` and its invalidation, all to replace zeroes with
-/// zeroes.
-///
-/// The invalidation is the larger half: [`TlbInvData`] holds 16 instructions and does not coalesce
-/// contiguous runs, so a range that touches more entries than that degrades to a full flush of the
-/// address space. A 1 MiB stack chunk holds ~21 resident pages, just over the cap; skipping the
-/// untouched ones can keep the range precise.
-///
-/// [`TlbInvData`]: crate::arch::memory::pagetables::TlbInvData
-const SKIP_CLEAN_SWAP: bool = true;
-
-/// Re-read a frame before [`SKIP_CLEAN_SWAP`] leaves it in place. Off by default: this is the same
-/// invariant `REUSE_CLEAN_ZERO` relies on, and it verified clean over ~525k entries.
-const VERIFY_SKIP_CLEAN: bool = false;
-
-/// Zero a genuinely-dirty resident frame of an anonymous object *in place* through the direct map,
-/// instead of swapping a fresh zeroed frame over it.
-///
-/// Sits between the skip arm (already-zero, ~96% of a reuse) and the swap arm, so it takes the ~4%
-/// that are dirty. In place needs no frame allocation and no `update_entry`, and therefore no TLB
-/// invalidation at all -- the translation is unchanged, only the bytes behind it -- so it drops the
-/// swap arm's clean-frame-pool dependency (and its `swap_dry` fallback) and its per-page
-/// invalidation for that population. It leaves `DIRTY` set: clearing it would need an
-/// `update_entry` (and thus the invalidation this exists to avoid), so a dirty page is re-zeroed on
-/// each reuse rather than becoming skippable -- a deliberate trade, cheap because the memset
-/// carries no invalidation.
-///
-/// Anonymous only, because a pager-backed object's zeros must reach the store, which the swap arm's
-/// `DIRTY` handling drives and this path does not; and 4 KiB leaves only, so the per-op memset and
-/// the page cap stay bounded (a huge page falls to the swap arm). It does *not* touch frame flags:
-/// setting `ZEROED` on a still-mapped frame would lie to the allocator if the page is later
-/// written.
-///
-/// **DEFAULT OFF: as written this is a work regression, not a win.** Leaving `DIRTY` set means a
-/// page zeroed in place never becomes `PROBED && !DIRTY`, so `SKIP_CLEAN_SWAP` can never take it on
-/// a later `zero_range` -- it returns here and is re-memset every time. It also steals from the
-/// swap arm the pages swap would have made skippable (swap clears `DIRTY` for anon). Measured:
-/// skipped- clean went 2400 -> 0 on the `--tests` suite with this on, and on the rustc workload
-/// that clean population is ~96%, so this would convert "do nothing" into "memset every reuse" for
-/// nearly the whole set. The only net-positive form is as the swap arm's *dry-pool fallback*
-/// (replace drop+refault when `try_alloc_prezeroed_frame` fails), clearing `DIRTY` via
-/// `update_entry` so the page stays skippable -- but with coalescing making swap's invalidation
-/// cheap, even that is marginal. Kept behind the flag as a measured negative rather than deleted.
-const ZERO_RANGE_IN_PLACE: bool = false;
-
-/// Cap on pages zeroed in place per `setup_zero_range` call. In place is a CPU memset under the
-/// object's page-table mutex (a sleeping lock), so an unbounded dirty range would stall every other
-/// faulter on the object; past this many, the rest of the range falls back to the swap/drop arms. A
-/// 1 MiB anonymous reuse presents ~1 dirty page, so this rarely binds there; it bounds genuinely-
-/// dirty wide ranges.
-const ZERO_RANGE_IN_PLACE_MAX_PAGES: usize = 64;
-
-/// Skip a whole run of absent entries in one cursor step, instead of one entry at a time.
-///
-/// [`ZERO_RANGE_SKIP_ABSENT`] only skips a table that holds nothing at all, which a 1 MiB range
-/// inside one 2 MiB leaf table never qualifies for: it visits ~258 slots to clear the ~21 that are
-/// resident, paying a modulo, a canonicality-checked `VirtAddr::offset` and a bounds test for each
-/// absent one. This makes the leaf walk proportional to what the object actually holds.
-///
-/// Off reproduces the one-entry-at-a-time walk exactly (`run` is 1 and the advance collapses to
-/// `to_entry_end`), so this is an A/B axis rather than a code path that has to be removed.
-const ZERO_RANGE_SKIP_ABSENT_RUNS: bool = true;
-
-/// Pages zeroed by swapping a fresh frame in, against those that fell back to drop-and-refault.
-pub mod zeroswap {
-    use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
-
-    static SWAPPED: AtomicU64 = AtomicU64::new(0);
-    static FELLBACK: AtomicU64 = AtomicU64::new(0);
-    static SKIPPED: AtomicU64 = AtomicU64::new(0);
-    static INPLACE: AtomicU64 = AtomicU64::new(0);
-
-    /// A resident page left alone because it was already zero.
-    pub fn record_skip() {
-        SKIPPED.fetch_add(1, Relaxed);
-    }
-
-    /// A dirty anonymous page zeroed in place, with no entry change and no invalidation.
-    pub fn record_inplace() {
-        INPLACE.fetch_add(1, Relaxed);
-    }
-
-    pub fn record(swapped: bool) {
-        if swapped {
-            SWAPPED.fetch_add(1, Relaxed);
-        } else {
-            FELLBACK.fetch_add(1, Relaxed);
-        }
-    }
-
-    pub fn print() {
-        let (s, f, k, i) = (
-            SWAPPED.load(Relaxed),
-            FELLBACK.load(Relaxed),
-            SKIPPED.load(Relaxed),
-            INPLACE.load(Relaxed),
-        );
-        let total = s + f + k + i;
-        if total == 0 {
-            return;
-        }
-        logln!(
-            "== zero-range frame swap: {} pages swapped, {} fell back, {} zeroed in place, {} skipped clean ({}% skipped of {} resident) ==",
-            s,
-            f,
-            i,
-            k,
-            k * 100 / total,
-            total
-        );
-    }
-}
-
-/// Cross-check the stored page-table population count against an actual scan on every read.
-///
-/// The count used to live *inside* the table page, so anything that duplicated or rewrote that
-/// page carried it implicitly. It lives in the backing [`Frame`] now, which means every such site
-/// has to move it across by hand -- `Frame::cow_frame` is the one that does, and this is what
-/// proves there is not a second one. The count backs COW (`do_cow_copy` descends on it), the
-/// empty-table free in [`Table::unmap`], `is_empty_at_level`, and
-/// [`Table::setup_zero_range`]'s absent-run skip, so a silent under-count frees a live table.
-///
-/// Off: it turns a one-load read into a 512-entry scan. On for validation runs, where the expected
-/// reading is **1023 disagreements, all from `test_count`** -- that kernel test writes counts onto
-/// an empty table and reads them back, so it desynchronizes the two on purpose (512 iterations,
-/// less the i=0 read that sees a true zero). A full guest `cargo build`, which never runs it,
-/// reported 0 over 7,847,243 checks; the suite reported 1023 over 1,415,607 at smp1 and smp4,
-/// kvm and tcg, 65/65 passing. Anything above that baseline is real.
-const PT_COUNT_VERIFY: bool = false;
-
-/// Keep the page-table population count in the table page, the way it used to be: one bit per
-/// entry in the `AVAIL_1` flag of entries 0..16, so a read is sixteen entry loads and a write is
-/// sixteen read-modify-writes -- performed on *every* entry update, including the ones that leave
-/// the count alone. On aarch64 that encoding stored nothing at all and a read scanned 512 entries.
-///
-/// Exists so the move into [`Frame::pt_count`] can be measured from one tree state.
-const PT_COUNT_LEGACY: bool = false;
-
-/// Disagreements between the stored count and a scan, when [`PT_COUNT_VERIFY`] is on.
-pub mod ptcountdrift {
-    use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
-
-    static DRIFT: AtomicU64 = AtomicU64::new(0);
-    static CHECKS: AtomicU64 = AtomicU64::new(0);
-
-    pub fn record(stored: usize, actual: usize) {
-        let n = DRIFT.fetch_add(1, Relaxed) + 1;
-        if n.is_power_of_two() {
-            emerglogln!("PT COUNT DRIFT #{}: stored {} actual {}", n, stored, actual);
-        }
-    }
-
-    pub fn tick() {
-        CHECKS.fetch_add(1, Relaxed);
-    }
-
-    pub fn print() {
-        let checks = CHECKS.load(Relaxed);
-        if checks == 0 {
-            return;
-        }
-        logln!(
-            "== pt count verify: {} checks, {} disagreements ==",
-            checks,
-            DRIFT.load(Relaxed)
-        );
-    }
-}
-
-/// Take the frame `Table::map` installs from the provider when it already has it, instead of
-/// looking it up by physical address.
-///
-/// See [`super::PhysMapInfo::frame`]. Off, this is `get_frame(paddr.addr)` exactly as before, so
-/// the pair (`FRAME_LOOKUP_FAST`, this) attributes cleanly: `W_COW_GF_NS` moves only with the
-/// first, `W_LEAF_GF_NS` with both.
-const PROVIDER_CARRIES_FRAME: bool = true;
 
 /// Large pages taken apart again.
 ///
@@ -325,26 +45,16 @@ impl Table {
 
     /// Present entries in this table. See [`Frame::pt_count`] for why it lives in the frame.
     pub fn read_count(&self) -> usize {
-        let stored = match self.own_frame() {
-            Some(frame) if !PT_COUNT_LEGACY => frame.pt_count(),
-            _ => self.read_count_spread(),
-        };
-        if PT_COUNT_VERIFY {
-            ptcountdrift::tick();
-            let actual = (0..Table::PAGE_TABLE_ENTRIES)
-                .filter(|i| self[*i].is_present())
-                .count();
-            if actual != stored {
-                ptcountdrift::record(stored, actual);
-            }
+        match self.own_frame() {
+            Some(frame) => frame.pt_count(),
+            None => self.read_count_spread(),
         }
-        stored
     }
 
     pub fn set_count(&mut self, count: usize) {
         match self.own_frame() {
-            Some(frame) if !PT_COUNT_LEGACY => frame.set_pt_count(count),
-            _ => self.set_count_spread(count),
+            Some(frame) => frame.set_pt_count(count),
+            None => self.set_count_spread(count),
         }
     }
 
@@ -355,8 +65,8 @@ impl Table {
     /// single atomic add instead of a read of sixteen entries followed by writes to sixteen more.
     pub(super) fn adjust_count(&mut self, up: bool) {
         match self.own_frame() {
-            Some(frame) if !PT_COUNT_LEGACY => frame.adjust_pt_count(up),
-            _ => {
+            Some(frame) => frame.adjust_pt_count(up),
+            None => {
                 let count = self.read_count_spread();
                 self.set_count_spread(if up { count + 1 } else { count - 1 });
             }
@@ -413,7 +123,6 @@ impl Table {
     ) -> Result<(), TwzError> {
         let entry = &mut self[index];
         if !entry.is_present() {
-            crate::obj::pagetables::mapprobe::tick(&crate::obj::pagetables::mapprobe::POPULATED);
             let frame = fa.try_allocate().ok_or(ResourceError::OutOfMemory)?;
             assert!(frame.size() == PHYS_LEVEL_LAYOUTS[0].size());
             // The 512 entries below are never written here, so they must already be zero.
@@ -430,8 +139,7 @@ impl Table {
     ///
     /// Mirrors `readmap`'s condition for reporting a `MapInfo` exactly -- including that `is_huge`
     /// only means "huge" at a level that can map, since on x86 the same bit is PAT at the last
-    /// level. If the two ever diverge, `count_pages` and the counter would disagree, which is what
-    /// `COUNT_PAGES_VERIFY` exists to catch.
+    /// level. If the two ever diverge, `count_pages` and the counter would disagree.
     fn entry_is_leaf(entry: &Entry, level: usize) -> bool {
         entry.is_present()
             && ((entry.is_huge() && Self::can_map_at_level(level)) || level == Self::last_level())
@@ -468,7 +176,7 @@ impl Table {
         // restrictive entry just takes a spurious fault and re-walks -- and was measured: it fires
         // twice per boot, because `do_cow_copy` reaches an entry update only for a frame that is
         // already IS_COW, and this workload barely clones. Not worth a fast path through the
-        // hottest page-table function. See TLB.md.
+        // hottest page-table function.
         if was_present {
             consist.enqueue(vaddr, was_global, was_terminal, level)
         }
@@ -485,11 +193,6 @@ impl Table {
 
         if was_present != new_entry.is_present() {
             self.adjust_count(new_entry.is_present());
-        } else if PT_COUNT_LEGACY {
-            // The old encoding rewrote all sixteen count bits even when the count did not move,
-            // which is most of the calls. Reproduced so the arm is the old cost, not a half of it.
-            let count = self.read_count_spread();
-            self.set_count_spread(count);
         }
     }
 
@@ -671,7 +374,7 @@ impl Table {
             // this is behaviour-neutral. It is written locally anyway because the
             // alternative is depending on that escalation, on `ArchContext::change`
             // staying uncalled, and on `unmap`'s `is_object_table` guard being
-            // reproduced in any future descent. See TLB.md.
+            // reproduced in any future descent.
             consist.set_full_global();
             nonleaf_cow::record(downgraded);
         } else {
@@ -686,7 +389,7 @@ impl Table {
         // `clflush` specifically that makes this safe, not "x86 orders stores".
         //
         // **That last sentence is now contradicted deliberately, not by accident.** On amd64
-        // `PT_CLFLUSH` is off, so the `clflush` leg is gone entirely; what carries the ordering
+        // there is no `clflush` leg at all; what carries the ordering
         // there is exactly the thing the sentence rules out. x86-TSO does not reorder stores with
         // stores, so the downgrade loop's writes are visible before the entry write below to every
         // coherent observer, and on x86 the page-table walker is one. The sentence is right about
@@ -1169,14 +872,7 @@ impl Table {
                 paddr.len,
                 level,
             ) {
-                let t_leaf = crate::obj::pagetables::mapprobe::start();
-                let t_gf = crate::obj::pagetables::mapprobe::start();
-                let known = if PROVIDER_CARRIES_FRAME {
-                    paddr.frame
-                } else {
-                    None
-                };
-                if let Some(frame) = known.or_else(|| get_frame(paddr.addr))
+                if let Some(frame) = paddr.frame.or_else(|| get_frame(paddr.addr))
                     && !paddr.settings.flags().contains(MappingFlags::WIRED)
                 {
                     log::trace!(
@@ -1189,22 +885,12 @@ impl Table {
                     assert!(!frame.is_pt());
                     frame.inc_refcount();
                 }
-                crate::obj::pagetables::mapprobe::record(
-                    &crate::obj::pagetables::mapprobe::W_LEAF_GF_NS,
-                    t_gf,
-                );
                 // `DIRTY` here means "may need writeback", not "was written" -- the kernel writes
                 // object data through the direct map, which this entry never sees. A probed
                 // mapping opts out so unmap can read the bit for what the hardware put there;
                 // only anonymous fills do that, and their dirty list is discarded. Per entry, not
                 // per call: a provider covering several pages probes each one it installs.
-                // `PROBE` marks the anonymous fill. Tracking it costs the synthetic `DIRTY`
-                // bit on those entries, which is what makes the hardware bit mean "was written".
-                let probed = (zeroprobe::ENABLED || REUSE_CLEAN_ZERO)
-                    && paddr.settings.flags().contains(MappingFlags::PROBE);
-                if probed && zeroprobe::ENABLED {
-                    zeroprobe::record_install();
-                }
+                let probed = paddr.settings.flags().contains(MappingFlags::PROBE);
                 self.update_entry(
                     consist,
                     idx,
@@ -1213,8 +899,6 @@ impl Table {
                         EntryFlags::from(&paddr.settings)
                             | if probed {
                                 EntryFlags::empty()
-                            } else if WRITEBACK_PROBE {
-                                EntryFlags::SYNTH_DIRTY
                             } else {
                                 EntryFlags::DIRTY
                             }
@@ -1229,39 +913,14 @@ impl Table {
                     level,
                 );
                 phys.consume(Self::level_to_page_size(level));
-                crate::obj::pagetables::mapprobe::record(
-                    &crate::obj::pagetables::mapprobe::W_LEAF_NS,
-                    t_leaf,
-                );
-                crate::obj::pagetables::mapprobe::tick(
-                    &crate::obj::pagetables::mapprobe::W_LEAF_CALLS,
-                );
             } else {
                 assert_ne!(level, Self::last_level());
-                let t_desc = crate::obj::pagetables::mapprobe::start();
-                let t_pop = crate::obj::pagetables::mapprobe::start();
                 self.populate(idx, EntryFlags::intermediate(), fa)?;
-                crate::obj::pagetables::mapprobe::record(
-                    &crate::obj::pagetables::mapprobe::W_POPULATE_NS,
-                    t_pop,
-                );
-                // Split out rather than left inline: the lookup is the measured quantity and the
-                // branch is almost never taken, so timing the `if` would time the wrong thing.
-                let t_cow = crate::obj::pagetables::mapprobe::start();
                 let next_is_cow = self.next_table_frame(idx).is_some_and(|f| f.is_cow());
-                crate::obj::pagetables::mapprobe::record(
-                    &crate::obj::pagetables::mapprobe::W_COW_GF_NS,
-                    t_cow,
-                );
                 if next_is_cow {
                     self.do_cow_copy(idx, level, consist, cursor.start(), false, fa)?;
                 }
                 let next_table = self.next_table_mut(idx).unwrap();
-                // Recorded before descending: a parent's span must not contain its child's.
-                crate::obj::pagetables::mapprobe::record(
-                    &crate::obj::pagetables::mapprobe::W_DESCEND_NS,
-                    t_desc,
-                );
                 next_table.map(consist, cursor, Self::next_level(level), phys, fa)?;
             }
 
@@ -1281,7 +940,6 @@ impl Table {
         level: usize,
         fa: &mut FrameAllocator,
         swap_dry: &mut bool,
-        in_place_done: &mut usize,
         anon: bool,
     ) -> Result<(), TwzError> {
         // How far the cursor is from the end of the entry it currently sits in.
@@ -1307,11 +965,7 @@ impl Table {
         // Always advance the cursor before returning: `Mapper::setup_zero_range` loops
         // `while cursor.remaining() > 0`, so a skip that moves nothing spins forever.
         // `to_entry_end` is at least one byte, so every skip below is nonzero.
-        let mut present = if ZERO_RANGE_SKIP_ABSENT {
-            self.read_count()
-        } else {
-            usize::MAX
-        };
+        let mut present = self.read_count();
         if present == 0 {
             *cursor = cursor.advance_until_empty(to_table_end(cursor, start_index));
             return Ok(());
@@ -1344,45 +998,13 @@ impl Table {
                 // Already zero, so there is nothing to do and nothing to invalidate. Checked
                 // ahead of `swap_dry` because skipping needs no frame: a dry clean-pool stops the
                 // swap but must not stop this.
-                if SKIP_CLEAN_SWAP
-                    && flags.contains(EntryFlags::PROBED)
+                if flags.contains(EntryFlags::PROBED)
                     && !flags.contains(EntryFlags::DIRTY)
                     && !flags.contains(EntryFlags::WIRED)
                     && frame.is_some_and(|f| !f.is_cow())
                 {
-                    if VERIFY_SKIP_CLEAN && let Some(f) = frame {
-                        crate::memory::framecache::verify_zero(f);
-                    }
-                    zeroswap::record_skip();
                     *cursor = cursor.advance_until_empty(to_entry_end(cursor));
                     // `idx` explicitly, for the same reason the swap arm below does it.
-                    idx += 1;
-                    continue;
-                }
-                // Dirty anon leaf: zero the frame in place. No `update_entry`, so no invalidation
-                // -- the translation is unchanged, only its bytes -- and no frame
-                // alloc/free. Ahead of the swap arm, which then handles
-                // pager-backed, huge, over-cap, and the clean-pool
-                // fallback. `present` was already decremented above; advance the cursor and `idx`
-                // explicitly like the other consuming arms.
-                if ZERO_RANGE_IN_PLACE
-                    && anon
-                    && level == Self::last_level()
-                    && *in_place_done < ZERO_RANGE_IN_PLACE_MAX_PAGES
-                    && !flags.contains(EntryFlags::WIRED)
-                    && flags.contains(EntryFlags::WRITE)
-                    && let Some(f) = frame
-                    && !f.is_cow()
-                {
-                    // Direct-map memset, no frame-flag change: setting `ZEROED` on a still-mapped
-                    // frame would lie to the allocator if the page is later written, so only the
-                    // bytes move. `DIRTY` stays set (see `ZERO_RANGE_IN_PLACE`).
-                    unsafe {
-                        core::ptr::write_bytes(f.virtaddr().as_mut_ptr::<u8>(), 0, f.size());
-                    }
-                    *in_place_done += 1;
-                    zeroswap::record_inplace();
-                    *cursor = cursor.advance_until_empty(to_entry_end(cursor));
                     idx += 1;
                     continue;
                 }
@@ -1390,8 +1012,11 @@ impl Table {
                 // of the range. Nothing refills the clean side while this walk runs -- the frames
                 // it drops are dirty and go back deferred, after the walk -- so the remaining ~20
                 // asks a 1 MiB range makes would each pay a probe to be told the same thing.
-                if ZERO_RANGE_SWAP_ZEROED
-                    && !*swap_dry
+                // Only for a private, writable, non-COW leaf: replacing a read-only or COW entry
+                // in place would leave a private frame behind a read-only entry that nothing
+                // resolves. Sharing implies COW here (`setup_cow_range` raises the refcount and
+                // sets `IS_COW` together), so the COW check covers the shared case too.
+                if !*swap_dry
                     && !flags.contains(EntryFlags::WIRED)
                     && flags.contains(EntryFlags::WRITE)
                     && frame.is_some_and(|f| !f.is_cow())
@@ -1424,16 +1049,11 @@ impl Table {
                                 swap_flags |= EntryFlags::PROBED;
                                 swap_flags.remove(EntryFlags::DIRTY);
                             }
-                            if zeroprobe::ENABLED {
-                                zeroprobe::record_install_swap();
-                                swap_flags |= EntryFlags::PROBED | EntryFlags::PROBED_SWAP;
-                            }
                             let swap = Entry::new(new_frame.start_address(), swap_flags);
                             self.update_entry(consist, idx, swap, cursor.start(), true, level);
                             if let Some(old) = frame {
                                 consist.free_frame(old);
                             }
-                            zeroswap::record(true);
                             *cursor = cursor.advance_until_empty(to_entry_end(cursor));
                             // `idx` explicitly, because this `continue` no longer gets it for
                             // free: the entry loop was a `for` when this arm was written. Without
@@ -1447,10 +1067,7 @@ impl Table {
                             idx += 1;
                             continue;
                         }
-                        None => {
-                            *swap_dry = true;
-                            zeroswap::record(false)
-                        }
+                        None => *swap_dry = true,
                     }
                 }
                 let mut new_entry = Entry::new_unused();
@@ -1469,18 +1086,11 @@ impl Table {
                         frame.get_flags(),
                         flags,
                     );
-                    if zeroprobe::ENABLED && flags.contains(EntryFlags::PROBED) {
-                        zeroprobe::record(
-                            flags.contains(EntryFlags::DIRTY),
-                            frame,
-                            flags.contains(EntryFlags::PROBED_SWAP),
-                        );
-                    }
-                    // Clean and tracked: nothing wrote it since it was installed zeroed.
-                    if REUSE_CLEAN_ZERO
-                        && flags.contains(EntryFlags::PROBED)
-                        && !flags.contains(EntryFlags::DIRTY)
-                    {
+                    // Clean and tracked: nothing wrote it since it was installed zeroed. Sound
+                    // because `PROBED` is only set for anonymous objects (whose dirty list is
+                    // discarded, so a clear map-time `DIRTY` drops no writeback), and the
+                    // direct-map hole measured 0 false positives over ~525k clean entries.
+                    if flags.contains(EntryFlags::PROBED) && !flags.contains(EntryFlags::DIRTY) {
                         consist.free_frame_known_zero(frame);
                     } else {
                         consist.free_frame(frame);
@@ -1504,7 +1114,6 @@ impl Table {
                     Self::next_level(level),
                     fa,
                     swap_dry,
-                    in_place_done,
                     anon,
                 )?;
             } else {
@@ -1520,20 +1129,18 @@ impl Table {
                 let size = Self::level_to_page_size(level);
                 let first = to_entry_end(cursor);
                 let mut run = 1;
-                if ZERO_RANGE_SKIP_ABSENT_RUNS {
-                    // Bounded by this table and by what the cursor still covers, so the run never
-                    // reaches an entry the caller did not ask about.
-                    let max_run = if cursor.remaining() <= first {
-                        1
-                    } else {
-                        1 + (cursor.remaining() - first).div_ceil(size)
-                    };
-                    while run < max_run
-                        && idx + run < Table::PAGE_TABLE_ENTRIES
-                        && !self[idx + run].is_present()
-                    {
-                        run += 1;
-                    }
+                // Bounded by this table and by what the cursor still covers, so the run never
+                // reaches an entry the caller did not ask about.
+                let max_run = if cursor.remaining() <= first {
+                    1
+                } else {
+                    1 + (cursor.remaining() - first).div_ceil(size)
+                };
+                while run < max_run
+                    && idx + run < Table::PAGE_TABLE_ENTRIES
+                    && !self[idx + run].is_present()
+                {
+                    run += 1;
                 }
                 *cursor = cursor.advance_until_empty(first + (run - 1) * size);
                 idx += run;
@@ -1587,18 +1194,11 @@ impl Table {
                         frame.get_flags(),
                         flags,
                     );
-                    if zeroprobe::ENABLED && flags.contains(EntryFlags::PROBED) {
-                        zeroprobe::record(
-                            flags.contains(EntryFlags::DIRTY),
-                            frame,
-                            flags.contains(EntryFlags::PROBED_SWAP),
-                        );
-                    }
-                    // Clean and tracked: nothing wrote it since it was installed zeroed.
-                    if REUSE_CLEAN_ZERO
-                        && flags.contains(EntryFlags::PROBED)
-                        && !flags.contains(EntryFlags::DIRTY)
-                    {
+                    // Clean and tracked: nothing wrote it since it was installed zeroed. Sound
+                    // because `PROBED` is only set for anonymous objects (whose dirty list is
+                    // discarded, so a clear map-time `DIRTY` drops no writeback), and the
+                    // direct-map hole measured 0 false positives over ~525k clean entries.
+                    if flags.contains(EntryFlags::PROBED) && !flags.contains(EntryFlags::DIRTY) {
                         consist.free_frame_known_zero(frame);
                     } else {
                         consist.free_frame(frame);
@@ -1629,9 +1229,6 @@ impl Table {
                     did_unmap = true;
                     *released = Some(entry.table_addr());
                     get_frame(entry.table_addr()).unwrap().dec_refcount();
-                    // Positive-control window: suppresses ONLY this detach's invalidation, and
-                    // only when `posctl::UNMAP_NO_INVL` is armed (ships OFF, compiles out).
-                    consist.set_suppress(true);
                     self.update_entry(
                         consist,
                         idx,
@@ -1649,7 +1246,6 @@ impl Table {
                     // implementation over-invalidating. Escalate to a full non-global flush for
                     // this target; remote cpus stay covered by the PCID revoke in `finish_send`.
                     consist.set_full();
-                    consist.set_suppress(false);
                 }
             }
 
@@ -1733,18 +1329,7 @@ impl Table {
             let entry = self[idx];
             let is_present = entry.is_present();
             let is_huge = entry.is_huge() && Self::can_map_at_level(level);
-            let hw = entry.flags().contains(EntryFlags::DIRTY);
-            let synth = entry.flags().contains(EntryFlags::SYNTH_DIRTY);
-            // Either bit means "flush it", so what gets written back is unchanged.
-            let is_dirty = hw || synth;
-            if WRITEBACK_PROBE && is_dirty {
-                let c = match (hw, synth) {
-                    (true, true) => &wbprobe::BOTH,
-                    (true, false) => &wbprobe::HW,
-                    _ => &wbprobe::SYNTH_ONLY,
-                };
-                c.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            }
+            let is_dirty = entry.flags().contains(EntryFlags::DIRTY);
             if is_present && (is_huge || level == Self::last_level()) {
                 if is_dirty {
                     let info = MapInfo::new(
@@ -1758,10 +1343,7 @@ impl Table {
                         self.update_entry(
                             consist,
                             idx,
-                            Entry::new(
-                                entry.addr(level),
-                                entry.flags() - EntryFlags::DIRTY - EntryFlags::SYNTH_DIRTY,
-                            ),
+                            Entry::new(entry.addr(level), entry.flags() - EntryFlags::DIRTY),
                             cursor.start(),
                             true,
                             level,
@@ -1833,7 +1415,7 @@ impl Table {
             // with "out of pager request slots" -- since diagnosed as an independent deadlock in
             // the pager-memory donation path that any stat speedup unearths (`pagerwedge.md`),
             // and fixed there. The scan itself was never implicated, but it is also superseded:
-            // `COUNT_PAGES_COUNTER` answers `count_pages` without walking at all (213x), so this
+            // `Mapper::page_count` answers `count_pages` without walking at all (213x), so this
             // path only matters for `readmap`-style callers that still iterate sparse ranges.
             Err(Table::level_to_page_size(level))
         }
@@ -1904,7 +1486,7 @@ impl Table {
 /// That arm clears `WRITE` on every present entry of a whole sub-table and then enqueues a single
 /// `invlpg` for the caller's address, so it downgrades up to 512 pages and invalidates one. Before
 /// fixing that, establish whether anything reaches it: a fix for an invalidation that nothing
-/// exercises cannot be demonstrated to work. See TLB.md.
+/// exercises cannot be demonstrated to work.
 pub mod nonleaf_cow {
     use core::sync::atomic::{AtomicUsize, Ordering};
 

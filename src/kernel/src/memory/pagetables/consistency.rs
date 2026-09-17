@@ -29,62 +29,6 @@ static TLB_STATS: TlbStats = TlbStats {
     flushes: AtomicUsize::new(0),
 };
 
-/// Census of *executed* local invalidations, by the branch [`do_invalidation`] actually took —
-/// the split `tlb_flush_count` cannot give (it counts sends, full or precise alike; that
-/// ambiguity produced a published misread, see sysbench.md's map/unmap CORRECTED bullet).
-/// Perfmark-differenced per bench window so `tlb_stale_slot_reuse`'s window names every
-/// TLB-affecting event between an unmap and its probe. Gated; ships OFF.
-pub mod invl_census {
-    use core::sync::atomic::{AtomicU64, Ordering};
-
-    pub const INVL_CENSUS: bool = false;
-
-    /// calls, skipped (not ours + not global), full_global, full_local, precise execs,
-    /// precise instructions.
-    pub const NR: usize = 6;
-    static COUNTS: [AtomicU64; NR] = [const { AtomicU64::new(0) }; NR];
-
-    pub enum Outcome {
-        Skipped,
-        FullGlobal,
-        FullLocal,
-        /// Precise: carries the instruction count executed.
-        Precise(usize),
-    }
-
-    pub fn record(outcome: Outcome) {
-        if !INVL_CENSUS {
-            return;
-        }
-        COUNTS[0].fetch_add(1, Ordering::Relaxed);
-        match outcome {
-            Outcome::Skipped => COUNTS[1].fetch_add(1, Ordering::Relaxed),
-            Outcome::FullGlobal => COUNTS[2].fetch_add(1, Ordering::Relaxed),
-            Outcome::FullLocal => COUNTS[3].fetch_add(1, Ordering::Relaxed),
-            Outcome::Precise(n) => {
-                COUNTS[5].fetch_add(n as u64, Ordering::Relaxed);
-                COUNTS[4].fetch_add(1, Ordering::Relaxed)
-            }
-        };
-    }
-
-    pub fn snapshot() -> [u64; NR] {
-        let mut out = [0u64; NR];
-        if !INVL_CENSUS {
-            return out;
-        }
-        for (i, c) in COUNTS.iter().enumerate() {
-            out[i] = c.load(Ordering::Relaxed);
-        }
-        out
-    }
-
-    /// Cumulative suppression count from the positive control, for the perfmark line.
-    pub fn posctl_suppressed() -> u64 {
-        super::posctl::snapshot()
-    }
-}
-
 pub fn fill_stats(stats: &mut twizzler_abi::syscall::MemoryStats) {
     stats.tlb_shootdown_count = TLB_STATS
         .shootdowns
@@ -290,31 +234,6 @@ pub struct Consistency {
     /// `Mapper::page_count` is exact without walking. `Consistency` is the only thing already
     /// threaded through the whole recursion, which is why it carries this.
     page_delta: isize,
-    /// See [`posctl`]. Dead (always false) unless the positive-control const is armed.
-    suppress: bool,
-}
-
-/// Positive control for the unmap-flush question (sysbench.md map/unmap section): deliberately
-/// suppress the object-table detach's TLB invalidation so `tlb_stale_slot_reuse` can prove it is
-/// *able* to observe staleness in this environment. **A kernel built with this armed is
-/// deliberately incorrect** — diag-only boots, reproducer verdict only, everything after it in
-/// that boot is untrusted. Ships OFF.
-pub mod posctl {
-    use core::sync::atomic::{AtomicU64, Ordering};
-
-    pub const UNMAP_NO_INVL: bool = false;
-
-    static SUPPRESSED: AtomicU64 = AtomicU64::new(0);
-
-    pub fn record_suppressed() {
-        SUPPRESSED.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// For perfmark; proves the arm was live (a zero here in an armed round means the suppression
-    /// never executed and the verdict is void).
-    pub fn snapshot() -> u64 {
-        SUPPRESSED.load(Ordering::Relaxed)
-    }
 }
 
 impl Consistency {
@@ -326,7 +245,6 @@ impl Consistency {
             zero_pages: LinkedList::new(FrameAdapter::NEW),
             pending: None,
             page_delta: 0,
-            suppress: false,
         }
     }
 
@@ -355,18 +273,7 @@ impl Consistency {
 
     /// Enqueue a TLB invalidation.
     pub fn enqueue(&mut self, addr: VirtAddr, is_global: bool, is_terminal: bool, level: usize) {
-        if posctl::UNMAP_NO_INVL && self.suppress {
-            posctl::record_suppressed();
-            return;
-        }
         self.tlb.enqueue(addr, is_global, is_terminal, level)
-    }
-
-    /// See [`posctl`]. No-op unless the positive-control const is armed.
-    pub fn set_suppress(&mut self, on: bool) {
-        if posctl::UNMAP_NO_INVL {
-            self.suppress = on;
-        }
     }
 
     /// Flush a cache-line.
@@ -437,15 +344,7 @@ impl Consistency {
     }
 
     /// See [ArchTlbMgr::set_full].
-    ///
-    /// Suppress-aware for the same reason as [`Self::enqueue`]: the `posctl` weakened arm must
-    /// weaken the object-table detach's *whole* invalidation, including this escalation, or the
-    /// positive control stops being able to catch a regression of the fix it validated.
     pub fn set_full(&mut self) {
-        if posctl::UNMAP_NO_INVL && self.suppress {
-            posctl::record_suppressed();
-            return;
-        }
         self.tlb.set_full();
     }
 

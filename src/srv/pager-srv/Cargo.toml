@@ -21,12 +21,12 @@ devmgr = { workspace = true }
 slab = { workspace = true, features = [] }
 itertools = { workspace = true }
 stable-vec = { workspace = true }
-rand = "*"
+rand = "0.10"
 pager = { path = "../../lib/pager" }
 heapless = { workspace = true }
 async-channel = { workspace = true }
 smallvec = { workspace = true }
-libc = "*"
+libc = { workspace = true }
 
 volatile = { workspace = true }
 bitvec = { workspace = true }

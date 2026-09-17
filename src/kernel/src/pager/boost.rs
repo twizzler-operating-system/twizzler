@@ -35,13 +35,6 @@ use crate::{
 /// nothing is blocked on it; the counters below buy back the cases where that is wrong.
 pub(super) const COMPLETION_BASE: Priority = Priority::USER;
 
-/// A/B knob. `false` pins the completion thread at [`COMPLETION_BASE`] and stops the counters
-/// having any effect, so setting it false *and* `COMPLETION_BASE` to [`Priority::REALTIME`]
-/// reproduces the pre-change behaviour exactly. Left as a const rather than removed because the
-/// priority half and the spin half of this work are separately attributable, and a measurement
-/// that cannot separate them will credit one for the other.
-const FOLLOW_WAITER_PRIORITY: bool = true;
-
 const NR_CLASSES: usize = 4;
 
 /// Live waiters by [`PriorityClass`], indexed by `class as usize`.
@@ -129,9 +122,6 @@ fn highest_waiting() -> Option<PriorityClass> {
 /// increment/decrement of a stored priority would not. A lost update leaves the thread one step
 /// stale-high, which `set_priority`'s own comment calls the safe direction.
 fn recompute() {
-    if !FOLLOW_WAITER_PRIORITY {
-        return;
-    }
     let Some(thread) = COMPLETION.poll() else {
         return;
     };

@@ -48,7 +48,7 @@ pub struct ObjectMapArgs {
     /// calling thread's active context", which is what every caller did implicitly before this
     /// existed. The monitor needs to say so explicitly: its instance id is also zero, which is
     /// indistinguishable from `KERNEL_SCTX`, so "active" resolves to a context that does not exist
-    /// and the eager mapping is silently skipped. See pagerperf.md 17.
+    /// and the eager mapping is silently skipped.
     pub target_sctx: ObjID,
 }
 

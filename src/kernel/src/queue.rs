@@ -136,9 +136,6 @@ impl<T: Copy> Queue<T> {
                     .unwrap();
                 },
                 |word| {
-                    // The kernel queues are the pager queues; a ring here is always
-                    // trail-worthy. a = bell value at ring time (disambiguates sub/com).
-                    crate::pager::queues::qtrail::record(2, 0, word.load(Ordering::SeqCst), 0);
                     sys_thread_sync(
                         &mut [ThreadSync::new_wake(ThreadSyncWake::new(
                             ThreadSyncReference::Virtual(word),
@@ -250,44 +247,7 @@ pub struct QueueObject<S, C> {
 }
 
 impl<S: Copy, C: Copy> QueueObject<S, C> {
-    /// Diagnostic: identity of the Object instance this queue wakes/sleeps through. Compared
-    /// against the registry's instance for the same id in the hang report -- a mismatch means
-    /// wakes and sleeps are landing on different SleepInfo trees.
-    pub fn object_ptr(&self) -> usize {
-        alloc::sync::Arc::as_ptr(self.handle.object()) as *const u8 as usize
-    }
-
-    /// Diagnostic: (bell, tail, nonempty, turn_ok) of each subqueue as seen through THIS
-    /// (kernel-slot) mapping. Compared against the userspace probe's identical read at wedge
-    /// time: disagreement is a mapping fork; agreement leaves only the parked CPU's TLB.
-    pub fn diag_pending(&self) -> ((u64, u64, bool, bool), (u64, u64, bool, bool)) {
-        (
-            self.submissions.raw.pending_parts(),
-            self.completions.raw.pending_parts(),
-        )
-    }
-
-    /// Diagnostic: for each subqueue, the tail slot's `cmd_slot` — the exact word `is_turn`
-    /// judges readiness by — read through this kernel-slot mapping AND through the object page
-    /// tree (with its backing phys). Per subqueue: (tail, slot object-offset, kmap cmd_slot,
-    /// tree (phys, word, frame-size)); the tree word carries cmd_slot in its low 32 bits.
-    #[allow(clippy::type_complexity)]
-    pub fn slot_diag(&self) -> [(u64, u64, u32, Option<(u64, u64, usize)>); 2] {
-        let base = self.handle.base();
-        let obj = self.handle.object();
-        let mut mk = |buf_off: u64, (t, byte_off, kmap_cmd): (u64, usize, u32)| {
-            let slot_obj_off = buf_off as usize + byte_off;
-            let tree = obj.read_word_with_phys(slot_obj_off).ok();
-            (t, slot_obj_off as u64, kmap_cmd, tree)
-        };
-        [
-            mk(base.sub_buf as u64, self.submissions.raw.diag_tail_slot()),
-            mk(base.com_buf as u64, self.completions.raw.diag_tail_slot()),
-        ]
-    }
-
     pub fn from_object(obj: ObjectRef) -> Self {
-        crate::memory::context::kobjcensus::record(crate::memory::context::kobjcensus::Site::Queue);
         let handle =
             kernel_context().insert_kernel_object::<QueueBase<S, C>>(ObjectContextInfo::new(
                 obj.clone(),

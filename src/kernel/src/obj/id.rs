@@ -189,9 +189,7 @@ impl Object {
         // argument -- so it runs in full even when `set_verified_id` is about to discard it
         // because the answer is already recorded. `sys_object_create` records it moments before
         // writing the meta page, which makes that every object userspace creates.
-        if crate::syscall::object::createprofile::OBJ_CREATE_FASTPATHS
-            && self.verified_id.poll().is_some()
-        {
+        if self.verified_id.poll().is_some() {
             return;
         }
         self.set_verified_id(

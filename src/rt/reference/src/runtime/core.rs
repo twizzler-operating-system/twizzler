@@ -6,7 +6,6 @@ use std::{
     ffi::{c_char, c_void, CStr, CString},
     path::Path,
     sync::{Mutex, OnceLock},
-    time::Instant,
 };
 
 use dynlink::context::runtime::RuntimeInitInfo;
@@ -95,51 +94,6 @@ pub(crate) fn run_mlibc_thread_dtors(tp: *mut u8, code: i32) {
     }
 }
 
-/// Skip `set_naming_namespace` when the target is already the root namespace.
-///
-/// A compartment does not signal `COMP_READY` until `pre_main_hook` returns, so everything here is
-/// inside `Command::spawn`. This one call measured **2,954 us of a 6,126 us spawn** (48%), of which
-/// 2,896 us was acquiring a naming handle -- a compartment lookup plus a dynamic-gate resolution
-/// plus a server-side buffer, paid by every compartment at startup whether or not it ever names
-/// anything.
-///
-/// Setting the namespace to "/" changes nothing: a naming handle this runtime has not opened yet
-/// already sits at its root -- with a single handle per runtime there is no pool to re-sync, so
-/// skipping the call skips a whole gate round-trip. The cwd memo is seeded from that same fact,
-/// so `current_dir()` still answers without acquiring a handle.
-/// `TWZ_RT_INITIAL_DIR` is the parent's cwd, so this fires whenever the parent is at the root --
-/// the common case.
-///
-/// **This defers rather than deletes for a program that does use naming**: such a program acquires
-/// the handle at its first lookup instead. A do-nothing child never pays it at all, so the spawn
-/// benchmarks see the full saving and a real workload will see less.
-///
-/// On by default. Set it `false` to restore the unconditional call -- which is also the A/B, since
-/// the two arms differ by exactly this line. Measured `-45.6%` on `compartment_spawn_exit`
-/// (6,301,106 -> 3,427,608 ns, disjoint ranges, four alternating arms); see `spawnbench.md` §14.
-const SKIP_ROOT_NAMESPACE_SET: bool = true;
-
-/// Switch for the child-side startup phase counter (`PREMAIN`): subscriber / fds / naming.
-///
-/// A compartment does not signal `COMP_READY` until `pre_main_hook` returns, so everything it does
-/// is inside the monitor's `start` phase and inside `Command::spawn`. Off by default.
-pub const PRE_MAIN_PHASE_STATS: bool = false;
-
-/// Switch for the spawn-latency join (`CHILDTOP` here, `SPAWNGO` in the monitor's
-/// `start_main_thread`). **Flip both together** -- they are two crates and one measurement.
-///
-/// Prices the window the spawn breakdown could only reach by subtraction: from `sys_spawn`
-/// returning in the parent to the child's first instruction in `init_for_compartment`. That
-/// residual read ~190 us and was filed as "sched latency", but a residual inherits every other
-/// phase's error and the kernel's own wake->run histogram says wakes cost tens of microseconds,
-/// not hundreds -- so the label is a hypothesis, not a measurement.
-///
-/// Deliberately separate from [`PRE_MAIN_PHASE_STATS`]: that switch also arms `CTORONE`, ~15
-/// records per spawn, and a ring drain landing inside the window would inflate the very number
-/// this exists to read (see the `statlog` first-drain artifact that cost ~600 us of a spawn).
-/// This is one record per side per spawn.
-pub const SPAWN_LAT_STATS: bool = false;
-
 impl ReferenceRuntime {
     #[track_caller]
     pub fn exit(&self, code: i32) -> ! {
@@ -147,19 +101,6 @@ impl ReferenceRuntime {
             let id = crate::runtime::thread::with_current_thread(|ct| ct.id());
             if id == 1 {
                 OUR_RUNTIME.close_fds();
-                // `process::exit` skips post_main_hook, and statlog no longer drains on a fresh
-                // ring's first record -- so flush here or an exit-now program's records are lost.
-                // Free when the ring is empty.
-                secgate::statlog::drain();
-                // Same reason: rustc exits this way, so a post_main_hook-only report measures
-                // cargo and never the process the profile is actually about.
-                crate::runtime::file::namestats::report();
-                crate::runtime::file::kinds::raw_file::writestats::report();
-                crate::runtime::alloc::reallocstats::report();
-                crate::runtime::alloc::sites::report();
-                crate::runtime::alloc::sites::compmap();
-                crate::runtime::alloc::talc::heapspan::report();
-                crate::runtime::alloc::ferroc::decommitstats::report();
             } else if code != 0 && !self.state().contains(RuntimeState::IS_MONITOR) {
                 // `twz_rt_exit` is overloaded: both thread trampolines (std's `thread_start`,
                 // mlibc's `sys_thread_exit`) end a finished thread through here with code 0, and
@@ -216,7 +157,6 @@ impl ReferenceRuntime {
     }
 
     pub fn cgetenv(&self, name: &CStr) -> *const c_char {
-        let _g = crate::runtime::file::namestats::CGETENV.guard();
         // TODO: this approach is very simple, but it leaks if the environment changes a lot.
         static ENVMAP: Mutex<BTreeMap<String, CString>> = Mutex::new(BTreeMap::new());
         let Ok(name) = name.to_str() else {
@@ -336,12 +276,6 @@ impl ReferenceRuntime {
     }
 
     pub fn pre_main_hook(&self) -> Option<ExitCode> {
-        let _t0 = std::time::Instant::now();
-        if crate::runtime::alloc::ferroc::decommitstats::REPORT_ON {
-            crate::runtime::alloc::census::__twz_rt_diag_heap_census_arm();
-        }
-        crate::runtime::alloc::sites::arm(self.state().contains(RuntimeState::IS_MONITOR));
-        crate::runtime::alloc::sites::note_identity();
         // TODO: control this with env vars
         // TWZ_LOG_TRACE promotes this compartment to TRACE *and* installs the `log` -> `tracing`
         // bridge, which is what makes smoltcp's own `net_trace!` calls visible: they are
@@ -363,14 +297,12 @@ impl ReferenceRuntime {
             )
             .unwrap();
         }
-        let _t_sub = _t0.elapsed();
         if self.state().contains(RuntimeState::IS_MONITOR) {
             self.init_slots();
             None
         } else {
             unsafe { self.set_runtime_ready() };
             OUR_RUNTIME.init_fds();
-            let _t_fds = _t0.elapsed();
 
             // Where this compartment starts is carried in its compartment config, written by the
             // monitor at load time from what the loading compartment asked for. The
@@ -388,28 +320,14 @@ impl ReferenceRuntime {
                     .initial_cwd()
                     .and_then(|bytes| core::str::from_utf8(bytes).ok())
                     .unwrap_or("/");
-                if SKIP_ROOT_NAMESPACE_SET && initial_cwd == "/" {
+                // A naming handle this runtime has not opened yet already sits at the root, so
+                // setting "/" would cost a gate round-trip (~48% of a spawn) for nothing.
+                if initial_cwd == "/" {
                     crate::runtime::file::cwd_memo_seed_root();
                 } else {
                     let _ = crate::runtime::file::set_naming_namespace(Path::new(initial_cwd));
                 }
             }
-            let _t_naming = _t0.elapsed();
-            // Everything here runs *before* the compartment signals READY, so it is inside the
-            // monitor's `start` phase -- the largest remaining item in a spawn. Deferred through
-            // statlog (drained at `post_main_hook`) so the measurement is not itself a console
-            // write inside the thing being measured. Microseconds.
-            secgate::statlog::record_on(
-                PRE_MAIN_PHASE_STATS,
-                "PREMAIN",
-                _t_naming.as_micros() as u64,
-                &[
-                    _t_sub.as_micros() as u64,
-                    (_t_fds - _t_sub).as_micros() as u64,
-                    (_t_naming - _t_fds).as_micros() as u64,
-                ],
-            );
-
             let ret = match monitor_api::monitor_rt_comp_ctrl(
                 monitor_api::MonitorCompControlCmd::RuntimeReady,
             ) {
@@ -421,13 +339,6 @@ impl ReferenceRuntime {
     }
 
     pub fn post_main_hook(&self) {
-        // Temporary (pagerperf.md): a program compartment's counters would otherwise sit in the
-        // ring unprinted, since it exits long before the ring fills.
-        secgate::statlog::drain();
-        crate::runtime::object::mapstats::report();
-        crate::runtime::file::namestats::report();
-        crate::runtime::alloc::sites::report();
-        crate::runtime::alloc::sites::compmap();
         monitor_api::monitor_rt_comp_ctrl(monitor_api::MonitorCompControlCmd::RuntimePostMain)
             .unwrap();
     }
@@ -474,17 +385,6 @@ impl ReferenceRuntime {
     }
 
     fn init_for_compartment(&self, init_info: &CompartmentInitInfo, entry_stack: *mut usize) {
-        let _start_1 = Instant::now();
-        // Absolute, in the same monotonic domain the monitor's records are stamped in, so the two
-        // sides join without assuming anything about `Instant`'s epoch. Taken here rather than
-        // derived from the record's own timestamp minus its value: a syscall between the two
-        // (`sys_thread_self_id`, below) would silently land in the gap. Pure clock read -- no gate
-        // call -- so it is safe this early, before `set_comp_config`.
-        let _t0_ns = if SPAWN_LAT_STATS {
-            secgate::now_ns()
-        } else {
-            0
-        };
         unsafe {
             preinit_unwrap(
                 monitor_api::set_comp_config(
@@ -497,7 +397,6 @@ impl ReferenceRuntime {
         }
 
         let mut tg = TLS_GEN_MGR.lock();
-        let _start_2 = Instant::now();
         let tls = tg.get_next_tls_info(None, || RuntimeThreadControl::new(0));
         let (tls, tls_layout, tls_alloc_base) = preinit_unwrap(tls);
         // `init_core_thread` below maps this thread's repr through a monitor gate, and a
@@ -505,11 +404,8 @@ impl ReferenceRuntime {
         // against `THREAD_MGR` (see `thread::mgr::impl_spawn`). Only `get_next_tls_info` needs the
         // manager, so it is released here rather than at the end of the function.
         drop(tg);
-        let _start_3 = Instant::now();
         twizzler_abi::syscall::sys_thread_settls(tls as u64);
-        let _start_4 = Instant::now();
         twizzler_abi::upcall::set_self_upcall_ptr(crate::arch::twz_rt_upcall_entry_c).unwrap();
-        let _start_5 = Instant::now();
         libc_init_tcb(tls);
         self.init_core_thread(tls, tls_alloc_base, tls_layout);
         if !unsafe { __mlibc_entry_from_rust.is_null() } {
@@ -520,7 +416,6 @@ impl ReferenceRuntime {
             };
             mlibc_entry_from_rust(entry_stack, core::ptr::null_mut());
         }
-        let _start_6 = Instant::now();
 
         if !init_info.ctor_set_array.is_null() && init_info.ctor_set_len != 0 {
             let ctor_slice = unsafe {
@@ -528,70 +423,21 @@ impl ReferenceRuntime {
             };
             self.init_ctors(ctor_slice);
         }
-
-        // Child-side bring-up split (`CHILDINI`): comp-config+TLS-lock / get_tls / set_tls /
-        // set_upcall / libc+core-thread+mlibc / ctors. The diag sweep put ~1.8ms of a ~3.5ms spawn
-        // between thread start and `pre_main_hook`, and this is most of that window; the record's
-        // own timestamp (vs `PREMAIN`'s) prices the libstd init that follows. Same switch as
-        // `PREMAIN`, deferred through statlog.
-        if SPAWN_LAT_STATS {
-            // vals: [absolute start us, low 64 bits of this thread's id]. The id is the join key
-            // to the monitor's `SPAWNGO`; pairing by "nearest preceding record" instead would be
-            // an assumption that spawns never overlap, which is true for the nullexit bench and
-            // false in general -- and it would fail silently rather than loudly.
-            let me = twizzler_abi::syscall::sys_thread_self_id();
-            secgate::statlog::record_on(
-                SPAWN_LAT_STATS,
-                "CHILDTOP",
-                _start_1.elapsed().as_micros() as u64,
-                &[_t0_ns / 1000, me.raw() as u64],
-            );
-        }
-        secgate::statlog::record_on(
-            PRE_MAIN_PHASE_STATS,
-            "CHILDINI",
-            _start_1.elapsed().as_micros() as u64,
-            &[
-                (_start_2 - _start_1).as_micros() as u64,
-                (_start_3 - _start_2).as_micros() as u64,
-                (_start_4 - _start_3).as_micros() as u64,
-                (_start_5 - _start_4).as_micros() as u64,
-                (_start_6 - _start_5).as_micros() as u64,
-                _start_6.elapsed().as_micros() as u64,
-            ],
-        );
     }
 
     fn init_ctors(&self, ctor_array: &[CtorSet]) {
-        for (seti, ctor) in ctor_array.iter().enumerate() {
+        for ctor in ctor_array.iter() {
             unsafe {
                 if let Some(legacy_init) = ctor.legacy_init {
-                    let _t = std::time::Instant::now();
                     (core::mem::transmute::<_, extern "C" fn()>(legacy_init))();
-                    // Per-ctor timing (`CTORONE`): set index, entry index (MAX = legacy DT_INIT),
-                    // entry address. CHILDINI put ~876us of a spawn in this loop; this names the
-                    // ctor. Same switch as PREMAIN/CHILDINI.
-                    secgate::statlog::record_on(
-                        PRE_MAIN_PHASE_STATS,
-                        "CTORONE",
-                        _t.elapsed().as_micros() as u64,
-                        &[seti as u64, u64::MAX, legacy_init as usize as u64],
-                    );
                 }
                 if !ctor.init_array.is_null() && ctor.init_array_len > 0 {
                     let init_slice: &[usize] = core::slice::from_raw_parts(
                         ctor.init_array as *const usize,
                         ctor.init_array_len,
                     );
-                    for (calli, call) in init_slice.iter().cloned().enumerate() {
-                        let _t = std::time::Instant::now();
+                    for call in init_slice.iter().cloned() {
                         (core::mem::transmute::<_, extern "C" fn()>(call))();
-                        secgate::statlog::record_on(
-                            PRE_MAIN_PHASE_STATS,
-                            "CTORONE",
-                            _t.elapsed().as_micros() as u64,
-                            &[seti as u64, calli as u64, call as u64],
-                        );
                     }
                 }
             }

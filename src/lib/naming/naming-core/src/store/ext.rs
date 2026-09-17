@@ -102,7 +102,7 @@ impl GlobalCache {
         // that the bound held. It cost a leak hunt an hour: the chain "retained handle pins a
         // session pins a namespace pins an unevictable cache" is exactly what the sentence
         // suggested, and it is measurably not what happens (`ns_cached` is flat at 7 with
-        // `ns_pinned` 0 across 224 handle opens -- leakcheck.md, namecache1). A comment that
+        // `ns_pinned` 0 across 224 handle opens). A comment that
         // asserts a *bound* can go false with nothing nearby changing; one that describes a
         // *mechanism* goes stale visibly. Prefer the second.
         if namespaces.len() >= MAX_NAMESPACES {
@@ -572,11 +572,9 @@ impl Namespace for ExtNamespace {
             skip,
             count,
         );
-        let t_cached = itemstats::t0();
         let (want, generation) = {
             let cache = self.cache();
             if let Some(items) = cache.window(skip, count) {
-                itemstats::record_cached(itemstats::ns(t_cached));
                 return items;
             }
             // Extending the known prefix: over-read, so a readdir walking this namespace in small
@@ -590,18 +588,14 @@ impl Namespace for ExtNamespace {
             (want, cache.generation)
         };
 
-        let t_handle = itemstats::t0();
         let mut guard = pager_handle();
-        let handle_ns = itemstats::ns(t_handle);
         let Some(h) = guard.as_mut() else {
             tracing::warn!("failed to open handle to pager");
             return vec![];
         };
 
         let mut entries = Vec::new();
-        let t_enum = itemstats::t0();
         let res = h.enumerate_external(self.id, &mut entries, skip, want);
-        let enum_ns = itemstats::ns(t_enum);
         if res.is_err() {
             tracing::warn!("failed to enumerate external namespace {}", self.id);
             return vec![];
@@ -621,9 +615,6 @@ impl Namespace for ExtNamespace {
                 .collect()
         };
 
-        let t_conv = itemstats::t0();
-        let mut nr_links = 0u64;
-        let mut link_ns = 0u64;
         let mut out: Vec<NsNode> = entries
             .iter()
             .zip(known)
@@ -646,10 +637,7 @@ impl Namespace for ExtNamespace {
                 let node = match i.kind {
                     ExternalKind::Directory => NsNode::ns(name, i.id.into()).ok(),
                     ExternalKind::SymLink => known.or_else(|| {
-                        nr_links += 1;
-                        let t_link = itemstats::t0();
                         let link = h.readlink_external(i.id.into());
-                        link_ns += itemstats::ns(t_link);
                         // A target we cannot read, or cannot store in a node, must not cost the
                         // entry its place in the listing. The caller advances its readdir cursor
                         // by the number of entries it received, while the pager's `skip` counts
@@ -685,14 +673,6 @@ impl Namespace for ExtNamespace {
                 node
             })
             .collect();
-        itemstats::record_pager(
-            handle_ns,
-            enum_ns,
-            itemstats::ns(t_conv).saturating_sub(link_ns),
-            link_ns,
-            out.len() as u64,
-            nr_links,
-        );
         drop(guard);
 
         {
@@ -708,74 +688,5 @@ impl Namespace for ExtNamespace {
 
         out.truncate(count);
         out
-    }
-}
-
-// Temporary instrumentation for the directory-enumeration latency hunt (pagerperf.md). An external
-// namespace serves an enumeration either out of its cache or from the pager, and in the latter case
-// pays one more gate call per symlink to read its target.
-mod itemstats {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    /// Master switch for the *clock reads*, as opposed to the counters.
-    ///
-    /// `statcadence::report_now` gates the output and leaves the work: four `Instant::now()` per
-    /// external enumerate ran on every call regardless. This is the same const-gate `nsidstats` in
-    /// `store.rs` already uses, and for the reason its comment gives. Off by default, and when off
-    /// nothing is logged rather than logging zeros -- a reader should see silence, not mistake an
-    /// ungated build's zeros for measurements.
-    pub const TIMING: bool = false;
-
-    /// `Instant::now()`, if [`TIMING`] is on.
-    #[inline(always)]
-    pub fn t0() -> Option<std::time::Instant> {
-        TIMING.then(std::time::Instant::now)
-    }
-
-    /// Nanoseconds since `t`, or 0 when [`TIMING`] is off.
-    #[inline(always)]
-    pub fn ns(t: Option<std::time::Instant>) -> u64 {
-        t.map_or(0, |t| t.elapsed().as_nanos() as u64)
-    }
-
-    static CACHED: AtomicU64 = AtomicU64::new(0);
-    static CACHED_NS: AtomicU64 = AtomicU64::new(0);
-    static PAGED: AtomicU64 = AtomicU64::new(0);
-    static HANDLE: AtomicU64 = AtomicU64::new(0);
-    static ENUM: AtomicU64 = AtomicU64::new(0);
-    static CONV: AtomicU64 = AtomicU64::new(0);
-    static LINKS: AtomicU64 = AtomicU64::new(0);
-    static LINK_NS: AtomicU64 = AtomicU64::new(0);
-    static ENTRIES: AtomicU64 = AtomicU64::new(0);
-
-    pub fn record_cached(ns: u64) {
-        let n = CACHED.fetch_add(1, Ordering::Relaxed) + 1;
-        let c = CACHED_NS.fetch_add(ns, Ordering::Relaxed) + ns;
-        if TIMING && secgate::statcadence::report_now(n) {
-            secgate::statline!("ITEMSTATS {} cached enumerates: {} us", n, c / 1000);
-        }
-    }
-
-    pub fn record_pager(handle: u64, enum_ns: u64, conv: u64, link: u64, entries: u64, links: u64) {
-        let n = PAGED.fetch_add(1, Ordering::Relaxed) + 1;
-        let h = HANDLE.fetch_add(handle, Ordering::Relaxed) + handle;
-        let e = ENUM.fetch_add(enum_ns, Ordering::Relaxed) + enum_ns;
-        let c = CONV.fetch_add(conv, Ordering::Relaxed) + conv;
-        let l = LINK_NS.fetch_add(link, Ordering::Relaxed) + link;
-        let nl = LINKS.fetch_add(links, Ordering::Relaxed) + links;
-        let ne = ENTRIES.fetch_add(entries, Ordering::Relaxed) + entries;
-        if TIMING && secgate::statcadence::report_now(n) {
-            secgate::statline!(
-                "ITEMSTATS {} pager enumerates, {} entries: handle {} us, enumerate {} us, \
-                 convert {} us, readlink {} us over {} links",
-                n,
-                ne,
-                h / 1000,
-                e / 1000,
-                c / 1000,
-                l / 1000,
-                nl,
-            );
-        }
     }
 }

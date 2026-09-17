@@ -101,7 +101,7 @@ fn l0_slow500_run(_: &mut State) {
 // ---- P1: the positive control ---------------------------------------------------------------
 //
 // Leaks exactly one object per iteration, deliberately: created without DELETE, without a tie,
-// never deleted -- which per oleaks.md is what the default constructors do anyway. Its purpose is
+// never deleted -- which is what the default constructors do anyway. Its purpose is
 // to prove the harness can see a leak of a known size. A report of "no leaks" from a harness that
 // has never demonstrated detection is an instrument that answers the same way regardless.
 
@@ -157,9 +157,9 @@ fn l1b_run(st: &mut State) {
 
 // ---- L1c: map + unmap at a fresh slot every iteration -----------------------------------------
 //
-// The SlotMgr discriminator (regionremodel.md documents that a touched slot's `Box<SlotState>`
-// and second-level table frame are only reclaimed at context Drop — "diverges without bound for
-// a slot-churning compartment"). `l1b` reuses one fixed slot and is structurally blind to that;
+// The SlotMgr discriminator (a touched slot's `Box<SlotState>`
+// and second-level table frame are only reclaimed at context Drop, so it diverges without bound for
+// a slot-churning compartment). `l1b` reuses one fixed slot and is structurally blind to that;
 // this op walks a fresh slot per iteration, same single object. SlotMgr-retention predicts
 // `trk.kernel_used` growing by table-frame quanta per iteration at high r2 here while `l1b`
 // stays flat; both flat pushes the l3-thread kernel signal back toward thread-specific state.
@@ -801,7 +801,7 @@ fn l2ctl_48b_run(_: &mut State) {
 // The same flaw is in `l2b_run`, `l2c_run` and `l2e_run` above, which have been in this catalogue
 // for weeks reading "clean". They are left alone deliberately: changing what a named op allocates
 // would invalidate every earlier reading of it in another session's notes, silently, because the
-// op keeps its name and keeps producing numbers. Reported in `leakcheck.md` instead. `l2d_run`
+// op keeps its name and keeps producing numbers. Reported separately instead. `l2d_run`
 // touches its allocation and is real -- it is the only one of the four that ever ran.
 
 // ---- L7p: the spawn path, taken apart --------------------------------------------------------

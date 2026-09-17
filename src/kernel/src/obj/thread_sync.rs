@@ -21,11 +21,6 @@ use crate::{
     thread::{Thread, ThreadRef, current_thread_ref},
 };
 
-/// Object-instance pointer of the last wakeup_word walk at each pager-queue bell offset;
-/// compared against the sleeper's instance in the hang report's fork-check.
-pub static QWAKE_INST_1140: AtomicU64 = AtomicU64::new(0);
-pub static QWAKE_INST_12C0: AtomicU64 = AtomicU64::new(0);
-
 struct SleepLinkNode {
     link: RBTreeAtomicLink,
     owner: Arc<Thread>,
@@ -286,21 +281,17 @@ impl SleepEntry {
     ///
     /// Claiming is `reset_sync_sleep` plus the removal, both under the caller's `sleep_info` lock;
     /// scheduling the claimed threads is [Object::wakeup_word]'s job, once that lock is gone.
-    fn claim_n(&mut self, max_count: usize, batch: &mut WakeBatch, skipped: &mut usize) -> bool {
+    fn claim_n(&mut self, max_count: usize, batch: &mut WakeBatch) -> bool {
         let mut cursor = self.threads.front_mut();
         while !batch.is_full() && batch.len() < max_count && !cursor.is_null() {
             let thread = cursor.get().unwrap();
             if thread.reset_sync_sleep() {
-                thread.note_sync_consumer(1);
                 let thread = cursor.remove().unwrap();
                 // Safety: not full, checked above.
                 unsafe { batch.push_unchecked(thread) };
             } else {
-                // A linked entry whose SYNC_SLEEP flag was already consumed. Transiently benign
-                // (a concurrent wake on another of the thread's words won the flag first), but a
-                // wake that claims nobody *because of these* is the lost-wake fingerprint the
-                // caller reports -- see `wakeup_word`.
-                *skipped += 1;
+                // A linked entry whose SYNC_SLEEP flag was already consumed: a concurrent wake on
+                // another of the thread's words won the flag first.
                 cursor.move_next();
             }
         }
@@ -314,7 +305,6 @@ impl Drop for SleepEntry {
         while !cursor.is_null() {
             let thread = cursor.remove().unwrap();
             if thread.reset_sync_sleep() {
-                thread.note_sync_consumer(2);
                 add_to_requeue(thread);
             }
         }
@@ -334,14 +324,6 @@ impl SleepInfo {
             some_words: FnvIndexMap::new(),
             more_words: None,
             of_obj,
-        }
-    }
-
-    /// Diagnostic: is `id` linked at `offset`, and how many threads are linked there.
-    pub fn query(&mut self, offset: usize, id: twizzler_abi::object::ObjID) -> (bool, usize) {
-        match self.word(offset) {
-            Some(se) => (!se.threads.find(&id).is_null(), se.threads.iter().count()),
-            None => (false, 0),
         }
     }
 
@@ -391,45 +373,14 @@ impl SleepInfo {
         }
     }
 
-    fn claim_n(
-        &mut self,
-        offset: usize,
-        max_count: usize,
-        batch: &mut WakeBatch,
-        skipped: &mut usize,
-    ) -> bool {
+    fn claim_n(&mut self, offset: usize, max_count: usize, batch: &mut WakeBatch) -> bool {
         if let Some(se) = self.word(offset) {
-            se.claim_n(max_count, batch, skipped)
+            se.claim_n(max_count, batch)
         } else {
             false
         }
     }
 }
-
-/// Wake-delivery accounting for the mode-A lost-wake hunt.
-///
-/// The userspace side established that net-srv parks on a genuinely empty ring and is never
-/// resumed while the producer keeps ringing, and that the wake never reaches `add_to_requeue`
-/// (zero `rq1` rows in any wedge round). That leaves exactly three outcomes inside `wakeup_word`,
-/// and aggregate counters cannot tell them apart from userspace:
-///
-///   FASTSKIP -- `sleepers == 0`, so the wake returned without looking. If the wedged sleeper is
-///               still linked, this is the fast path dropping a wake at the door.
-///   NOCLAIM  -- sleepers were present but `claim_n` matched nothing at this offset: either the
-///               waker and the sleeper disagree about the offset, or the entry is present with a
-///               turn the consumer will not accept (invisible to `receive`, no wake can help).
-///   CLAIMED  -- normal.
-///
-/// Recorded unconditionally (three relaxed adds on a hot path); only the *reporting* is gated, so
-/// a sweep that forgot `--diag=wake` still leaves the counts behind for the summary.
-pub static WAKE_CALLS: AtomicU64 = AtomicU64::new(0);
-pub static WAKE_FASTSKIP: AtomicU64 = AtomicU64::new(0);
-pub static WAKE_NOCLAIM: AtomicU64 = AtomicU64::new(0);
-pub static WAKE_CLAIMED: AtomicU64 = AtomicU64::new(0);
-/// Offset of the most recent FASTSKIP/NOCLAIM, so the kernel-side record can be joined against
-/// net-srv's park word (its census reports `w=0x..001140`; the offset is the shared key).
-pub static WAKE_LAST_SKIP_OFF: AtomicU64 = AtomicU64::new(u64::MAX);
-pub static WAKE_LAST_NOCLAIM_OFF: AtomicU64 = AtomicU64::new(u64::MAX);
 
 impl Object {
     /// Wake up to `count` threads sleeping on `offset`, returning how many were woken.
@@ -479,84 +430,11 @@ impl Object {
         // prior store. Without the fence the store-then-load half of the Dekker pair is missing
         // and a wake can read zero against a sleeper that is about to park. One `mfence` against a
         // sleeping-mutex acquire is a trade worth making.
-        /// A/B arm selector; see entryperf.md, "§8 under suspicion". `false` sends every wake
-        /// through the `sleep_info` mutex, i.e. pre-§8 behaviour.
-        ///
-        /// **The A/B has been run and this path is exonerated:** 10 boots per arm, and the arms
-        /// were indistinguishable -- 10/10 slow either way, open-phase medians 12646 vs 12778 us,
-        /// and the same ~5.8 cold lookups per boot over 2 ms. The open-phase regression that put
-        /// this under suspicion is not caused by the skip. Kept as a toggle because this path is
-        /// the first suspect whenever a lost wake is suspected, and re-running that experiment
-        /// should cost one character rather than a reconstruction.
-        ///
-        /// The fence is inside the guard, not merely the load. It exists only to pair with that
-        /// load, so with the skip off it has nothing to order against -- and leaving an `mfence` on
-        /// every wake in the control arm would make it slower than the behaviour it is standing in
-        /// for, biasing the comparison toward the skip. The counter is still maintained in both
-        /// arms: only the read is removed, so every increment and decrement path stays exercised
-        /// and a counting bug would still reach the drain assertion in
-        /// `sleeper_count_wakes_and_drains`.
-        // Provenance, not a live arm: this was flipped to `false` from 2026-08-31 23:55 to
-        // 09-01 00:01 for the mode-A lost-wake A/B the const's own docs invite. The masters of
-        // sweep `many-noskip` carry `false`; every other build, before and after that window,
-        // carries `true`. Recorded because absolute numbers from that sweep are not comparable
-        // to any other, and because a reader who greps this const should be able to tell which
-        // images have which arm without reconstructing it from mtimes.
-        const SLEEPERS_SKIP: bool = true;
-        // Periodic totals on a fixed stride, not milestones: the question this instrument exists
-        // to answer is a *ratio* (how many wakes bounced against how many landed), and a report
-        // that only appears when a count is non-zero cannot state the denominator.
-        let calls = WAKE_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
-        if calls % (1 << 18) == 0 && crate::kdiag_wake() {
-            logln!(
-                "WAKESTAT calls={} claimed={} fastskip={} noclaim={} last_skip_off={:x} last_noclaim_off={:x}",
-                calls,
-                WAKE_CLAIMED.load(Ordering::Relaxed),
-                WAKE_FASTSKIP.load(Ordering::Relaxed),
-                WAKE_NOCLAIM.load(Ordering::Relaxed),
-                WAKE_LAST_SKIP_OFF.load(Ordering::Relaxed),
-                WAKE_LAST_NOCLAIM_OFF.load(Ordering::Relaxed),
-            );
-        }
-        if SLEEPERS_SKIP {
-            core::sync::atomic::fence(Ordering::SeqCst);
-            if self.sleepers.load(Ordering::SeqCst) == 0 {
-                // Counted before the return: a wake that leaves here woke nobody, and whether
-                // that was correct depends on whether anyone was still linked -- which only the
-                // sleeper side can say. The offset is the join key against that side.
-                let n = WAKE_FASTSKIP.fetch_add(1, Ordering::Relaxed) + 1;
-                WAKE_LAST_SKIP_OFF.store(offset as u64, Ordering::Relaxed);
-                // Queue doorbells: the benign fast-skip (nobody parked) fires thousands of
-                // times per boot, so log only the impossible case -- sleepers==0 at the door
-                // while a thread is linked at exactly this offset. Net sockets SHARE these two
-                // offsets, so the lock acquire + query is not free on the net wake path
-                // (measured ~4600x/round, confounding a net throughput bench); gate behind
-                // PAGER_QUEUE_DIAG so it is dead code unless a pager-queue hunt turns it on.
-                if crate::pager::queues::PAGER_QUEUE_DIAG && (offset == 0x1140 || offset == 0x12c0) {
-                    if let Some(si) = self.sleep_info_if_present() {
-                        let (_, nlinked) = si.lock().query(offset, 0.into());
-                        if nlinked > 0 {
-                            logln!(
-                                "WAKESKIP-QBELL-LINKED {}+{:x} sleepers==0 but {} linked",
-                                self.id(),
-                                offset,
-                                nlinked
-                            );
-                        }
-                    }
-                }
-                if n.is_power_of_two() && crate::kdiag_wake() {
-                    logln!(
-                        "WAKESKIP off={:x} n={} (sleepers==0 at the door)",
-                        offset,
-                        n
-                    );
-                }
-                return 0;
-            }
+        core::sync::atomic::fence(Ordering::SeqCst);
+        if self.sleepers.load(Ordering::SeqCst) == 0 {
+            return 0;
         }
         let mut woken = 0;
-        let mut skipped = 0usize;
         while woken < count {
             let mut batch = WakeBatch::new();
             let maybe_more;
@@ -566,7 +444,7 @@ impl Object {
                     break;
                 };
                 let mut sleep_info = si.lock();
-                maybe_more = sleep_info.claim_n(offset, count - woken, &mut batch, &mut skipped);
+                maybe_more = sleep_info.claim_n(offset, count - woken, &mut batch);
                 current_thread_ref().map(|ct| ct.enter_critical())
             };
             if batch.is_empty() {
@@ -586,88 +464,6 @@ impl Object {
             // `count`; only a full one says there may be more waiting.
             if !maybe_more {
                 break;
-            }
-        }
-        if crate::pager::queues::PAGER_QUEUE_DIAG
-            && crate::pager::is_pager_queue(self.id())
-            && (offset == 0x1140 || offset == 0x12c0)
-        {
-            crate::pager::queues::qtrail::record(
-                4,
-                offset as u32,
-                ((self.sleepers.load(Ordering::SeqCst) as u64) << 32)
-                    | ((woken as u64) << 16)
-                    | skipped as u64,
-                0,
-            );
-        }
-        // Last-waker identity for the two pager-queue bell words: which Object INSTANCE this
-        // wake walked, for comparison against the instance the sleeper is linked in (the
-        // fork-check's obj-inst). A wake resolving to a different instance walks an empty tree
-        // and is lost with no other symptom -- the earlier instance-split elimination compared
-        // the scan's instance against its own regions, which could not catch this.
-        if crate::pager::queues::PAGER_QUEUE_DIAG
-            && crate::pager::is_pager_queue(self.id())
-            && (offset == 0x1140 || offset == 0x12c0)
-        {
-            let inst = self as *const Self as usize as u64;
-            if offset == 0x1140 {
-                QWAKE_INST_1140.store(inst, Ordering::Relaxed);
-            } else {
-                QWAKE_INST_12C0.store(inst, Ordering::Relaxed);
-            }
-            // (Per-event NOENT logging removed after syncwedge26: the walk-empty case is benign
-            // whenever only the OTHER bell has a sleeper, which is thousands of times a round.)
-        }
-        // A wake that claimed nobody while threads sat linked on exactly this word is the
-        // lost-wake fingerprint: each such thread's SYNC_SLEEP flag was already consumed, so no
-        // wake can ever claim it again and it sleeps until something re-files it. Split from the
-        // benign silent return (empty tree) so a transcript can tell "the wake was issued and
-        // bounced" from "no wake was ever issued". Rate-limited on powers of two.
-        // Outcome accounting, complementing the bounced case below rather than duplicating it.
-        // `woken == 0 && skipped == 0` is the arm nothing currently records: the wake reached the
-        // kernel, took the sleep_info lock, and found *nothing linked at this offset* -- which is
-        // either a waker/sleeper offset disagreement or a sleeper that is registered elsewhere.
-        // Distinguishing it from `skipped > 0` (linked but unclaimable) matters because they
-        // indict different code: the former the offset resolution, the latter the turn protocol.
-        if woken > 0 {
-            WAKE_CLAIMED.fetch_add(1, Ordering::Relaxed);
-        } else {
-            let n = WAKE_NOCLAIM.fetch_add(1, Ordering::Relaxed) + 1;
-            WAKE_LAST_NOCLAIM_OFF.store(offset as u64, Ordering::Relaxed);
-            // Net sockets share these offsets; this printed ~4600x/round and confounded a net
-            // throughput bench. Gate behind PAGER_QUEUE_DIAG (dead code unless a hunt enables it).
-            if crate::pager::queues::PAGER_QUEUE_DIAG
-                && (offset == 0x1140 || offset == 0x12c0)
-                && skipped > 0
-            {
-                logln!(
-                    "WAKE-QBELL-NOCLAIM {}+{:x} skipped={} (linked but unclaimable)",
-                    self.id(),
-                    offset,
-                    skipped
-                );
-            }
-            if skipped == 0 && n.is_power_of_two() && crate::kdiag_wake() {
-                logln!(
-                    "WAKENOENT off={:x} n={} (wake found nothing linked at this offset)",
-                    offset,
-                    n
-                );
-            }
-        }
-        if woken == 0 && skipped > 0 {
-            static CLAIM_BOUNCED: core::sync::atomic::AtomicU64 =
-                core::sync::atomic::AtomicU64::new(0);
-            let n = CLAIM_BOUNCED.fetch_add(1, Ordering::Relaxed) + 1;
-            if n.is_power_of_two() {
-                emerglogln!(
-                    "[wake] claim bounced: 0 of {} linked sleeper(s) claimable at {}+{:x} (n={})",
-                    skipped,
-                    self.id(),
-                    offset,
-                    n
-                );
             }
         }
         woken
@@ -737,7 +533,6 @@ impl Object {
         };
         let res = op.check(cur, val, flags);
         if (offset == 0x1140 || offset == 0x12c0) && crate::pager::is_pager_queue(self.id()) {
-            crate::pager::queues::qtrail::record(if res { 5 } else { 3 }, offset as u32, val, cur);
             // An ACCEPTED park on a queue bell with consumer_waiting==0 at the authoritative
             // frame is impossible protocol state: the consumer stores the flag immediately
             // before parking, only a ring clears it, and a ring follows a bump that would have
@@ -775,7 +570,6 @@ impl Object {
             res,
         );
         if res {
-            thread.bump_park_seq();
             if first_sleep {
                 thread.set_sync_sleep();
             }
@@ -826,7 +620,6 @@ impl Object {
         };
         let res = op.check(cur, val, flags);
         if res {
-            thread.bump_park_seq();
             if first_sleep {
                 thread.set_sync_sleep();
             }
@@ -846,8 +639,7 @@ impl Object {
     // the wedge repro (pager_sync_dirty_page_contended, --diag=all, 10 rounds) wedged 0/10 with
     // this validation gated off, against a 30-75% pre-fix rate. It cost ~25us per park, which the
     // net rate instrument (syncwedge-0910.md) measured directly as net fd_wait latency. flush_-
-    // stale_translation went with it (its only caller). read_word_with_phys stays (ARM-REPAIR,
-    // hang report, queue slot_diag use it).
+    // stale_translation went with it (its only caller). read_word_with_phys stays (ARM-REPAIR).
 
     pub fn remove_from_sleep_word(&self, offset: usize) {
         let thread = current_thread_ref().unwrap();

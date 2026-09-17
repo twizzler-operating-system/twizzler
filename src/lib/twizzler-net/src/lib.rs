@@ -18,13 +18,6 @@ pub use twizzler_queue::{RING_NO_WAITER, RING_WOKE};
 
 pub type PacketNum = u32;
 
-/// Arm selector: use the non-blocking queue paths on the poll thread.
-///
-/// `false` restores the blocking `SubmissionFlags::empty()` submits that ran inside `Core::poll`
-/// while holding the engine core mutex. Kept as a flippable constant so the fix has a control on
-/// the same toolchain, and greppable in the source so an arm cannot be misattributed.
-pub const NONBLOCK_POLL_QUEUE: bool = true;
-
 /// Frames dropped, and completions deferred, because a ring was full. Never silent: a blocking
 /// submit that used to wedge the compartment becomes a drop, and a drop nobody counts is just a
 /// quieter bug.
@@ -32,14 +25,6 @@ pub static POLLQ_TX_DROPPED: core::sync::atomic::AtomicU64 = core::sync::atomic:
 pub static POLLQ_COMP_DEFERRED: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
-/// Frames whose *submission* to the client's rx ring returned Ok, counted at the submission
-/// itself rather than upstream of it.
-///
-/// `inject` returns the number of frames it copied into packet slots, and `note_inject_ok` counts
-/// that -- but the handoff is `submit_rx`, which runs afterwards and can drop the whole batch. So
-/// the per-address "local dst .N reached M" figures count frames that reached a *slot*, not
-/// frames that reached the queue, and every reading built on them inherits that. This counts the
-/// operation that can fail, at the place it can fail.
 /// Datagrams `UdpSocket::write_to` handed to smoltcp (i.e. `send_slice` returned Ok).
 ///
 /// Paired with `DEV_TX_FRAMES`: smoltcp accepting a datagram into the socket's tx buffer is not
@@ -51,9 +36,6 @@ pub static UDP_SEND_ACCEPTED: core::sync::atomic::AtomicU64 = core::sync::atomic
 /// Ethernet frames actually handed to the device by smoltcp's `TxToken::consume`.
 pub static DEV_TX_FRAMES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
-pub static POLLQ_TX_SUBMITTED: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
-
 /// Whether the diagnostic class `class` was requested via `TWZ_DIAG` (comma-separated list, or
 /// `all`). Read once per compartment; init forwards the boot-line `--diag=<classes>` into the
 /// environment, and init logs the resulting value at boot so a silent log provably means "off",
@@ -62,25 +44,6 @@ pub fn diag_enabled(class: &str) -> bool {
     static SET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     let set = SET.get_or_init(|| std::env::var("TWZ_DIAG").unwrap_or_default());
     set.split(',').any(|c| c == class || c == "all")
-}
-
-/// Print the queue-handoff totals.
-///
-/// Not milestone-gated like [`note_pollq`]: the question these answer is whether a drop happened
-/// *at all*, and a counter that only prints when it is nonzero cannot distinguish "no drops" from
-/// "never reached". `POLLQ ... reached N` has never appeared in ~65,000 sweep logs, which is
-/// exactly that ambiguity. The silence-ambiguity role moved to init's one `TWZDIAG` boot line:
-/// with `net` listed there, no POLLQSTAT means the caller never ran, and without it, off.
-pub fn report_pollq() {
-    if !diag_enabled("net") {
-        return;
-    }
-    twizzler_abi::klog_println!(
-        "POLLQSTAT submitted={} tx_dropped={} comp_deferred={}",
-        POLLQ_TX_SUBMITTED.load(core::sync::atomic::Ordering::Relaxed),
-        POLLQ_TX_DROPPED.load(core::sync::atomic::Ordering::Relaxed),
-        POLLQ_COMP_DEFERRED.load(core::sync::atomic::Ordering::Relaxed),
-    );
 }
 
 /// Report at power-of-two milestones only; this is on the per-frame path.

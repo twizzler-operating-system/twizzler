@@ -36,10 +36,6 @@ use crate::{
     RuntimeState,
 };
 
-/// Zero the whole stack at spawn, the way this used to. `false` zeroes only [`STACK_TOP_ZERO`] at
-/// the top; see there for why the rest does not need it.
-const ZERO_WHOLE_STACK: bool = false;
-
 /// How much of the top of a new stack to zero.
 ///
 /// Nothing reads stack memory before writing it: the kernel only computes the initial `rsp` as
@@ -63,67 +59,6 @@ const STACK_TOP_ZERO: usize = 0x1000;
 /// allocator. Dropping to 1,966,080 would land it in `Large`.
 const MIN_STACK_SIZE: usize = 2 * 1024 * 1024;
 
-// Temporary instrumentation for the File::open latency hunt (pagerperf.md). Accumulators only --
-// no TLS, no allocation -- because the cold half of `cross_compartment_entry` runs in the zero-TLS
-// window.
-
-mod entrystats {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static COUNT: AtomicU64 = AtomicU64::new(0);
-    static COLD: AtomicU64 = AtomicU64::new(0);
-    static SWITCH: AtomicU64 = AtomicU64::new(0);
-    static TOTAL: AtomicU64 = AtomicU64::new(0);
-
-    pub fn record(switch: u64, total: u64, cold: bool) {
-        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        let s = SWITCH.fetch_add(switch, Ordering::Relaxed) + switch;
-        let t = TOTAL.fetch_add(total, Ordering::Relaxed) + total;
-        if cold {
-            COLD.fetch_add(1, Ordering::Relaxed);
-        }
-        if secgate::statcadence::report_now(n) {
-            secgate::statlog::record(
-                "ENTRYSTA",
-                n,
-                &[COLD.load(Ordering::Relaxed), s / 1000, t / 1000],
-            );
-        }
-    }
-}
-
-/// Per-spawn phase timings from the calling compartment (`SPAWNRT`), independent of the global
-/// `STATS_ON` so a spawn-path run does not turn on every other counter in the tree.
-///
-/// The open question this is here to answer is the `tls` phase (`sysperf.md` lead 4): the monitor's
-/// super-TLS region is recycled and prebuilt, but the *caller's* region is still a fresh
-/// `LOCAL_ALLOCATOR.alloc` of the compartment's TLS template on every spawn, freed again in
-/// `InternalThread::drop`. It measured 452 us back when a spawn was 14.9 ms, and has not been
-/// measured since the rounds that took a spawn to ~277 us.
-mod spawnstats {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    /// Switch for the spawn-path counters only.
-    pub(super) const ON: bool = false;
-
-    static N: AtomicU64 = AtomicU64::new(0);
-
-    pub(super) fn record(tls: u64, stack: u64, gate: u64, map: u64) {
-        if !ON {
-            return;
-        }
-        let n = N.fetch_add(1, Ordering::Relaxed) + 1;
-        secgate::statlog::record_on(ON, "SPAWNRT", n, &[tls, stack, gate, map]);
-    }
-
-    pub(super) fn since(start: std::time::Instant) -> u64 {
-        if !ON {
-            return 0;
-        }
-        start.elapsed().as_nanos() as u64
-    }
-}
-
 /// Recycled thread stacks.
 ///
 /// A spawn's `stack` phase measures 21-40 us, for what is nominally one allocation and a 4 KiB
@@ -141,17 +76,10 @@ pub(super) mod stackpool {
     /// which is at least [`super::MIN_STACK_SIZE`].
     const MAX: usize = 8;
 
-    /// A/B switch for measuring what recycling is worth; `false` restores the old behavior of
-    /// allocating and freeing each stack.
-    const RECYCLE: bool = true;
-
     static POOL: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
 
     /// A recycled stack of exactly `size` bytes, if one is waiting.
     pub(in crate::runtime) fn take(size: usize) -> Option<usize> {
-        if !RECYCLE {
-            return None;
-        }
         let mut pool = POOL.lock().unwrap_or_else(|e| e.into_inner());
         let idx = pool.iter().position(|(_, s)| *s == size)?;
         Some(pool.swap_remove(idx).0)
@@ -159,9 +87,6 @@ pub(super) mod stackpool {
 
     /// Returns false if the pool is full and the caller should free the stack itself.
     pub(in crate::runtime) fn put(addr: usize, size: usize) -> bool {
-        if !RECYCLE {
-            return false;
-        }
         let mut pool = POOL.lock().unwrap_or_else(|e| e.into_inner());
         if pool.len() >= MAX {
             return false;
@@ -499,8 +424,6 @@ impl ReferenceRuntime {
             .insert(thread.id, thread);
     }
 
-    // Temporary instrumentation for the File::open latency hunt (pagerperf.md).
-
     /// Re-point this thread at *this* compartment's TLS on entry through a gate.
     ///
     /// One syscall does the whole context switch: it attaches this compartment's security context
@@ -526,10 +449,6 @@ impl ReferenceRuntime {
     /// map is allocator-parameterized for exactly this reason, and `next_id()` is `freeze`d so its
     /// `Drop` cannot push to a `Vec`.
     pub fn cross_compartment_entry(&self) -> Result<()> {
-        // Temporary instrumentation for the File::open latency hunt (pagerperf.md).
-        // Times phases with OUR_RUNTIME.get_monotonic() directly rather than Instant, to stay
-        // clear of anything that might touch TLS inside the zero-TLS window.
-        let t0 = OUR_RUNTIME.get_monotonic();
         // The monitor is instance zero, and asking `get_comp_config()` for that would be a gate
         // call back into itself.
         let sctx = if OUR_RUNTIME.is_monitor().is_some() {
@@ -542,14 +461,7 @@ impl ReferenceRuntime {
                 .inspect_err(|e| {
                     twizzler_abi::klog_println!("failed to enter sctx {}: {}", sctx, e);
                 })?;
-        let t_switch = OUR_RUNTIME.get_monotonic();
-        let switch_ns = t_switch.saturating_sub(t0).as_nanos() as u64;
         if tp != 0 {
-            entrystats::record(
-                switch_ns,
-                OUR_RUNTIME.get_monotonic().saturating_sub(t0).as_nanos() as u64,
-                false,
-            );
             return Ok(());
         }
 
@@ -562,11 +474,6 @@ impl ReferenceRuntime {
             // have handed it back above. Reinstalling it is both correct and cheaper than leaking
             // a second region for the same thread.
             twizzler_abi::syscall::sys_thread_settls(ct.tls as u64);
-            entrystats::record(
-                switch_ns,
-                OUR_RUNTIME.get_monotonic().saturating_sub(t0).as_nanos() as u64,
-                true,
-            );
             return Ok(());
         }
 
@@ -597,11 +504,6 @@ impl ReferenceRuntime {
         // Safe here and nowhere obvious else: TLS installed, THREAD_STARTED set, THREAD_MGR
         // released, no monitor/HandleMgr lock held. See [`maybe_reap_cross_threads`].
         maybe_reap_cross_threads();
-        entrystats::record(
-            switch_ns,
-            OUR_RUNTIME.get_monotonic().saturating_sub(t0).as_nanos() as u64,
-            true,
-        );
         Ok(())
     }
 
@@ -614,7 +516,6 @@ impl ReferenceRuntime {
         }
         // Box this up so we can pass it to the new thread.
         let args = Box::new(args);
-        let t_tls = std::time::Instant::now();
         let (tls, tls_layout, tls_alloc_base) = TLS_GEN_MGR
             .lock()
             .get_next_tls_info(None, || RuntimeThreadControl::new(0))
@@ -623,24 +524,17 @@ impl ReferenceRuntime {
         if OUR_RUNTIME.state().contains(RuntimeState::READY) {
             libc_init_tcb(tls);
         }
-        let tls_ns = spawnstats::since(t_tls);
-        let t_stack = std::time::Instant::now();
         let stack_raw = unsafe {
             let layout = Layout::from_size_align(args.stack_size, MIN_STACK_ALIGN).unwrap();
-            if ZERO_WHOLE_STACK {
-                OUR_RUNTIME.alloc_zeroed(layout)
-            } else {
-                let p = stackpool::take(args.stack_size)
-                    .map(|p| p as *mut u8)
-                    .unwrap_or_else(|| OUR_RUNTIME.alloc(layout));
-                if !p.is_null() {
-                    let from = args.stack_size.saturating_sub(STACK_TOP_ZERO);
-                    core::ptr::write_bytes(p.add(from), 0, args.stack_size - from);
-                }
-                p
+            let p = stackpool::take(args.stack_size)
+                .map(|p| p as *mut u8)
+                .unwrap_or_else(|| OUR_RUNTIME.alloc(layout));
+            if !p.is_null() {
+                let from = args.stack_size.saturating_sub(STACK_TOP_ZERO);
+                core::ptr::write_bytes(p.add(from), 0, args.stack_size - from);
             }
+            p
         } as usize;
-        let stack_ns = spawnstats::since(t_stack);
 
         // Record the thread before it can run, so it cannot observe itself running with no
         // management data -- but publish the entry rather than holding the lock across the spawn
@@ -696,7 +590,6 @@ impl ReferenceRuntime {
             )
         };
 
-        let t_gate = std::time::Instant::now();
         let thid: ObjID = {
             let res: Result<_> =
                 monitor_api::monitor_rt_spawn_thread(new_args, tls as usize, stack_raw);
@@ -717,7 +610,6 @@ impl ReferenceRuntime {
                 }
             }
         };
-        let gate_ns = spawnstats::since(t_gate);
 
         // Nothing past this point may return `Err`. `monitor_rt_spawn_thread` above has already
         // started the thread, and it is running on `arg_raw` -- a pointer to std's `ThreadInit`,
@@ -728,12 +620,10 @@ impl ReferenceRuntime {
         // The map fails when the thread has already exited and the monitor has deleted its repr,
         // which is a race we lose legitimately for short-lived threads, not an error. A missing
         // handle just means the state has to be read from the object's existence instead.
-        let t_map = std::time::Instant::now();
         let thread_repr_obj = self
             .map_object(thid, MapFlags::READ | MapFlags::WRITE)
             .inspect_err(|e| tracing::debug!("failed to map repr of new thread {}: {}", thid, e))
             .ok();
-        spawnstats::record(tls_ns, stack_ns, gate_ns, spawnstats::since(t_map));
 
         // Unwrap-Ok: the entry was published above and only the gc scans remove entries, which
         // skip a `spawning` one.

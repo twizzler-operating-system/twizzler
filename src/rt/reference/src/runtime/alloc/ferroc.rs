@@ -98,99 +98,6 @@ unsafe fn decommit_range(ptr: *mut u8, len: usize) {
     }
 }
 
-/// ZERO_MEMORY request routing in `twz_rt_malloc`: `[gate calls, gate bytes, arena-decline
-/// fallback calls, fallback bytes, sub-gate calls, sub-gate bytes]`. Gate = tried the anon
-/// arena; fallback = arena declined and the request landed in the heap; sub-gate = below
-/// `LAZY_ZERO_MIN` (or oddly shaped), never offered to the arena. Only counted while
-/// [`decommitstats::REPORT_ON`].
-pub(crate) static ZSTAT: [core::sync::atomic::AtomicU64; 6] =
-    [const { core::sync::atomic::AtomicU64::new(0) }; 6];
-
-#[inline(always)]
-pub(crate) fn zbump(i: usize, by: u64) {
-    if decommitstats::REPORT_ON {
-        ZSTAT[i].fetch_add(by, core::sync::atomic::Ordering::Relaxed);
-    }
-}
-
-pub(crate) mod decommitstats {
-    /// Off by default: prints on every compartment exit, and a build exits ~25 of them. Also
-    /// arms the heap census at pre_main_hook so MALLOCSTAT totals cover the whole program.
-    pub const REPORT_ON: bool = false;
-
-    pub fn report() {
-        if !REPORT_ON {
-            return;
-        }
-        use core::sync::atomic::Ordering::Relaxed;
-        let d: Vec<u64> = super::DECOMMIT_STATS
-            .iter()
-            .map(|c| c.load(Relaxed))
-            .collect();
-        if d[super::S_BASE_ALLOC_CNT] == 0 {
-            return;
-        }
-        // Identity from the monitor (captured at pre-main), not argv: `env::args()` is empty on
-        // this system, so this line used to be anonymous -- which meant picking "the biggest by
-        // MiB" and hoping it was the same compartment across runs. It was not, and that manifested
-        // as 43% run-to-run variance in allocated bytes at a constant allocation count.
-        let name = crate::runtime::alloc::sites::ident_string();
-        let sctx = secgate::get_sctx_id().raw() as u64;
-        let name = format!("{name}/{sctx:016x}");
-        let (ac, ab, fc, fb) = crate::runtime::alloc::census::totals();
-        secgate::statcadence::report_forced(format_args!(
-            "MALLOCSTAT {name} allocs={ac}/{}MiB frees={fc}/{}MiB peaklive={}MiB livenow={}MiB \
-             implied={}MiB underflow={}",
-            ab >> 20,
-            fb >> 20,
-            crate::runtime::alloc::census::peak_live() >> 20,
-            crate::runtime::alloc::census::live_now() >> 20,
-            (ab.saturating_sub(fb)) >> 20,
-            crate::runtime::alloc::census::UNDERFLOW.load(core::sync::atomic::Ordering::Relaxed),
-        ));
-        // Which size classes the heap is still holding at exit -- the shape that separates
-        // "a few thousand large buffers retained" from "diffuse growth everywhere".
-        let ret = crate::runtime::alloc::census::retained_by_class();
-        if !ret.is_empty() {
-            let mut buf = String::with_capacity(160);
-            for (c, n, b) in ret.iter().take(6) {
-                use core::fmt::Write as _;
-                let _ = write!(buf, " c{}({}B)={}blk/{}MiB", c, 1u64 << c, n, b >> 20);
-            }
-            secgate::statcadence::report_forced(format_args!("RETAIN {name}{buf}"));
-        }
-        let z: [u64; 6] = core::array::from_fn(|i| super::ZSTAT[i].load(Relaxed));
-        let a: [u64; 8] =
-            core::array::from_fn(|i| crate::runtime::alloc::anon::DECLINE[i].load(Relaxed));
-        if z[0] + z[4] > 0 {
-            secgate::statcadence::report_forced(format_args!(
-                "ANONSTAT {name} gate={}/{}MiB heap-fallback={}/{}MiB subgate={}/{}MiB | \
-                 arena: virgin={} reused={} early={} notls={} full={} create={} zerofail={} newarena={}",
-                z[0], z[1] >> 20, z[2], z[3] >> 20, z[4], z[5] >> 20,
-                a[0], a[5], a[1], a[2], a[3], a[4], a[6], a[7],
-            ));
-        }
-        secgate::statcadence::report_forced(format_args!(
-            "FERROC-BASE {name} base_alloc={}/{}MiB dealloc={}/{}MiB decommit_hook={} ranges={} no_id={}/{}MiB",
-            d[super::S_BASE_ALLOC_CNT],
-            d[super::S_BASE_ALLOC_BYTES] >> 20,
-            d[1],
-            d[super::S_BASE_DEALLOC_BYTES] >> 20,
-            d[0],
-            d[2],
-            d[3],
-            d[4] >> 20,
-        ));
-    }
-}
-
-/// Give ferroc object-backed base chunks directly, instead of sub-allocating them out of talc
-/// spans. talc writes an in-band free-list header into every span it carves, faulting pages
-/// ferroc's own out-of-band slab bitmap never touches; a fresh object is provably zero and needs
-/// no such metadata. `false` restores the talc base — this is the A/B. Monitor keeps talc either
-/// way (its objects are mapped directly, not delete-on-create).
-pub(crate) const USE_OBJECT_BASE: bool = true;
-
 /// Skip the object's null + metadata pages and keep the chunk `SLAB_SIZE`-aligned; reserve the
 /// tail so a chunk never runs into the metadata/FOT region at the object's top.
 const OBJ_BASE_SKIP: usize = ferroc::config::SLAB_SIZE;
@@ -260,7 +167,7 @@ fn obj_base_id(slot: usize) -> Option<twizzler_rt_abi::object::ObjID> {
     // Lock-free fast path: the table is empty until the object base hands out its first chunk, and
     // `id_from_ptr` runs on the hot decommit/zero_range path early in a compartment's life -- long
     // before it is safe to sleep on a `std::sync::Mutex`. Never touch the lock while empty.
-    if !USE_OBJECT_BASE || !OBJ_BASE_PRIMED.load(core::sync::atomic::Ordering::Acquire) {
+    if !OBJ_BASE_PRIMED.load(core::sync::atomic::Ordering::Acquire) {
         return None;
     }
     let t = OBJ_BASE.lock().unwrap_or_else(|e| e.into_inner());
@@ -311,7 +218,7 @@ unsafe impl ferroc::base::BaseAlloc for TwzFerrocBase {
     // runtime believed it was returning stayed dirty. Validated with this constant `true`: 6/6 runs
     // and zero `post_alloc` violations, against 0/2 on `debug-kvm-smp1` before (tag `zerofix3`),
     // plus a control that re-introduced only the double-advance and failed at exactly the 2 MiB
-    // boundary. See `ferroc.md`.
+    // boundary.
     //
     // **Any change here needs a debug arm.** ferroc's zero check is a `debug_assert!`
     // (`heap.rs:376`), so a release build cannot tell you this is wrong -- it will quietly hand
@@ -336,8 +243,7 @@ unsafe impl ferroc::base::BaseAlloc for TwzFerrocBase {
         // the talc path below, which always works.
         // create_and_map asserts sctx != 0; the ferroc fast path can be first-used before the
         // security context is attached, so gate on it here too.
-        if USE_OBJECT_BASE
-            && layout.align() <= ferroc::config::SLAB_SIZE
+        if layout.align() <= ferroc::config::SLAB_SIZE
             && layout.size() <= OBJ_BASE_USABLE
             && !OUR_RUNTIME.state().contains(RuntimeState::IS_MONITOR)
             && secgate::get_sctx_id().raw() != 0

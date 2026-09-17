@@ -145,7 +145,7 @@ fn get_genfile_path(comp: &TwizzlerCompilation, name: &str) -> PathBuf {
 /// kernel's existing `boot with cmd` line proves both what was requested and which artifacts
 /// answered, in one string. A transcript is then self-describing: no marker to remember to update,
 /// and no way for the right binaries to be credited with the wrong workload (both failure modes
-/// happened here -- see pagerperf.md section 22).
+/// happened here).
 fn build_id(kernel: &Path, initrd: &Path, cmdline: &str) -> anyhow::Result<String> {
     use std::{
         collections::hash_map::DefaultHasher,
@@ -408,7 +408,7 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
                 };
                 // One line per pass. unittest runs each line in turn, so N identical lines means N
                 // runs of the same benches in one boot -- which is what shows drift *within* a
-                // boot (the whole point of `sysbench.md`'s order-sensitivity note) without paying
+                // boot (the order-sensitivity point) without paying
                 // for a rebuild and reboot per repetition.
                 let passes = cli.bench_iters.max(1);
                 let spec = core::iter::repeat_n(spec.as_str(), passes)

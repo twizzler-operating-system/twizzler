@@ -21,7 +21,7 @@ use twizzler_abi::{
         sys_thread_send_message, DeleteFlags, ObjectControlCmd, ThreadSync, ThreadSyncFlags,
         ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
     },
-    upcall::{ResumeFlags, UpcallData, UpcallFrame, UpcallInfo},
+    upcall::{ResumeFlags, UpcallData, UpcallFrame},
     write_note,
 };
 use twizzler_rt_abi::{
@@ -116,7 +116,7 @@ pub struct RunComp {
     /// not change unless a library is loaded into this compartment: a gate's implementation
     /// address, and how many libraries there are. Both took a *read* of the whole lock
     /// collection to get them, and `RunCompLoader::new` holds `dynlink` for a **write** across
-    /// a median 31 ms (`sysperf.md` round 8), so every such call stalled behind any
+    /// a median 31 ms, so every such call stalled behind any
     /// compartment load in the system. Worse for `gate_address_named`, which is on the
     /// dynamic-gate call path and scanned every library's every gate for a name match on each
     /// call.
@@ -138,7 +138,7 @@ pub struct RunComp {
     /// compartment, and deleting the instance object is what triggers the kernel's sctx
     /// teardown -- issuing it from `Drop::drop` ran that teardown while all of them were still
     /// live, since a Drop body runs before its fields.
-    instance_delete: InstanceDelete,
+    _instance_delete: InstanceDelete,
 }
 
 /// Deletes a compartment's instance object, ordered behind that compartment's unmaps.
@@ -207,7 +207,7 @@ impl RunComp {
 impl Drop for RunComp {
     fn drop(&mut self) {
         super::RUNCOMP_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        // The instance delete deliberately does *not* happen here; see `instance_delete`.
+        // The instance delete deliberately does *not* happen here; see `_instance_delete`.
     }
 }
 
@@ -318,7 +318,7 @@ impl RunComp {
             init_info: Some((main_stack, entry, main_entry, ctors.to_vec())),
             use_count: 0,
             controller,
-            instance_delete: InstanceDelete(instance),
+            _instance_delete: InstanceDelete(instance),
         }
     }
 
@@ -393,42 +393,16 @@ impl RunComp {
     }
 
     /// Unmap and object from this compartment.
-    /// How many objects this compartment currently has mapped.
-    ///
-    /// These are the *active* handles -- references the compartment still holds open, as opposed
-    /// to the released ones it publishes for reclaim. The lowmem census showed 127 pending-delete
-    /// regions owned by live security contexts, pinning ~60,000 pages, which the handle sweeper
-    /// provably never touches; this is what says whose they are.
-    pub fn mapped_object_count(&self) -> usize {
-        self.mapped_objects.lock().unwrap().len()
-    }
-
     pub fn unmap_object(&self, info: MapInfo) -> Option<MapHandle> {
         let x = self.mapped_objects.lock().unwrap().remove(&info);
-        match &x {
-            Some(handle) => {
-                // Which slot a compartment-requested unmap is about to release, so the fault dump
-                // can show it against the map of the same slot. This is the path most likely to
-                // race a concurrent `map_object`: the runtime's in-flight guard is what is meant
-                // to keep them apart.
-                crate::mon::space::record_slot_event(
-                    handle.addrs().slot,
-                    info.id,
-                    "comp-unmap requested",
-                );
-            }
-            None => {
-                // Was `debug!` with "happens occasionally, but it doesn't seem to be an issue?" --
-                // invisible at the default level, so nobody has ever seen its rate. It is an unmap
-                // arriving for something this compartment does not have mapped, i.e. an unmap and
-                // a map crossing; the opposite crossing is the fault being hunted. Raised so the
-                // sweep can say how often it happens and whether it coincides.
-                tracing::warn!(
-                    "map-diag: comp-unmap of an object not mapped by compartment ({}): {:?}",
-                    self.name,
-                    info
-                );
-            }
+        if x.is_none() {
+            // An unmap arriving for something this compartment does not have mapped, i.e. an
+            // unmap and a map crossing; raised so a sweep can say how often it happens.
+            tracing::warn!(
+                "map-diag: comp-unmap of an object not mapped by compartment ({}): {:?}",
+                self.name,
+                info
+            );
         }
         x
     }
@@ -632,17 +606,6 @@ impl RunComp {
                 return None;
             }
         };
-        // Parent half of the spawn-latency join: this record's own timestamp is the moment
-        // `sys_spawn` returned, and vals[0] names the child it created. Paired with the child's
-        // `CHILDTOP` (twz-rt `core.rs`, same switch, flipped together), the difference is the
-        // window from spawn to the child's first instruction -- previously reachable only as a
-        // subtraction residual.
-        secgate::statlog::record_on(
-            crate::mon::compartment::SPAWN_LAT_STATS,
-            "SPAWNGO",
-            0,
-            &[mt.thread.id.raw() as u64],
-        );
         write_note!(mt.thread.id, "thread:{}(main)", self.name);
         let main_id = mt.thread.id;
         self.main = Some(mt);
@@ -786,15 +749,6 @@ impl RunComp {
                     }
                 }
                 Err(_) => tracing::warn!("  (mapped-object list unavailable: lock held)"),
-            }
-            // What the monitor did to the faulting slot, to pair with the kernel's UNMAP_HIST
-            // ("what did this slot last hold"). A violation on a slot `map_object` has only just
-            // returned is a map and an unmap overlapping; this is the half that says which ran.
-            if let UpcallInfo::MemoryContextViolation(v) = info.info {
-                tracing::warn!("  map-diag: fault addr {:#x}", v.address);
-                crate::mon::space::report_map_history(
-                    v.address as usize / twizzler_rt_abi::object::MAX_SIZE,
-                );
             }
             // Record the death *before* publishing it: `set_flag(COMP_EXITED)` is what unblocks
             // `compartment_wait`, and a waiter that reads the exit code between the flag and the

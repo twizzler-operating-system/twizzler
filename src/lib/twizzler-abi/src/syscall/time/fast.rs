@@ -45,16 +45,6 @@ const UNCALIBRATED: u64 = 0;
 const CALIBRATING: u64 = 1;
 const READY: u64 = 2;
 
-/// A/B: read the tick counter in userspace at all. With this off every reading is a
-/// `sys_read_clock_info` syscall -- which is what the static runtime did for both clocks, and what
-/// the reference runtime did for the realtime clock, before this existed.
-pub const FAST_USERSPACE_CLOCK: bool = true;
-
-/// A/B: convert ticks with the precomputed multiply-and-shift rather than `TimeSpan::from_femtos`.
-/// The latter is what the reference runtime's monotonic fast path used, and it costs two u128
-/// divisions per reading. Only consulted when [`FAST_USERSPACE_CLOCK`] is on.
-pub const FAST_CLOCK_MULSHIFT: bool = true;
-
 /// A monotonic-ish clock that answers from the CPU's tick counter without entering the kernel.
 ///
 /// One syscall, on the first reading, learns the tick rate and anchors the clock to whatever the
@@ -79,8 +69,6 @@ pub struct FastClock {
     /// `ns = (ticks * mult) >> shift`.
     mult: AtomicU64,
     shift: AtomicU64,
-    /// Only for the [`FAST_CLOCK_MULSHIFT`]-off arm.
-    femtos_per_tick: AtomicU64,
     /// 0 = not calibrated, 1 = a thread is calibrating, 2 = the fields above are readable.
     /// Advanced to 2 last, with `Release`.
     ready: AtomicU64,
@@ -95,30 +83,15 @@ impl FastClock {
             base_ticks: AtomicU64::new(0),
             mult: AtomicU64::new(0),
             shift: AtomicU64::new(0),
-            femtos_per_tick: AtomicU64::new(0),
             ready: AtomicU64::new(0),
         }
     }
 
     /// The current time, without entering the kernel once calibrated.
     pub fn get(&self) -> Duration {
-        if !FAST_USERSPACE_CLOCK {
-            return match sys_read_clock_info(self.source, self.flags) {
-                Ok(info) => Duration::from(info.current_value()),
-                Err(_) => Duration::ZERO,
-            };
-        }
         if self.ready.load(Ordering::Acquire) == READY {
             let ticks = tick_counter().wrapping_sub(self.base_ticks.load(Ordering::Relaxed));
             let base_ns = self.base_ns.load(Ordering::Relaxed);
-            if !FAST_CLOCK_MULSHIFT {
-                // The conversion this replaced: a u128 multiply and, inside `from_femtos`, a u128
-                // division and a u128 modulo.
-                let span = super::TimeSpan::from_femtos(
-                    ticks as u128 * self.femtos_per_tick.load(Ordering::Relaxed) as u128,
-                );
-                return Duration::from_nanos(base_ns) + Duration::from(span);
-            }
             let mult = self.mult.load(Ordering::Relaxed);
             let shift = self.shift.load(Ordering::Relaxed);
             let ns = base_ns + (((ticks as u128 * mult as u128) >> shift) as u64);
@@ -173,8 +146,6 @@ impl FastClock {
         self.base_ticks.store(ticks, Ordering::Relaxed);
         self.base_ns.store(base_ns, Ordering::Relaxed);
         self.mult.store(mult, Ordering::Relaxed);
-        self.femtos_per_tick
-            .store(femtos_per_tick as u64, Ordering::Relaxed);
         self.shift.store(shift as u64, Ordering::Relaxed);
         // Last, and `Release`: a reader that sees this must see the stores above it.
         self.ready.store(READY, Ordering::Release);

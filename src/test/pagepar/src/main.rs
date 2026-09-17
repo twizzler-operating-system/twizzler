@@ -6,7 +6,13 @@
 //! amount of pager thread topology can be evaluated against it.
 //!
 //! Usage: `pagepar [dir] [threads] [max_files] [wdir]`, defaults `/sysroot/lib`,
-//! available_parallelism, 2048, `/ext/pagepar-w`.
+//! available_parallelism, 64, `/ext/pagepar-w`.
+//!
+//! Note the thread default: `xtask` does not pass `-smp` (the line is commented out in
+//! `tools/xtask/src/qemu.rs`), so a bare `cargo xtask test`/`start-qemu` boot has one vCPU and
+//! `available_parallelism` returns 1 -- every phase here then runs unthreaded while still
+//! printing plausible numbers. Every line that depends on concurrency reports the vCPU count
+//! next to the thread count for that reason. `many.py` passes `-smp` through explicitly.
 //!
 //! The write passes (create/write/close/rewrite/close2/unlink into `wdir`) run after the read
 //! passes so the read numbers stay comparable with pre-write-bench runs. On Twizzler, dropping
@@ -26,6 +32,50 @@ use std::{
 };
 
 const BUF_BYTES: usize = 64 * 1024;
+
+/// Worker threads lost to panics, summed across every phase.
+///
+/// This detects, it does not tolerate. A panic in pagepar is a bug in what pagepar is exercising,
+/// and the fix belongs there rather than here. But the phases each rendezvous once, before any
+/// work, so a panic after that point blocks nobody: the phase just collects with
+/// `filter_map(|h| h.join().ok())` and means over whoever came back, and a 4-thread figure
+/// computed from 3 threads reads exactly like a clean one. Anything non-zero here renames the
+/// summary lines and makes the process exit non-zero, so that run cannot be read, greped or
+/// scored as clean -- it names a bug to go fix.
+///
+/// The read/write passes need none of this: they rendezvous thirteen times, so a panic there
+/// hangs instead, which is already unmissable.
+static LOST_THREADS: AtomicU64 = AtomicU64::new(0);
+
+/// Record, and announce, a phase that got back fewer threads than it started.
+fn note_losses(phase: &str, got: usize, want: usize) {
+    if got >= want {
+        return;
+    }
+    LOST_THREADS.fetch_add((want - got) as u64, Ordering::Relaxed);
+    println!(
+        "pagepar: {} LOST {} of {} threads to panics; its figures cover the survivors only",
+        phase,
+        want - got,
+        want
+    );
+}
+
+/// Join workers that time themselves, separating a thread that returned no timing (an I/O error,
+/// a legitimate skip) from one that panicked (a bug). Returns the timings and the skip count; the
+/// panicked count is whatever is missing from both.
+fn join_timed(handles: Vec<std::thread::JoinHandle<Option<Duration>>>) -> (Vec<Duration>, usize) {
+    let mut timed = Vec::new();
+    let mut skipped = 0;
+    for h in handles {
+        match h.join() {
+            Ok(Some(d)) => timed.push(d),
+            Ok(None) => skipped += 1,
+            Err(_) => {}
+        }
+    }
+    (timed, skipped)
+}
 
 /// Collect files under `root`, in discovery order.
 ///
@@ -102,6 +152,7 @@ fn enum_phase(root: &str, nr_threads: usize) {
         }));
     }
     let par: Vec<_> = handles.into_iter().filter_map(|h| h.join().ok()).collect();
+    note_losses("ENUM", par.len(), nr_threads);
     let par_max = par.iter().max().copied().unwrap_or_default();
 
     println!(
@@ -119,27 +170,26 @@ fn enum_phase(root: &str, nr_threads: usize) {
 
 /// Compare `Mutex` against `RwLock` under a read-mostly load, both from libstd.
 ///
-/// **This phase does not measure contended lock cost, and no number it prints should be quoted as
-/// one.** It is kept because the shape of its output diagnoses *why* -- see the overlap ratio below
-/// -- and because that failure generalizes to any contention benchmark run in a guest. Read
-/// `stdperf.md` item 1 before using it for anything.
+/// Each thread times its own loop, so the per-thread mean cannot on its own distinguish N threads
+/// contending from N threads taking turns: under serialization every thread measures an
+/// *uncontended* acquire and the mean reports that, which is how this phase once claimed a
+/// 4-thread contended acquire cost 19 ns. The overlap ratio is what separates the two, so quote
+/// the ratio, not the mean. Under full overlap `window == mean`; under full serialization
+/// `window == mean x threads`.
 ///
-/// Two independent defects, both found only after its numbers had been published and retracted:
+/// The window is measured from the workers' own clocks (earliest start to latest finish). It used
+/// to be timed by the parent around the joins, which with `nr_threads == vCPUs` can be descheduled
+/// past the workers' start and report a window *shorter* than the loops it was meant to contain --
+/// 0.55x on one thread, against a floor of 1.0, and 0 ns on another run.
 ///
-/// - Each thread times its own loop and the phase reports the mean of those, which cannot
-///   distinguish N threads contending from N threads taking turns. Measured overlap is 1.5-3.0x of
-///   `nr_threads`, so every thread spends much of its loop on an *uncontended* lock and the mean
-///   says so, confidently and wrongly.
-/// - The window that was meant to correct this is timed by the parent, which with `nr_threads ==
-///   vCPUs` can be descheduled until the workers finish. One run reported a window of 0 ns.
-///
-/// Fixing it properly means fewer workers than the guest has vCPUs, or computing the aggregate
-/// inside the workers rather than around them.
+/// A ratio near `nr_threads` still means the means are uncontended numbers, but read it against
+/// the vCPU count before calling that a defect: on a one-vCPU guest N threads cannot overlap, and
+/// full serialization is the correct answer rather than a measurement failure.
 ///
 /// The question it was built for is still open: `futex_wake` now reports a real wake count, so
 /// libstd's `RwLock` no longer wakes every reader on a write-unlock it could not confirm, and
 /// nothing has measured what that changed.
-fn lock_phase(nr_threads: usize) {
+fn lock_phase(nr_threads: usize, vcpus: usize) {
     use std::sync::{Mutex, RwLock};
 
     const ITERS: u32 = 20_000;
@@ -147,8 +197,7 @@ fn lock_phase(nr_threads: usize) {
     const WRITE_EVERY: u32 = 16;
 
     let mx = Arc::new((Mutex::new(0u64), RwLock::new(0u64)));
-    // nr_threads + 1: the parent joins the barrier so it can time the whole window from one clock.
-    let barrier = Arc::new(Barrier::new(nr_threads + 1));
+    let barrier = Arc::new(Barrier::new(nr_threads));
 
     let run = |use_rw: bool| {
         let mut handles = Vec::new();
@@ -157,7 +206,7 @@ fn lock_phase(nr_threads: usize) {
             let barrier = barrier.clone();
             handles.push(std::thread::spawn(move || {
                 barrier.wait();
-                let t = Instant::now();
+                let start = Instant::now();
                 for i in 0..ITERS {
                     let write = i % WRITE_EVERY == 0;
                     if use_rw {
@@ -175,28 +224,38 @@ fn lock_phase(nr_threads: usize) {
                         }
                     }
                 }
-                t.elapsed() / ITERS
+                let end = Instant::now();
+                (start, end, (end - start) / ITERS)
             }));
         }
-        barrier.wait();
-        let window = Instant::now();
-        let mut v: Vec<Duration> = handles.into_iter().filter_map(|h| h.join().ok()).collect();
-        let window = window.elapsed() / ITERS;
-        v.sort();
-        let mean = v
+        let spans: Vec<(Instant, Instant, Duration)> =
+            handles.into_iter().filter_map(|h| h.join().ok()).collect();
+        note_losses(
+            if use_rw {
+                "LOCK(rwlock)"
+            } else {
+                "LOCK(mutex)"
+            },
+            spans.len(),
+            nr_threads,
+        );
+        let window = match (
+            spans.iter().map(|s| s.0).min(),
+            spans.iter().map(|s| s.1).max(),
+        ) {
+            (Some(first), Some(last)) => (last - first) / ITERS,
+            _ => Duration::default(),
+        };
+        let mut per: Vec<Duration> = spans.iter().map(|s| s.2).collect();
+        per.sort();
+        let mean = per
             .iter()
             .sum::<Duration>()
-            .checked_div(v.len() as u32)
+            .checked_div(per.len() as u32)
             .unwrap_or_default();
-        (mean, window, v)
+        (mean, window, per)
     };
 
-    // Report the window alongside the per-thread mean, because the two together are the only way
-    // to tell contention from its opposite. Each thread times its *own* loop, so if the threads
-    // serialize instead of overlapping, every one of them measures an *uncontended* lock and the
-    // mean reports that -- which is how this phase once claimed a 4-thread contended acquire cost
-    // 19 ns. Under full overlap window == mean; under full serialization window == mean x threads.
-    // Quote the ratio, not the mean.
     let (m_mean, m_window, m_all) = run(false);
     let (r_mean, r_window, r_all) = run(true);
     let ratio = |w: Duration, m: Duration| {
@@ -207,10 +266,11 @@ fn lock_phase(nr_threads: usize) {
         }
     };
     println!(
-        "pagepar: LOCK {} threads x {} acquires (1 write in {}): \
+        "pagepar: LOCK {} threads on {} vCPUs x {} acquires (1 write in {}): \
          mutex mean {} ns window {} ns (overlap {:.2}x of {}), \
          rwlock mean {} ns window {} ns (overlap {:.2}x)",
         nr_threads,
+        vcpus,
         ITERS,
         WRITE_EVERY,
         m_mean.as_nanos(),
@@ -265,17 +325,25 @@ fn io_phase(files: &[PathBuf], nr_threads: usize) {
     let mut handles = Vec::new();
     for tid in 0..nr_threads {
         let barrier = barrier.clone();
-        // Distinct files, so the contention measured is the fd table and not one file's state.
+        // Distinct files while threads <= files, so the contention measured is the fd table and
+        // not one file's state; past that threads share and the figure mixes the two.
         let path = files[tid % files.len()].clone();
         handles.push(std::thread::spawn(move || {
             barrier.wait();
             read_loop(&path)
         }));
     }
-    let par: Vec<Duration> = handles
-        .into_iter()
-        .filter_map(|h| h.join().ok().flatten())
-        .collect();
+    // A thread that returned `None` hit an I/O error, which is a legitimate skip; one that
+    // panicked is a bug. Folding both into `filter_map` made a run over an unreadable file
+    // indistinguishable from a run that lost a thread.
+    let (par, unreadable) = join_timed(handles);
+    note_losses("IO", par.len() + unreadable, nr_threads);
+    if unreadable > 0 {
+        println!(
+            "pagepar: IO {} of {} threads could not read their file",
+            unreadable, nr_threads
+        );
+    }
     let par_max = par.iter().max().copied().unwrap_or_default();
     let par_mean = par
         .iter()
@@ -341,10 +409,21 @@ fn wio_phase(wdir: &Path, nr_threads: usize) {
             write_loop(&path)
         }));
     }
-    let par: Vec<Duration> = handles
-        .into_iter()
-        .filter_map(|h| h.join().ok().flatten())
-        .collect();
+    let (par, unwritable) = join_timed(handles);
+    note_losses("WIO", par.len() + unwritable, nr_threads);
+    if unwritable > 0 {
+        println!(
+            "pagepar: WIO {} of {} threads could not write their file",
+            unwritable, nr_threads
+        );
+    }
+
+    // The read/write passes unlink what they create; these were not, so every run left another
+    // set behind on a persistent disk.
+    let _ = std::fs::remove_file(wdir.join("wio_solo.bin"));
+    for tid in 0..nr_threads {
+        let _ = std::fs::remove_file(wdir.join(format!("wio_{}.bin", tid)));
+    }
     let par_max = par.iter().max().copied().unwrap_or_default();
     let par_mean = par
         .iter()
@@ -418,6 +497,7 @@ fn name_phase(files: &[PathBuf], nr_threads: usize) {
         }));
     }
     let par: Vec<Duration> = handles.into_iter().filter_map(|h| h.join().ok()).collect();
+    note_losses("NAME", par.len(), nr_threads);
     let par_max = par.iter().max().copied().unwrap_or_default();
     let par_mean = par
         .iter()
@@ -439,14 +519,16 @@ fn name_phase(files: &[PathBuf], nr_threads: usize) {
 fn main() {
     let mut args = std::env::args().skip(1);
     let root = args.next().unwrap_or_else(|| "/sysroot/lib".to_string());
+    // Kept separately from the thread count and reported alongside it: an explicit thread
+    // argument on a one-vCPU boot produces threads that cannot overlap, which reads identically
+    // to a measurement bug unless the vCPU count is on the line.
+    let vcpus = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(4);
     let nr_threads = args
         .next()
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|p| p.get())
-                .unwrap_or(4)
-        })
+        .unwrap_or(vcpus)
         .max(1);
     let max_files = args
         .next()
@@ -477,20 +559,29 @@ fn main() {
 
     let files = collect_files(&root, max_files);
     if files.is_empty() {
-        println!("pagepar: no files under {}", root);
+        // WIO and LOCK take no files. Returning here -- which is what this did -- let a bad `dir`
+        // argument silently remove two phases that had nothing to do with it.
+        println!(
+            "pagepar: no files under {}; running the file-independent phases only",
+            root
+        );
+        wio_phase(&wdir, nr_threads);
+        lock_phase(nr_threads, vcpus);
+        finish();
         return;
     }
     println!(
-        "pagepar: {} files under {}, {} threads",
+        "pagepar: {} files under {}, {} threads on {} vCPUs",
         files.len(),
         root,
-        nr_threads
+        nr_threads,
+        vcpus
     );
 
     name_phase(&files, nr_threads);
     io_phase(&files, nr_threads);
     wio_phase(&wdir, nr_threads);
-    lock_phase(nr_threads);
+    lock_phase(nr_threads, vcpus);
 
     // Striped, not a shared cursor. A cursor looks fairer but is not: thread spawn is slow enough
     // in the guest that the first threads to start drain it before the last ones exist, and a
@@ -509,6 +600,12 @@ fn main() {
     let files = Arc::new(files);
     // nr_threads + 1: the main thread joins each barrier so it can stamp the boundary from one
     // clock, rather than each worker reporting its own idea of when a phase began.
+    //
+    // A worker panicking between two of these hangs the run, because `Barrier` has no poisoning
+    // and the party never fills again. That is deliberate: a panic here is a bug in what pagepar
+    // is exercising, and a hang under `--kernel-arg=--diag` gets named by the kernel's thread
+    // scan. Making the barrier survive a death only converts a loud failure into a completed run
+    // with quietly short numbers.
     let barrier = Arc::new(Barrier::new(nr_threads + 1));
     let total_bytes = Arc::new(AtomicU64::new(0));
     let total_files = Arc::new(AtomicU64::new(0));
@@ -591,6 +688,9 @@ fn main() {
             let count = open_files.len() as u64;
             let (cold_bytes, cold_read_ns, _) = read_all(&mut open_files, &mut buf);
             barrier.wait();
+            // Held here while the main thread samples the fault counters. Without this the close
+            // below runs concurrently with that sample and lands in the cold-pass count.
+            barrier.wait();
 
             // Closed before the warm pass, so the warm open is a real open -- naming lookup,
             // monitor gate and object map -- against an object the runtime and kernel have already
@@ -604,6 +704,9 @@ fn main() {
 
             // --- warm read ---
             let (warm_bytes, warm_read_ns, sizes) = read_all(&mut open_files, &mut buf);
+            barrier.wait();
+            // Same hold as after the cold read: the write phase must not start until the warm
+            // fault count has been sampled.
             barrier.wait();
 
             // Patterned, not zeroed: the object store has zero-page fast paths, and a write
@@ -705,7 +808,6 @@ fn main() {
             Pass {
                 count,
                 cold_opens,
-                cold_bytes,
                 cold_read_ns,
                 warm_opens,
                 warm_bytes,
@@ -735,6 +837,9 @@ fn main() {
     mark("read end");
     let faults_after_cold = twizzler_abi::syscall::sys_memory_stats();
     let cold_elapsed = start.elapsed();
+    // Sampled above while the workers are parked on this second rendezvous. Releasing them and
+    // then sampling -- which is what this did -- lets the close race the sample.
+    barrier.wait();
     barrier.wait();
     mark("close end");
     mark("warm open start");
@@ -744,8 +849,10 @@ fn main() {
     barrier.wait();
     mark("warm read end");
     // Bracket the write phases separately; without this the write-phase faults would land in
-    // the "warm" fault count and silently change a pre-write-bench number.
+    // the "warm" fault count and silently change a pre-write-bench number. Same parked-workers
+    // discipline as the cold sample above, for the same reason.
     let faults_after_warm = twizzler_abi::syscall::sys_memory_stats();
+    barrier.wait();
     mark("wcw start");
     barrier.wait();
     mark("wcw end");
@@ -799,7 +906,10 @@ fn main() {
                     p.warm_read_ns / 1_000_000,
                 );
             }
-            Err(_) => println!("pagepar: thread {} panicked", i),
+            Err(_) => {
+                LOST_THREADS.fetch_add(1, Ordering::Relaxed);
+                println!("pagepar: thread {} panicked", i);
+            }
         }
     }
 
@@ -818,8 +928,23 @@ fn main() {
         .saturating_sub(faults_after_warm.page_fault_count);
     let bytes = total_bytes.load(Ordering::Relaxed);
 
+    // Fail closed. Every aggregate below is summed over the threads that came back, so a run that
+    // lost one reports a smaller workload as though that were the measurement. Renaming the tags
+    // is what makes that unmissable: `PASSES`/`FAULTS`/`WPASSES` are what a reader's eye and a
+    // downstream grep both key on, so a short run matches neither.
+    let lost = LOST_THREADS.load(Ordering::Relaxed);
+    let tag = |name: &'static str| if lost > 0 { "INCOMPLETE" } else { name };
+    if lost > 0 {
+        println!(
+            "pagepar: INCOMPLETE {} thread(s) panicked; every figure below covers the survivors \
+             only and is not comparable with a clean run",
+            lost
+        );
+    }
+
     println!(
-        "pagepar: DONE {} files, {} KB in {} ms",
+        "pagepar: {} {} files, {} KB in {} ms",
+        tag("DONE"),
         total_files.load(Ordering::Relaxed),
         bytes / 1024,
         cold_elapsed.as_millis()
@@ -829,9 +954,10 @@ fn main() {
     // pages in core and the objects already known. Whatever survives into the warm pass is path
     // cost that no amount of paging work can remove.
     println!(
-        "pagepar: PASSES cold open first {} us rest {} us mean / warm open {} us mean; \
+        "pagepar: {} cold open first {} us rest {} us mean / warm open {} us mean; \
          cold read max {} ms / warm read max {} ms; cold {} KB / warm {} KB; \
          faults cold {} / warm {}",
+        tag("PASSES"),
         cold_open_first / 1000,
         cold_open_rest.0 / cold_open_rest.1.max(1) / 1000,
         warm_open_all.0 / warm_open_all.1.max(1) / 1000,
@@ -843,8 +969,9 @@ fn main() {
         warm_faults,
     );
     println!(
-        "pagepar: FAULTS {} over the read phase ({} pages read, {:.2} faults/page); \
+        "pagepar: {} {} over the read phase ({} pages read, {:.2} faults/page); \
          mean {} us, max {} us; {} us of fault time vs {} us wall",
+        tag("FAULTS"),
         cold_faults,
         bytes / 4096,
         cold_faults as f64 / ((bytes / 4096).max(1)) as f64,
@@ -857,10 +984,11 @@ fn main() {
     // is a blocking durable pager sync, so close mean x file count is the sync bill for the
     // whole write pass. The Linux twin pairs these against fsync+close.
     println!(
-        "pagepar: WPASSES create first {} us rest {} us mean / reopen {} us mean; \
+        "pagepar: {} create first {} us rest {} us mean / reopen {} us mean; \
          write max {} ms / rewrite max {} ms; close mean {} us max {} us / \
          close2 mean {} us max {} us; unlink mean {} us max {} us; \
          wrote {} KB x2, {} create fails; faults write-phases {} (total {})",
+        tag("WPASSES"),
         w.create_first / 1000,
         w.create_rest.0 / w.create_rest.1.max(1) / 1000,
         w.reopens.0 / w.reopens.1.max(1) / 1000,
@@ -877,13 +1005,25 @@ fn main() {
         write_faults,
         nr_faults,
     );
+
+    finish();
+}
+
+/// Exit non-zero if any phase lost a thread.
+///
+/// `xtask test --autostart` reports the guest's exit code, so this is what stops a run that lost a
+/// thread -- in a phase as much as in the passes -- from being recorded as a pass. Called last on
+/// every path out of `main`, so the diagnostics are printed either way.
+fn finish() {
+    if LOST_THREADS.load(Ordering::Relaxed) > 0 {
+        std::process::exit(1);
+    }
 }
 
 /// One thread's read and write passes over its share of the files.
 struct Pass {
     count: u64,
     cold_opens: Vec<u128>,
-    cold_bytes: u64,
     cold_read_ns: u128,
     warm_opens: Vec<u128>,
     warm_bytes: u64,

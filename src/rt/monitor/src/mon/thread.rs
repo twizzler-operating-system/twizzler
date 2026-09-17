@@ -13,8 +13,8 @@ use monitor_api::{RuntimeThreadControl, ThreadMgrStats, MONITOR_INSTANCE_ID};
 use twizzler_abi::{
     object::NULLPAGE_SIZE,
     syscall::{
-        sys_object_ctrl, sys_spawn, sys_thread_exit, DeleteFlags, ObjectControlCmd,
-        ThreadSyncSleep, UpcallTargetSpawnOption,
+        sys_object_ctrl, sys_spawn, DeleteFlags, ObjectControlCmd, ThreadSyncSleep,
+        UpcallTargetSpawnOption,
     },
     thread::{ExecutionState, ThreadRepr},
     upcall::{UpcallFlags, UpcallInfo, UpcallMode, UpcallOptions, UpcallTarget},
@@ -56,69 +56,12 @@ pub(crate) struct EntryArgs {
 
 /// Stack size for the supervisor upcall stack.
 pub const SUPER_UPCALL_STACK_SIZE: usize = 2 * 1024 * 1024; // 2MB
-/// Zero the whole super stack at spawn, the way this used to. A/B against `false`, which zeroes
-/// only the top.
-const ZERO_WHOLE_SUPER_STACK: bool = false;
-/// How much of the top of the super stack to zero when `ZERO_WHOLE_SUPER_STACK` is false.
+/// How much of the top of the super stack is zeroed at spawn.
 const SUPER_STACK_TOP_ZERO: usize = 0x1000;
 /// Default stack size for the user stack.
 pub const DEFAULT_STACK_SIZE: usize = 2 * 1024 * 1024; // 2MB
 /// Stack minimium alignment.
 pub const STACK_SIZE_MIN_ALIGN: usize = 0x1000; // 4K
-
-/// Per-spawn phase timings (`SPAWNMON`/`SPAWNMNP`), independent of the global `STATS_ON`.
-///
-/// The spawn path has no cheaper instrument: rounds of this work have shown boot wall clock cannot
-/// resolve ~30 us x ~128 spawns, so an A/B needs these in the build. See `sysperf.md` round 5.
-pub(crate) mod spawnstats {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    /// Switch for the spawn-path counters only.
-    pub(crate) const ON: bool = false;
-
-    static N: AtomicU64 = AtomicU64::new(0);
-
-    /// Phase timings [`super::ThreadMgr::finish_spawn`] fills in, since it is the only place that
-    /// can bracket them.
-    #[derive(Default)]
-    pub(crate) struct Phases {
-        pub stack: u64,
-        pub sys_spawn: u64,
-        pub reprmap: u64,
-    }
-
-    /// One record per spawn: all phases in ns, tagged by whether the TLS region came from the
-    /// prebuilt pool (`SPAWNMNP`) or was built under the monitor's lock collection (`SPAWNMON`).
-    pub(crate) fn record(
-        pooled: bool,
-        lockwait: u64,
-        tls: u64,
-        stack: u64,
-        sys_spawn: u64,
-        reprmap: u64,
-        register: u64,
-    ) {
-        if !ON {
-            return;
-        }
-        let n = N.fetch_add(1, Ordering::Relaxed) + 1;
-        secgate::statlog::record_on(
-            ON,
-            if pooled { "SPAWNMNP" } else { "SPAWNMON" },
-            n,
-            &[lockwait, tls, stack, sys_spawn, reprmap, register],
-        );
-    }
-
-    /// Nanoseconds since `start`. Userspace `Instant::now` memoizes the tickrate, so this is an
-    /// rdtsc and a multiply, not a syscall.
-    pub(crate) fn since(start: std::time::Instant) -> u64 {
-        if !ON {
-            return 0;
-        }
-        start.elapsed().as_nanos() as u64
-    }
-}
 
 /// Supervisor stacks and TLS regions, recycled across spawns.
 ///
@@ -133,7 +76,7 @@ pub(crate) mod spawnstats {
 /// Recycling fixes both without touching the allocator: a returned stack is already mapped, so
 /// the next spawn's write to it faults nothing, and the monitor's footprint stops tracking the
 /// number of threads it has ever started. It also retires the TLS-region half of leak M1
-/// (`mleaks.md`) for every thread that exits cleanly.
+/// for every thread that exits cleanly.
 mod pool {
     use std::{
         alloc::Layout,
@@ -150,10 +93,6 @@ mod pool {
     /// behavior rather than a new leak -- but bound it anyway, since a compartment teardown can
     /// retire many threads at once and each entry pins 2 MiB.
     const MAX: usize = 32;
-
-    /// A/B switch for measuring what recycling is worth; `false` restores the old behavior, in
-    /// which every returned stack and TLS region was abandoned.
-    const RECYCLE: bool = true;
 
     struct Tls {
         base: NonNull<u8>,
@@ -180,18 +119,12 @@ mod pool {
 
     /// A recycled supervisor stack of exactly `len` bytes, if one is waiting.
     pub(super) fn take_stack(len: usize) -> Option<Box<[MaybeUninit<u8>]>> {
-        if !RECYCLE {
-            return None;
-        }
         let mut pool = lock();
         let idx = pool.stacks.iter().position(|s| s.len() == len)?;
         Some(pool.stacks.swap_remove(idx))
     }
 
     pub(super) fn put_stack(stack: Box<[MaybeUninit<u8>]>) {
-        if !RECYCLE {
-            return;
-        }
         let mut pool = lock();
         if pool.stacks.len() < MAX {
             // Reserve once, so a return from a thread-exit path never grows this Vec under the
@@ -207,9 +140,6 @@ mod pool {
     /// so the `.tbss` tail of every module is whatever the allocation already held -- which for a
     /// fresh `alloc_zeroed` is zero and for a recycled region is the previous thread's data.
     pub(super) fn take_tls(layout: Layout) -> Option<NonNull<u8>> {
-        if !RECYCLE {
-            return None;
-        }
         let base = {
             let mut pool = lock();
             let idx = pool.tls.iter().position(|t| t.layout == layout)?;
@@ -225,7 +155,7 @@ mod pool {
             return;
         };
         let layout = region.alloc_layout();
-        if RECYCLE {
+        {
             let mut pool = lock();
             if pool.tls.len() < MAX {
                 pool.tls.reserve(MAX);
@@ -247,7 +177,7 @@ mod pool {
 /// [`pool`] above recycles the allocation; this recycles the work. `build_tls_region` needs
 /// `&mut Compartment` out of the monitor's dynlink lock, and happylock hands the monitor's five
 /// locks out as one collection -- so a spawn that builds its own region waits on whatever holds
-/// them, which during a compartment load is up to 12 ms (`sysperf.md` lead 5c). Nothing about that
+/// them, which during a compartment load is up to 12 ms. Nothing about that
 /// wait is inherent: the region does not depend on the spawn, only on the compartment's TLS
 /// template, so it can be built at a time nobody is waiting.
 ///
@@ -264,9 +194,6 @@ pub(crate) mod readypool {
     /// Refill when the pool is at or below this. Below `MAX` so a burst of spawns does not have to
     /// empty the pool completely before a refill starts.
     const LOW: usize = 2;
-
-    /// A/B switch: `false` sends every spawn down the inline (lock-collection) path.
-    const PREBUILD: bool = true;
 
     /// A region parked for the next spawn. Every entry was built from `Pool::gen`, which is what
     /// makes that one field enough to say whether any of them are still valid.
@@ -296,17 +223,11 @@ pub(crate) mod readypool {
 
     /// A prebuilt region, if one is waiting. The TCB still needs its id set.
     pub(crate) fn take() -> Option<TlsRegion> {
-        if !PREBUILD {
-            return None;
-        }
         lock().ready.pop().map(|r| r.region)
     }
 
     /// How many more regions the pool wants; 0 when it is stocked.
     pub(super) fn wanted() -> usize {
-        if !PREBUILD {
-            return 0;
-        }
         let pool = lock();
         if pool.ready.len() > LOW {
             0
@@ -323,9 +244,6 @@ pub(crate) mod readypool {
     /// -- `load_library_by_name` loads into the caller's compartment -- but the check costs one
     /// comparison and the alternative is handing a thread TLS storage that is missing a module.
     pub(super) fn put(region: TlsRegion, gen: u64) {
-        if !PREBUILD {
-            return;
-        }
         // Anything that does not end up parked here is handed to `pool::put_tls`, which either
         // recycles the allocation or frees it. Dropping a `TlsRegion` leaks its block.
         let mut displaced = Some(region);
@@ -561,44 +479,34 @@ impl ThreadMgr {
         args: EntryArgs,
         main_thread_comp: Option<ObjID>,
         instance: ObjID,
-        phases: &mut spawnstats::Phases,
     ) -> Result<ManagedThread, TwzError> {
         let super_thread_pointer = super_tls.get_thread_pointer_value();
-        let t_stack = std::time::Instant::now();
-        let mut super_stack = if ZERO_WHOLE_SUPER_STACK {
-            Box::new_zeroed_slice(SUPER_UPCALL_STACK_SIZE)
-        } else {
-            let mut stack = pool::take_stack(SUPER_UPCALL_STACK_SIZE)
-                .unwrap_or_else(|| Box::new_uninit_slice(SUPER_UPCALL_STACK_SIZE));
-            // The kernel writes the upcall frame downward from the top of this stack and reads
-            // nothing from it, so only the top needs defined contents. See `STACK_TOP_ZERO` in
-            // twz-rt's thread manager for the full argument; the same one applies here, and this
-            // 8 MiB memset was the other half of what a spawn was paying.
-            let from = SUPER_UPCALL_STACK_SIZE.saturating_sub(SUPER_STACK_TOP_ZERO);
-            unsafe {
-                core::ptr::write_bytes(
-                    stack.as_mut_ptr().add(from).cast::<u8>(),
-                    0,
-                    SUPER_UPCALL_STACK_SIZE - from,
-                );
-            }
-            stack
-        };
-        phases.stack = spawnstats::since(t_stack);
+        let mut super_stack = pool::take_stack(SUPER_UPCALL_STACK_SIZE)
+            .unwrap_or_else(|| Box::new_uninit_slice(SUPER_UPCALL_STACK_SIZE));
+        // The kernel writes the upcall frame downward from the top of this stack and reads
+        // nothing from it, so only the top needs defined contents. See `STACK_TOP_ZERO` in
+        // twz-rt's thread manager for the full argument; the same one applies here, and this
+        // 8 MiB memset was the other half of what a spawn was paying.
+        let from = SUPER_UPCALL_STACK_SIZE.saturating_sub(SUPER_STACK_TOP_ZERO);
+        unsafe {
+            core::ptr::write_bytes(
+                super_stack.as_mut_ptr().add(from).cast::<u8>(),
+                0,
+                SUPER_UPCALL_STACK_SIZE - from,
+            );
+        }
         // The thread's args go at the *base* of its own super stack, and the base pointer handed to
         // `spawn_thread` is unchanged -- no reserve, so nothing has to agree with us about where
         // the stack top is. The stack grows down from base + SUPER_UPCALL_STACK_SIZE, so
         // reaching these bytes is already an overflow, and the entry copies them to a local
         // at depth ~0 before anything else runs.
         //
-        // Written *after* the branch above, so both positions of `ZERO_WHOLE_SUPER_STACK` work by
-        // construction, and unconditionally, because `pool::take_stack` hands back a recycled stack
-        // holding the previous thread's bytes. Unaligned because `Box<[MaybeUninit<u8>]>` is align
-        // 1 by type while `ObjID` is align 16 -- true in practice, not guaranteed by
-        // anything.
+        // Written after the zeroing above, unconditionally, because `pool::take_stack` hands back
+        // a recycled stack holding the previous thread's bytes. Unaligned because
+        // `Box<[MaybeUninit<u8>]>` is align 1 by type while `ObjID` is align 16 -- true in
+        // practice, not guaranteed by anything.
         let arg = super_stack.as_ptr() as usize;
         unsafe { core::ptr::write_unaligned(super_stack.as_mut_ptr().cast::<EntryArgs>(), args) };
-        let t_spawn = std::time::Instant::now();
         let id = unsafe {
             Self::spawn_thread(
                 start as *const () as usize,
@@ -608,8 +516,6 @@ impl ThreadMgr {
                 instance,
             )?
         };
-        phases.sys_spawn = spawnstats::since(t_spawn);
-        let t_reprmap = std::time::Instant::now();
         // We own this repr object from here: the kernel no longer deletes it when the thread dies
         // (see Thread::drop), so every path out of here has to either hand it to a
         // ManagedThreadRepr, which deletes it on drop, or delete it directly.
@@ -642,7 +548,6 @@ impl ThreadMgr {
                 return Err(e);
             }
         };
-        phases.reprmap = spawnstats::since(t_reprmap);
         Ok(Arc::new(ManagedThreadInner {
             id,
             super_tid,
@@ -668,7 +573,6 @@ impl ThreadMgr {
         instance: ObjID,
     ) -> Result<ManagedThread, TwzError> {
         let (super_tls, super_tid) = self.prep_spawn(monitor_dynlink_comp)?;
-        let mut phases = spawnstats::Phases::default();
         match Self::finish_spawn(
             super_tls,
             super_tid,
@@ -676,7 +580,6 @@ impl ThreadMgr {
             args,
             main_thread_comp,
             instance,
-            &mut phases,
         ) {
             Ok(mt) => {
                 self.register(&mt);

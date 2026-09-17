@@ -22,7 +22,7 @@ use crate::{
     memory::{
         VirtAddr,
         context::{
-            kernel_context,
+            UserContext, kernel_context,
             virtmem::{RESOLVE_CHUNK, Slot},
         },
     },
@@ -178,7 +178,6 @@ pub fn requeue_all() {
                     }) {
                         if let Some(t) = cursor.remove() {
                             assert!(!t.get_mutex_wait());
-                            t.note_requeue_event(4);
                             // Safety: not full, checked above.
                             unsafe { batch.push_unchecked(t) };
                         }
@@ -245,16 +244,9 @@ fn do_add_to_requeue(
     // If already on the list, skip. This can happen with spurious wakeups.
     // The find() + insert() is protected by the caller's lock, so no TOCTOU race.
     if !list.find(&thread.objid()).is_null() {
-        thread.note_requeue_event(2);
         return Some(thread);
     }
-    // Stamp after the insert, not before: rq=1 must prove the entry landed, or a silently
-    // no-op'd insert is indistinguishable from a vanished entry (the wakehunt6 gap). The clone
-    // is dropped under the caller's lock, which is safe here alone: the list now holds a
-    // reference, so this cannot be the last one.
-    let t = thread.clone();
     list.insert(thread);
-    t.note_requeue_event(if t.requeue_link.is_linked() { 1 } else { 8 });
     None
 }
 
@@ -282,7 +274,6 @@ pub fn add_to_requeue(thread: ThreadRef) {
             );
             let id = thread.objid();
             assert!(!thread.get_mutex_wait());
-            thread.note_requeue_event(3);
             crate::processor::sched::schedule_thread(thread);
             let requeue = get_requeue_list();
             // See `remove_from_requeue`: the removed reference must not be dropped under the
@@ -343,7 +334,7 @@ pub fn add_all_to_requeue(iter: impl IntoIterator<Item = ThreadRef>) {
     // that can release a `ThreadRef`** rather than at the end. Nothing may drop one while it is
     // held: `Thread::drop` takes sleeping mutexes
     // (`IdCounter::release`, `SecCtxMgr::drop`) that `Mutex::lock` refuses in a critical context.
-    // That is a panic rather than a slow path -- the one root-caused in `ocdperf.md` §5, reached
+    // That is a panic rather than a slow path -- the one reached
     // from `MemoryTracker::wake` under `DeferredUnmappingOps::run_all`.
     //
     // The two points are exactly:
@@ -416,7 +407,6 @@ pub fn remove_from_requeue(thread: &ThreadRef) {
         let mut list = requeue.list.lock();
         let removed = list.find_mut(&thread.objid()).remove();
         if removed.is_some() {
-            thread.note_requeue_event(7);
             // Exactly one decrement per removal. Two of these shipped in 1348d6f1 and stranded
             // threads: the count reached zero with an entry still linked, and `requeue_all`, the
             // idle-loop drain and the hardtick backstop all early-out on `count == 0`, so none of
@@ -482,10 +472,8 @@ pub fn claim_own_wakeup(thread: &ThreadRef) -> bool {
             if removed.is_some() {
                 requeue.count.fetch_sub(1, Ordering::SeqCst);
             }
-            thread.note_requeue_event(5);
             (removed, true)
         } else {
-            thread.note_requeue_event(6);
             (None, false)
         };
         (removed, claimed)
@@ -689,7 +677,7 @@ fn get_obj_and_offset(addr: VirtAddr) -> Result<(ObjectRef, usize, Option<*const
         .map(|x| &**x)
         .unwrap_or_else(|| &kernel_context());
     let object = vmc
-        .lookup_object_ref_cached(addr.try_into().map_err(|_| ArgumentError::InvalidAddress)?)
+        .lookup_object_ref(addr.try_into().map_err(|_| ArgumentError::InvalidAddress)?)
         .ok_or(ArgumentError::InvalidAddress)?;
     let offset = (addr.raw() as usize) % (1024 * 1024 * 1024); //TODO: arch-dep, centralize these calculations somewhere, see PageNumber
     Ok((object, offset, Some(addr.as_ptr())))
@@ -839,7 +827,7 @@ fn resolve_ops(ops: &[ThreadSync]) -> heapless::Vec<Resolved, RESOLVE_CHUNK> {
 
     let mut objs = [const { None }; RESOLVE_CHUNK];
     if !slots.is_empty() {
-        vmc.lookup_object_refs_cached(&slots, &mut objs[..slots.len()]);
+        vmc.lookup_object_refs(&slots, &mut objs[..slots.len()]);
     }
 
     let mut out = heapless::Vec::<Resolved, RESOLVE_CHUNK>::new();
@@ -879,7 +867,6 @@ pub(crate) fn thread_sync_cb_timeout(thread: ThreadRef, sleep_gen: u64) {
         return;
     }
     if thread.reset_sync_sleep() {
-        thread.note_sync_consumer(3);
         add_to_requeue(thread);
     }
     requeue_all();
@@ -911,9 +898,7 @@ fn simple_timed_sleep(timeout: &&mut Duration) {
     thread.end_sync_sleep();
     remove_from_requeue(&thread);
     timeout_key.release();
-    if thread.reset_sync_sleep() {
-        thread.note_sync_consumer(6);
-    }
+    thread.reset_sync_sleep();
     thread.reset_sync_sleep_done();
 }
 
@@ -934,9 +919,7 @@ pub fn optimized_single_sleep(op: ThreadSyncSleep) -> Result<bool> {
     block_or_claim(&thread, guard);
     let woke_up = trace_now();
     let _guard = thread.enter_critical();
-    if thread.reset_sync_sleep() {
-        thread.note_sync_consumer(6);
-    }
+    thread.reset_sync_sleep();
     thread.reset_sync_sleep_done();
     remove_from_requeue(&thread);
     drop(_guard);
@@ -993,9 +976,7 @@ fn optimized_single_sleep_timed(
     let _guard = thread.enter_critical();
     // Retire any outstanding timeout callback before touching the flags it would consume.
     thread.end_sync_sleep();
-    if thread.reset_sync_sleep() {
-        thread.note_sync_consumer(6);
-    }
+    thread.reset_sync_sleep();
     thread.reset_sync_sleep_done();
     drop(_guard);
     undo_sleep(&se);
@@ -1184,7 +1165,6 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
             // and schedule a running thread -- the run-queue double insert. block_or_claim's
             // outcomes all consume or keep the token; these two exits must too.
             if thread.reset_sync_sleep() {
-                thread.note_sync_consumer(4);
                 thread.reset_sync_sleep_done();
                 drop(guard);
             } else if !unsleeps.is_empty() {
@@ -1203,9 +1183,7 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
     // See simple_timed_sleep: retire any outstanding timeout callback before touching the flags it
     // would otherwise consume.
     thread.end_sync_sleep();
-    if thread.reset_sync_sleep() {
-        thread.note_sync_consumer(6);
-    }
+    thread.reset_sync_sleep();
     thread.reset_sync_sleep_done();
     drop(_guard);
     for op in &unsleeps {
@@ -1419,7 +1397,6 @@ fn ready_before_round(ops: &mut [ThreadSync]) -> Option<usize> {
 
 pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -> Result<usize> {
     let thread = current_thread_ref().unwrap();
-    super::note_thread_sync_ops(ops);
     syncbatch::note_call(ops);
     // Recursion: a second `sys_thread_sync` entered from inside the first one's round. The way in
     // is a fault on a pager-backed page the outer round touched, which reaches the pager's queue

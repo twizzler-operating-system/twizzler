@@ -170,7 +170,6 @@ unsafe impl GlobalAlloc for GlobalAllocWrapper {
             inner
                 .allocated_bytes
                 .fetch_add(layout.size(), Ordering::SeqCst);
-            super::kalloc_census::record_alloc(layout.size());
         }
 
         let ret = if layout.size() >= ferroc::config::SLAB_SIZE {
@@ -181,19 +180,8 @@ unsafe impl GlobalAlloc for GlobalAllocWrapper {
                 FerrocAllocator.allocate(layout).unwrap().as_ptr().cast()
             })
         };
-        super::kalloc_track::record_alloc(ret, layout.size());
 
         let end = Instant::now();
-        if false && current_thread_ref().is_some_and(|ct| ct.id() > 10) {
-            emerglogln!(
-                "{}: alloc: {}ns from {} ({} bytes)",
-                current_thread_ref().unwrap().id(),
-                (end - start).as_nanos(),
-                core::panic::Location::caller(),
-                layout.size()
-            );
-            //crate::panic::backtrace(false, None);
-        }
         trace_kalloc(layout, end - start, false);
         ret
     }
@@ -214,8 +202,6 @@ unsafe impl GlobalAlloc for GlobalAllocWrapper {
             inner
                 .allocated_bytes
                 .fetch_sub(layout.size(), Ordering::SeqCst);
-            super::kalloc_census::record_free(layout.size());
-            super::kalloc_track::record_free(ptr, layout.size());
             if layout.size() >= ferroc::config::SLAB_SIZE {
                 unsafe {
                     inner

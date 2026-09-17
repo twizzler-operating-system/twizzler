@@ -17,7 +17,7 @@ use twizzler_rt_abi::{
     object::Nonce,
 };
 
-use super::{inflight::NR_REQUESTS, inflight_mgr, request::ReqKind, request_pager_memory};
+use super::{inflight::NR_REQUESTS, request::ReqKind, request_pager_memory};
 use crate::{
     arch::{PhysAddr, memory::phys_to_virt},
     condvar::CondVar,
@@ -83,88 +83,6 @@ static SENDER: Once<RequestSender> = Once::new();
 static PAGER_Q_IDS: [core::sync::atomic::AtomicU64; 4] =
     [const { core::sync::atomic::AtomicU64::new(0) }; 4];
 
-/// Last-64 event trail for the pager queues: the fatal wake sequence as a transcript
-/// rather than a deduction. Codes: 1=kernel submit done (a=bell, b=cw now), 2=kernel ring
-/// fired (a=bell at ring), 3=park-validate (a=armed, b=tree value; offset's low bit carries
-/// accepted), 4=wakeup_word walk (a=door<<32|woken<<16|skipped, b=bell now).
-pub mod qtrail {
-    use crate::spinlock::Spinlock;
-
-    #[derive(Clone, Copy, Default)]
-    pub struct Ev {
-        pub seq: u64,
-        pub code: u8,
-        pub cpu: u8,
-        pub off: u32,
-        pub a: u64,
-        pub b: u64,
-    }
-
-    pub static TRAIL: Spinlock<([Ev; 64], u64)> = Spinlock::new((
-        [Ev {
-            seq: 0,
-            code: 0,
-            cpu: 0,
-            off: 0,
-            a: 0,
-            b: 0,
-        }; 64],
-        0,
-    ));
-
-    /// Master switch: the recording spinlock sits on every kernel pager-queue submit, so
-    /// it stays off outside an active hunt. The dump machinery stays wired.
-    pub const QTRAIL_ENABLE: bool = false;
-
-    pub fn record(code: u8, off: u32, a: u64, b: u64) {
-        if !QTRAIL_ENABLE {
-            return;
-        }
-        let cpu = crate::processor::mp::current_processor().id as u8;
-        let mut t = TRAIL.lock();
-        let seq = t.1;
-        t.1 += 1;
-        let idx = (seq % 64) as usize;
-        t.0[idx] = Ev {
-            seq,
-            code,
-            cpu,
-            off,
-            a,
-            b,
-        };
-    }
-
-    pub fn dump() {
-        let t = TRAIL.lock();
-        let total = t.1;
-        emerglogln!("  qtrail (last {} of {}):", total.min(64), total);
-        let start = total.saturating_sub(64);
-        for s in start..total {
-            let e = t.0[(s % 64) as usize];
-            emerglogln!(
-                "   #{} c{} code {} off {:x} a {:x} b {:x}",
-                e.seq,
-                e.cpu,
-                e.code,
-                e.off,
-                e.a,
-                e.b
-            );
-        }
-    }
-}
-
-/// Master gate for the wedge-hunt queue diagnostics (QBELL/QWAKE/QPAGE). MUST be checked
-/// *before* `is_pager_queue` at every diagnostic call site: `is_pager_queue` takes the global
-/// `PAGER_Q_IDS` spinlock, and those sites sit on the system-wide wake path (`wakeup_word`) and
-/// fault path. With the gate first the lock is never taken when this is off. Left on with the
-/// gate false, a diagnostic evaluated `is_pager_queue(...) && (offset check)` on every wake, which
-/// put that global lock on every futex/queue wake in the system -- net_tcp_throughput_pipelined
-/// +158% under 4-cpu contention (netab campaign; ping-pong's low wake rate barely felt it, which
-/// is why the control missed it). The pager SyncRegion wedge that needed these is fixed.
-pub const PAGER_QUEUE_DIAG: bool = false;
-
 pub fn is_pager_queue(id: ObjID) -> bool {
     use core::sync::atomic::Ordering::Relaxed;
     let p = id.parts();
@@ -174,11 +92,6 @@ pub fn is_pager_queue(id: ObjID) -> bool {
     let b1 = PAGER_Q_IDS[3].load(Relaxed);
     (p[0] == a0 && p[1] == a1) || (p[0] == b0 && p[1] == b1)
 }
-
-/// Completions the kernel's completion thread has taken off the queue, counted in kernel
-/// memory: against the completion queue's tail at wedge time, splits "never consumed" from
-/// "consumed but the tail writes were destroyed".
-pub static COMPL_CONSUMED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 static RECEIVER: Once<ManagedQueueReceiver<RequestFromPager, CompletionToPager>> = Once::new();
 
@@ -293,7 +206,7 @@ pub(super) fn pager_request_handler_main() {
 /// Dropping to zero means nothing took the frame: `add_frame_if_absent` declined because the object
 /// already had that page, which is what two overlapping in-flight requests produce by construction
 /// (`add_request` coalesces on an exact `ReqKind`, so a request overlapping another never compares
-/// equal to it -- `pagerperf.md` 18). The waste is counted in [`super::profile`], where it can be
+/// equal to it). The waste is counted in [`super::profile`], where it can be
 /// read against what was delivered rather than on its own.
 
 /// Why a large-page merge does or does not happen.
@@ -329,18 +242,6 @@ mod largepage {
         }
     }
 }
-
-/// A/B knob for the weight-side large-page merge, in the habit of `MAX_INSTALL_RUN` below.
-///
-/// `false` declines every merge, so a pager-backed object keeps 4 KiB leaves throughout --
-/// which is exactly Linux's page geometry on a file-backed mapping. That makes the 2 MiB
-/// advantage measurable on this OS alone with nothing else varied.
-///
-/// Gated here rather than on `candidate` so `largepage::record` still runs: the counter then
-/// reads `N candidates, N phys-aligned, 0 merged`, which proves the manipulation took. It also
-/// leaves request widening and the pager's aligned donations untouched, so the arm varies page
-/// geometry ALONE, with the I/O held identical.
-const LARGE_PAGE_MERGE: bool = true;
 
 /// A/B knob for the batched install. `1` restores the per-page path this replaced -- one lock, one
 /// presence walk, one mapping walk, one precharge and one TLB invalidation round *per page* -- so
@@ -461,8 +362,7 @@ fn pager_compl_handle_page_data(
         // `ensure_in_core_pager` checks this before *asking* for a large run, but a page
         // can arrive between the ask and this completion, and serving a required subrange
         // first makes partially-populated regions ordinary rather than rare.
-        let can_merge = LARGE_PAGE_MERGE
-            && phys_aligned
+        let can_merge = phys_aligned
             && request
                 .obj
                 .as_ref()
@@ -564,7 +464,7 @@ fn pager_compl_handle_page_data(
 ///
 /// The meta page is the object's last page, and `check_id` reads it on the first map of every
 /// object -- so without this it is a page-data round trip billed to the mapping path
-/// (`mapperf.md`: 49% of `insert_object`). Unlike the page-data path this needs no large-page
+/// (measured at 49% of `insert_object`). Unlike the page-data path this needs no large-page
 /// branch: it is one page, and the last one, so it can never start a large-aligned run.
 fn install_meta_page(obj: &ObjectRef, phys_range: PhysRange) -> bool {
     let pcount = phys_range.page_count();
@@ -613,7 +513,7 @@ fn install_meta_page(obj: &ObjectRef, phys_range: PhysRange) -> bool {
 /// For an external file there is nothing to move: the pager invents that metadata from the file's
 /// length, so the length is the only thing it actually has to send. Building it here costs one
 /// zeroed frame and ~64 bytes of writes, against either a `CopyUserPhys` on the single-outstanding
-/// pager->kernel channel (`pagerperf.md` 5) or a later fault when userspace reads `MEXT_SIZED`.
+/// pager->kernel channel or a later fault when userspace reads `MEXT_SIZED`.
 /// Same construction `initrd.rs` does for boot objects.
 ///
 /// `write_bytes` is deliberately not used: it goes through `ensure_in_core` for any pager-backed
@@ -794,7 +694,6 @@ pub(super) fn pager_compl_handler_main() {
         // `ObjectRef` refcount purely to hand it to a `remove` a few microseconds later, and cost
         // a second acquisition of this spinlock to do so. The id stays reserved until
         // `release_simple` below, so nothing can reuse the slot in between.
-        COMPL_CONSUMED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         let done = completion.1.flags().contains(KernelCompletionFlags::DONE);
         let idmap_start = Instant::now();
         let mut idmap = sender.idmap.lock();
@@ -898,36 +797,9 @@ pub(super) fn completion_recv_stats() -> Option<crate::queue::QueueRecvStats> {
     SENDER.poll().map(|s| s.queue.completion_recv_stats())
 }
 
-/// Lock-free subset of [sender_occupancy] safe to run from IPI context: atomic loads only.
-pub fn sender_kview() -> Option<((u64, u64, bool, bool), (u64, u64, bool, bool))> {
-    SENDER.poll().map(|s| s.queue.diag_pending())
-}
-
-/// Tail-slot `cmd_slot` of each sender subqueue via kernel mapping vs object tree
-/// ([crate::queue::QueueObject::slot_diag]). Takes the object's page-table lock; not IPI-safe.
-#[allow(clippy::type_complexity)]
-pub fn sender_slot_diag() -> Option<[(u64, u64, u32, Option<(u64, u64, usize)>); 2]> {
-    SENDER.poll().map(|s| s.queue.slot_diag())
-}
-
-/// Diagnostic for the hang report: sender idmap occupancy out of `NR_REQUESTS`, plus the
-/// count of completions ever consumed by the completion thread.
-pub fn sender_occupancy() -> Option<(
-    usize,
-    usize,
-    u64,
-    usize,
-    ((u64, u64, bool, bool), (u64, u64, bool, bool)),
-)> {
-    SENDER.poll().map(|s| {
-        (
-            s.idmap.lock().len(),
-            NR_REQUESTS,
-            COMPL_CONSUMED.load(core::sync::atomic::Ordering::Relaxed),
-            s.queue.object_ptr(),
-            s.queue.diag_pending(),
-        )
-    })
+/// Diagnostic for the hang report: sender idmap occupancy out of `NR_REQUESTS`.
+pub fn sender_occupancy() -> Option<(usize, usize)> {
+    SENDER.poll().map(|s| (s.idmap.lock().len(), NR_REQUESTS))
 }
 
 pub fn submit_pager_request(mut req: RequestFromKernel, obj: Option<&ObjectRef>, reqkind: ReqKind) {
@@ -975,8 +847,6 @@ pub fn submit_pager_request(mut req: RequestFromKernel, obj: Option<&ObjectRef>,
     // no use for it.
     req.set_submit_ns(Instant::now().into_time_span().as_nanos() as u64);
     sender.queue.submit(req, id);
-    let (sub, _) = sender.queue.diag_pending();
-    qtrail::record(1, 0x1140, sub.0, sub.1);
     // After the submit, so the segment covers the enqueue itself, including the overflow wait
     // above. Every caller drops the inflight lock before submitting, so taking it here is safe.
     super::lock_inflight_for(&stamp_key).with_request(&stamp_key, |r| r.mark_submitted());

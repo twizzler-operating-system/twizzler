@@ -6,8 +6,6 @@ pub mod allocator;
 pub mod context;
 pub mod frame;
 pub mod framecache;
-pub mod kalloc_census;
-pub mod kalloc_track;
 pub mod pagetables;
 pub mod tracker;
 

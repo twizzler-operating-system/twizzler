@@ -62,8 +62,6 @@ pub struct PendingCompLoad {
     root_sctx: ObjID,
     _start_1: Instant,
     _start_2: Instant,
-    _t_preloads: u64,
-    _t_root: u64,
 }
 
 /// A single compartment, loaded but not yet running.
@@ -249,13 +247,6 @@ impl Drop for RunCompLoader {
 
 const RUNTIME_NAME: &str = "libtwz_rt.so";
 
-/// Switch for the per-load phase counter (`LOADPHAS`): total / preloads / root load / relocate.
-///
-/// Answered round 8's question -- a compartment load is a median 31 ms, of which the root library's
-/// `load_library_in_compartment` is 24 ms and relocation 6.7 -- so it is off. Left in place because
-/// the next attempt on that 24 ms needs it back.
-const LOAD_PHASE_STATS: bool = false;
-
 impl RunCompLoader {
     // the runtime library might be in the dependency tree from the shared object files.
     // if not, we need to insert it.
@@ -348,15 +339,12 @@ impl RunCompLoader {
             })
             .try_collect()?;
 
-        let _t_preloads = _start_2.elapsed().as_nanos() as u64;
-        let _t_root_start = Instant::now();
         let mut loads = UnloadOnDrop(dynlink.load_library_in_compartment(
             root_comp_id,
             root_unlib.clone(),
             allowed_gates,
             &mut load_ctx,
         )?);
-        let _t_root = _t_root_start.elapsed().as_nanos() as u64;
 
         extra_load_ids.append(&mut extra_sctx_load_ids);
 
@@ -429,8 +417,6 @@ impl RunCompLoader {
             root_sctx: *load_ctx.set.get(&root_comp_id).unwrap(),
             _start_1,
             _start_2,
-            _t_preloads,
-            _t_root,
         })
     }
 }
@@ -456,8 +442,6 @@ impl PendingCompLoad {
             root_sctx,
             _start_1,
             _start_2,
-            _t_preloads,
-            _t_root,
         } = self;
 
         let _start_3 = Instant::now();
@@ -466,21 +450,6 @@ impl PendingCompLoad {
         }
         dynlink.relocate_all(root_id)?;
 
-        let _t_reloc = _start_3.elapsed().as_nanos() as u64;
-        // Where a compartment load's 20-100 ms actually goes (`sysperf.md` round 8). Recorded per
-        // load, deferred through statlog: this runs with the dynlink write lock held, so a console
-        // write here would be charged to the hold being investigated.
-        secgate::statlog::record_on(
-            LOAD_PHASE_STATS,
-            "LOADPHAS",
-            _start_1.elapsed().as_nanos() as u64 / 1000,
-            &[
-                _t_preloads / 1000,
-                _t_root / 1000,
-                _t_reloc / 1000,
-                extra_lids.len() as u64,
-            ],
-        );
         let is_binary = dynlink.get_library(root_id)?.is_binary();
         let root_comp = LoadInfo::new(
             dynlink,
@@ -678,17 +647,7 @@ impl Monitor {
         suspend_on_start: bool,
     ) -> Result<(), TwzError> {
         let deps = {
-            // Site 4 of the spawn-side lock-wait probe; see `load_compartment`'s `LCKWAIT`.
-            let _t = crate::mon::compartment::SPAWN_PHASE_STATS.then(Instant::now);
             let cmp = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
-            if let Some(t) = _t {
-                secgate::statlog::record_on(
-                    crate::mon::compartment::SPAWN_PHASE_STATS,
-                    "LCKWAIT",
-                    t.elapsed().as_micros() as u64,
-                    &[4],
-                );
-            }
             let rc = cmp.get(instance)?;
 
             if mondebug {
@@ -725,7 +684,6 @@ impl Monitor {
         }
 
         let _loop_start = Instant::now();
-        let mut _smt = core::time::Duration::ZERO;
         loop {
             // Check the state of this compartment.
             let state = self.load_compartment_flags(instance);
@@ -733,15 +691,6 @@ impl Monitor {
                 tracing::trace!(
                     "started main detected ready in {}ms",
                     _loop_start.elapsed().as_millis()
-                );
-                // Splits the `start` phase: how much is the monitor and kernel starting a thread,
-                // and how much is then waiting for the child's own runtime to come up. They want
-                // different fixes, and SPAWNPHA cannot tell them apart.
-                secgate::statlog::record_on(
-                    crate::mon::compartment::SPAWN_PHASE_STATS,
-                    "STARTSPL",
-                    _loop_start.elapsed().as_micros() as u64,
-                    &[_smt.as_micros() as u64],
                 );
                 return Ok(());
             }
@@ -756,18 +705,8 @@ impl Monitor {
                 }
             }
             let info = {
-                // Site 5 of the spawn-side lock-wait probe.
-                let _t = crate::mon::compartment::SPAWN_PHASE_STATS.then(Instant::now);
                 let (ref mut tmgr, ref mut cmp, ref mut dynlink, _, _) =
                     *crate::lockdiag::watched(self.locks.lock(ThreadKey::get().unwrap()));
-                if let Some(t) = _t {
-                    secgate::statlog::record_on(
-                        crate::mon::compartment::SPAWN_PHASE_STATS,
-                        "LCKWAIT",
-                        t.elapsed().as_micros() as u64,
-                        &[5],
-                    );
-                }
                 let rc = cmp.get_mut(instance)?;
 
                 let _start = Instant::now();
@@ -779,7 +718,6 @@ impl Monitor {
                     env,
                     suspend_on_start,
                 );
-                _smt += _start.elapsed();
                 tracing::trace!("start_main_thread in {}ms", _start.elapsed().as_millis());
 
                 r

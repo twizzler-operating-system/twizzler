@@ -78,7 +78,14 @@ cargo start-qemu --tests --qemu-options=--nographic
 boots a test-enabled image and runs both kernel and userspace test suites,
 exiting with the aggregate result (this is exactly what CI does, see
 `.github/workflows/build-and-test.yml`). `--benches`/`--bench <name>` runs
-benchmarks the same way.
+benchmarks the same way. `cargo test-all` runs one named scenario (see
+`xtask test --help`), building its own image unless you pass one. For
+anything beyond a single boot use
+`python3 many.py` (`-r ROUNDS --config <profile>-<accel>-<smp> --tag NAME`,
+`-j 8` for correctness sweeps): it builds per-tag masters and boots every
+lane against read-only snapshots, so lanes never contend for the shared
+disk image, and it writes results to `target/results/many-<tag>/`.
+`check-many.py` summarizes a running sweep.
 
 Kernel-space tests use `#[kernel_test]` (from `twizzler-kernel-macros`), not
 `#[test]` — a failing kernel test halts the whole system, so you read

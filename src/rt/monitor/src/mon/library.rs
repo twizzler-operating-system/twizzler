@@ -41,7 +41,6 @@ impl Monitor {
             .get_library(handle.id)
             .map_err(|_| GenericError::Internal)?;
         // write the library name to the per-thread simple buffer
-        super::ptstats::record(super::ptstats::Site::LibInfo);
         let pt = comps.get(instance)?.get_per_thread(thread);
         let name_len = pt.lock().unwrap().write_bytes(lib.name.as_bytes());
         let dynamic_ptr = lib.dynamic_ptr();
@@ -112,7 +111,6 @@ impl Monitor {
     ) -> Result<(Descriptor, usize), TwzError> {
         let (_, ref mut comps, ref mut dynlink, ref mut handles, _) =
             *crate::lockdiag::watched(self.locks.lock(super::reentrant_key()?));
-        super::ptstats::record(super::ptstats::Site::LoadLib);
         let rc = comps.get(caller)?;
         let per_thread = rc.get_per_thread(thread);
         let name_bytes = per_thread.lock().unwrap().read_bytes(name_len);
@@ -239,7 +237,6 @@ impl Monitor {
         // A read: symbol lookup mutates nothing, and the name comes out of the caller's own buffer.
         let (_, ref comps, ref dynlink, ref libhandles, _) =
             *crate::lockdiag::watched(self.locks.read(super::reentrant_key()?));
-        super::ptstats::record(super::ptstats::Site::LookupSym);
         let rc = comps.get(caller)?;
         let name_bytes = rc
             .get_per_thread(thread)

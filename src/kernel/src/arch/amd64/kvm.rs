@@ -37,12 +37,12 @@ const MSR_KVM_SYSTEM_TIME_ENABLE: u64 = 1;
 pub fn kvm_features() -> u32 {
     static FEATURES: Once<u32> = Once::new();
     *FEATURES.call_once(|| {
-        let sig = unsafe { core::arch::x86_64::__cpuid(KVM_CPUID_SIGNATURE) };
+        let sig = core::arch::x86_64::__cpuid(KVM_CPUID_SIGNATURE);
         // "KVMKVMKVM\0\0\0"
         if (sig.ebx, sig.ecx, sig.edx) != (0x4b4d_564b, 0x564b_4d56, 0x4d) {
             return 0;
         }
-        unsafe { core::arch::x86_64::__cpuid(KVM_CPUID_FEATURES) }.eax
+        core::arch::x86_64::__cpuid(KVM_CPUID_FEATURES).eax
     })
 }
 
@@ -315,17 +315,6 @@ const KVM_FEATURE_PV_TLB_FLUSH: u32 = 1 << 9;
 /// guest TLB before it next executes an instruction.
 const KVM_VCPU_FLUSH_TLB: u8 = 1 << 1;
 
-/// A/B knob for eliding TLB-shootdown IPIs to preempted vcpus (KVM PV TLB flush, feature bit 9).
-///
-/// A preempted target cannot take the IPI until the host reschedules it, so the sender's wait in
-/// [`PendingShootdown::do_wait`] lasts a host scheduling quantum while burning exactly the host
-/// cpu the target needs -- the mechanism behind the "TLB shootdown stalled" warnings on a
-/// contended host. With this on, such a target is handed to the hypervisor instead and never
-/// enters the wait set at all.
-///
-/// `false` restores the unconditional IPI+wait path; [`try_pv_flush_elide`] then always declines.
-pub const PV_TLB_FLUSH: bool = true;
-
 /// Try to hand a shootdown target's invalidation to the hypervisor instead of sending an IPI.
 ///
 /// Returns true only when the byte cmpxchg'd from exactly PREEMPTED to PREEMPTED|FLUSH_TLB. KVM
@@ -338,7 +327,7 @@ pub const PV_TLB_FLUSH: bool = true;
 /// returns false and the caller must send the IPI as before; treating pending-flush as success
 /// would race the host's xchg.
 pub fn try_pv_flush_elide(p: &Processor) -> bool {
-    if !PV_TLB_FLUSH || kvm_features() & KVM_FEATURE_PV_TLB_FLUSH == 0 {
+    if kvm_features() & KVM_FEATURE_PV_TLB_FLUSH == 0 {
         return false;
     }
     let va = p.arch.steal_va.load(Ordering::Acquire);
@@ -369,7 +358,7 @@ const PVPANIC_PANICKED: u8 = 1 << 0;
 /// hardware. cpuid directly, not [kvm_features]: this runs from the panic handler, where a
 /// `Once` in mid-initialization must not be re-entered.
 pub fn notify_panic() {
-    let hypervisor = unsafe { core::arch::x86_64::__cpuid(1) }.ecx & (1 << 31) != 0;
+    let hypervisor = core::arch::x86_64::__cpuid(1).ecx & (1 << 31) != 0;
     if hypervisor {
         unsafe { x86::io::outb(PVPANIC_PORT, PVPANIC_PANICKED) };
     }

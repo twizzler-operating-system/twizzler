@@ -31,6 +31,7 @@ members = [
     "src/srv/pager-srv",
     "src/test/logboi-test",
     "src/test/signal-test",
+    "src/test/simdtest",
     "src/lib/naming/naming-core",
     "src/lib/naming",
     "src/srv/naming-srv",
@@ -55,13 +56,12 @@ members = [
 
     "src/bin/sec",
 
-    #"src/bin/etl_twizzler",
     #"src/test/random_validation",
     #"src/test/randtest",
     #"src/test/stdfs_demo",
     "src/lib/virtio-gpu",
     #"src/lib/devmgr",
-    #"src/test/serialecho", "tools/serialtest",
+    #"src/test/serialecho",
 
     "src/test/ptest",
     "src/test/memlat",
@@ -75,12 +75,7 @@ members = [
     #"src/test/sqlite_test",
 
     #"src/test/persistent-hashmap-test",
-    # Temporarily out of the build for the target_family = "unix" work: `debug` pulls gdbstub,
-    # whose `conn/impls/mod.rs` gates `mod unixstream;` on bare `unix` and so now tries to
-    # import `std::os::unix::net` -- unix-domain sockets, which twizzler does not have. It is
-    # a one-line fix but gdbstub has no port yet. Not in the initrd either (see "crate:debug"
-    # below), so nothing ships differently -- but this must come back before the flip is done.
-    # "src/bin/debug",
+    "src/bin/debug",
     "src/bin/trace",
 
     "src/test/schedtest",
@@ -92,7 +87,6 @@ members = [
     "src/test/stdnet_test",
     "src/lib/twizzler-io",
     "src/bin/shell",
-    #"src/lib/sgtest", "src/srv/sgtest-srv",
     "src/lib/twizzler-net",
     "src/bin/ssh",
     "src/bin/sshd",
@@ -124,8 +118,6 @@ resolver = "2"
 # Standalone (plain main(), not #[test]) programs that `unittest` runs and grades by exit code
 # during `cargo test-all`. Entries carry args since some candidates are subcommand-driven.
 #
-# logboi-test is deliberately left out: it hits an intermittent #GP fault inside the compartment
-#
 # lltest covers runtime library loading (dlopen): symbol lookup, .init_array ctors, and TLS in a
 # dlopen'd module (tdata/tbss init, threads that predate the load catching up, per-thread
 # isolation). Re-enabled 2026-08-30; it used to hang SMP boots by jumping into an unmapped slot
@@ -135,6 +127,7 @@ test-programs = [
     { crate = "lltest" },
     { crate = "spawn-test" },
     { crate = "signal-test" },
+    { crate = "logboi-test" },
 ]
 # Plain files copied onto the data disk, as `{ from = <repo-relative>, to = <path in the image> }`.
 # The initrd holds only built artifacts and is read whole at boot; the disk is demand-paged, so
@@ -159,16 +152,16 @@ initrd = [
     #"lib:cache-srv",
     #"lib:display-srv",
     #"lib:net-srv",
-    #"lib:sgtest-srv",
     #"crate:unittest",
     #"crate:uuhelper",
-    #"crate:debug",
+    "crate:debug",
     #"crate:cache",
     "crate:trace",
     "crate:ctl",
     #"crate:gfxtest",
     "crate:shell",
     "crate:spawn-test",
+    "crate:logboi-test",
     "crate:signal-test",
     "crate:leakcheck",
     "crate:nullexit",
@@ -193,12 +186,10 @@ initrd = [
     #"crate:async-test",
 
     #"third-party:hello-world-rs"
-    #"crate:etl_twizzler",
     #"crate:stdfs_demo",
     #"crate:random_validation",
     #"crate:random_validation",
     #"crate:randtest",
-    #"crate:gadget",
     #"crate:serialecho",
     "lib:llt",
     "crate:lltest",
@@ -254,7 +245,7 @@ fs_extra = "1.3.0"
 futures = "0.3.21"
 futures-util = "0.3.21"
 gdbstub = "0.7"
-gdbstub_arch = "0.3"
+gdbstub_arch = "=0.3.2"
 getrandom = "=0.3.1"
 git2 = "0.20"
 gpt = "4.1"
@@ -440,6 +431,8 @@ async-net = { path = "src/ports/async-net" }
 # version already locked -- with one change: the `target_os = "twizzler"` arm moved ABOVE the
 # `unix` arm, which is what made the fork's parker unreachable in the first place.
 parking_lot_core = { path = "src/ports/parking_lot_core" }
+# `conn/impls/mod.rs` gates `mod unixstream` on bare `unix`; twizzler has no AF_UNIX.
+gdbstub = { path = "src/ports/gdbstub" }
 # The crates.io copy has no twizzler arm, so `native_libraries()` returns empty, `avma_to_svma`
 # always misses, and every symbolization is a silent no-op -- backtraces of bare addresses.
 # std's own copy already carries the port (library/backtrace/.../gimli/twizzler.rs); this is that

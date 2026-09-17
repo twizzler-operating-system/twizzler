@@ -210,10 +210,6 @@ pub mod enqueuestats {
 /// a profile they flow continuously; a sparse event spec is the case to watch.
 const ASYNC_SIGNAL_WATERMARK: usize = 64;
 
-/// Coalesce writer wakes in [`TraceMgr::signal_work`]. A const so the arms differ by one line and
-/// an A/B runs from one tree state.
-const COALESCE_WAKES: bool = true;
-
 const MAX_QUICK_ENABLED: usize = 10;
 const MAX_PENDING_ASYNC: usize = 1024;
 const MAX_SINK_PENDING: usize = 4096;
@@ -276,7 +272,7 @@ impl TraceMgr {
     /// for identical code, which makes it far too noisy to diagnose this on its own.
     fn signal_work(&self) {
         let mut sig = self.has_work.lock();
-        if COALESCE_WAKES && *sig {
+        if *sig {
             signalstats::coalesced();
             return;
         }

@@ -64,7 +64,7 @@ impl Ord for SyncRegionInfo {
 /// a whole region alongside a demand fault inside it -- and at that point a node is *placed* where
 /// the search will never look for it. `remove_request` then silently removes nothing: the request
 /// stays in the map forever, its waiter is never signalled, and its slot is never freed. That is
-/// the wedge recorded in `pagerperf.md` 18, and it is why it produced no panic and no timeout.
+/// the wedge this fixed, and it is why it produced no panic and no timeout.
 ///
 /// Note this loses no coalescing that was ever in effect: `add_request` looks up with `find`, which
 /// has always used the derived order, so overlapping requests never coalesced regardless. Doing it
@@ -221,7 +221,7 @@ impl ReqKind {
     ///
     /// [PagerFlags::PREFETCH] is part of the coalescing key, so a prefetch and the demand fault it
     /// was issued to pre-empt are two entries covering one range -- two transfers, the second of
-    /// which `Table::map` throws away (`pagerperf.md` 18's `DUP_PAGES`). It has to stay in the key,
+    /// which `Table::map` throws away (the `DUP_PAGES` counter). It has to stay in the key,
     /// because the pager routes and caps on it. So the demand side looks for the speculative twin
     /// explicitly instead.
     pub fn prefetch_twin(&self) -> Option<ReqKind> {

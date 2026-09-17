@@ -12,14 +12,10 @@ use twizzler_rt_abi::{
 
 use crate::{
     memory::{
-        context::virtmem::fault::{FaultStage, record_stage, stage_start},
         frame::{FrameRef, PHYS_LEVEL_LAYOUTS, max_level_for_addr},
         tracker::{FrameAllocFlags, FrameAllocator, allocprofile},
     },
-    obj::{
-        Object, ObjectRef, PageNumber, PtGuard,
-        pagetables::{FindFrameFlags, ObjectPageTable},
-    },
+    obj::{Object, ObjectRef, PageNumber, PtGuard, pagetables::FindFrameFlags},
     thread::current_thread_ref,
 };
 
@@ -28,89 +24,11 @@ enum ZeroOrFrame {
     Frame(usize, FrameRef),
 }
 
-/// Install a 2 MiB frame on the first fault into an empty 2 MiB region of an anonymous object.
-///
-/// **Off**, measured. The bet is that one fault beats 512, but it is paid up front and in full: the
-/// frame is zeroed synchronously on the faulting thread, and a large frame always comes from a
-/// never-touched buddy region, so the zero is really ~512 host page faults. Measured at ~1.5 ms
-/// each. A thread stack touches a handful of pages out of its whole span, so for that shape the
-/// bet loses badly.
-///
-/// A/B over one boot of the default workload, at the same endpoint:
-///
-/// | | on | off |
-/// |---|---|---|
-/// | page faults | 1,680 | 19,150 |
-/// | total fault time | 744 ms | 600 ms |
-/// | large frames zeroed | 357 / 644 ms | 63 / 86 ms |
-/// | small frames zeroed | 87,244 / 9 ms | 105,515 / 63 ms |
-///
-/// So 11x the faults still comes out ahead, because the zeroing it avoids costs far more than the
-/// extra faults do. Left as a switch because that ranking is workload-dependent: something that
-/// densely touches large regions pays the zeroing either way and would rather have one fault.
-///
-/// Only the anonymous path. The pager path builds its own large pages out of read-ahead, and its
-/// 2 MiB alignment is load-bearing in `pager_compl_handle_page_data`.
-pub(crate) const TRY_LARGE_ANON_PAGES: bool = false;
-
-/// Let [`Object::zero_range`]'s partial head/tail page leave an absent page absent, instead of
-/// faulting it in through `set_bytes`/`POPULATE` only to memset it to zero.
-///
-/// Absent means zero on every path that reaches there -- `zero_range` sends a pager-backed object
-/// to `set_bytes` wholesale before it splits the range, and for the rest `ensure_in_core` fills an
-/// absent page with a `ZEROED` frame -- so the allocate, map and memset buy nothing.
-pub(crate) const ZERO_PARTIAL_SKIP_ABSENT: bool = true;
-
-/// Install an anonymous fault-around run in **one** descent of the object page table.
-///
-/// The fill loop below calls `map_page` once per page, and `map_page`'s cost is per *call*, not
-/// per page: a walk from the root, a `Consistency` construction, a `tables_needed` predictor, a
-/// frame-allocator borrow and take/drop, and a consistency epilogue. A zero-fill fault would pay
-/// all of that once per page to install [`ANON_FAULT_AROUND`] adjacent pages into the same leaf
-/// table. [`ObjectPageTable::map_frames`] pays it once for the whole run.
-///
-/// The per-page spans it should collapse to a quarter (`many-pfdiag`, probe on, per `map_page`):
-/// `cons_new` 45, `precharge` 193 (of which the predictor is 113), `consist` 80, `drop_fa` 84,
-/// plus `descend` inside `walk`. What stays per page is the leaf entry write and the frame.
-///
-/// Falsifier is `PERFMARK-MAPFRAMES pages_per_call`, not the clock: ~`ANON_FAULT_AROUND` * 100
-/// means the runs coalesced, ~100 means they did not and anything the clock shows has another
-/// cause. Grep the const for the current value -- quoting a number here is how the last three
-/// const/prose mismatches in this tree happened.
-pub(crate) const FILL_BATCH: bool = true;
-
 /// Cap on one batch. `ensure_in_core` is reached with counts larger than `ANON_FAULT_AROUND` from
 /// other callers and the buffer is on the stack, so the bound is stated here rather than inherited
 /// from whoever called. **It also caps fault-around**: a run longer than this splits into two
 /// `map_frames` calls, so raising `ANON_FAULT_AROUND` past it needs this raised too.
 pub(crate) const FILL_BATCH_MAX: usize = 16;
-
-/// Whether a volatile object's first touch of an empty region actually gets a large frame.
-///
-/// The allocation below is a non-waiting `try_allocate` at level 1, so it fails silently and falls
-/// back to filling the region 4 KiB at a time -- which is how regions end up merely *promotable*
-/// rather than large (`promote.md`). Nothing distinguished "never attempted" from "attempted and
-/// refused" before this.
-mod largealloc {
-    use core::sync::atomic::{AtomicU64, Ordering};
-
-    static ATTEMPTS: AtomicU64 = AtomicU64::new(0);
-    static FAILED: AtomicU64 = AtomicU64::new(0);
-
-    pub fn record(ok: bool) {
-        if !ok {
-            FAILED.fetch_add(1, Ordering::Relaxed);
-        }
-        let n = ATTEMPTS.fetch_add(1, Ordering::Relaxed) + 1;
-        if n.is_power_of_two() {
-            log::info!(
-                "LARGEALLOC: {} up-front large-frame allocations, {} failed",
-                n,
-                FAILED.load(Ordering::Relaxed),
-            );
-        }
-    }
-}
 
 impl Object {
     fn do_with_frame<R>(
@@ -130,21 +48,9 @@ impl Object {
         if flags.contains(FindFrameFlags::POPULATE) || self.use_pager() {
             pt = self.ensure_in_core(pt, pn, 1, &mut false, &mut false)?;
         }
-        let mut did_cow = false;
-        let r = pt.with_frame(offset as u64, flags, &mut did_cow, |frame_offset, frame| {
+        pt.with_frame(offset as u64, flags, &mut false, |frame_offset, frame| {
             f(frame_offset, frame)
-        });
-        if crate::pager::queues::PAGER_QUEUE_DIAG
-            && did_cow
-            && crate::pager::is_pager_queue(self.id())
-        {
-            logln!(
-                "QPAGE-COW {} offset {:x} (kernel-side WRITE lookup forked the frame)",
-                self.id(),
-                offset
-            );
-        }
-        r
+        })
     }
 
     fn with_frame<R>(
@@ -236,25 +142,6 @@ impl Object {
     ) -> Result<(u64, u64, usize), TwzError> {
         let aoffset = offset & !(core::mem::size_of::<u64>() - 1);
         self.with_frame(aoffset, FindFrameFlags::empty(), |po, frame| {
-            let val = unsafe {
-                frame
-                    .virtaddr()
-                    .as_ptr::<u64>()
-                    .byte_add(po)
-                    .read_volatile()
-            };
-            (frame.start_address().raw(), val, frame.size())
-        })
-    }
-
-    /// Diagnostic: `read_atomic_64`'s exact lookup (POPULATE|WRITE) but reporting the backing
-    /// frame too, so a stale value can be attributed to a stale frame rather than argued about.
-    pub fn read_word_with_phys_rw(
-        self: &ObjectRef,
-        offset: usize,
-    ) -> Result<(u64, u64, usize), TwzError> {
-        let aoffset = offset & !(core::mem::size_of::<u64>() - 1);
-        self.with_frame(aoffset, FindFrameFlags::WRITE, |po, frame| {
             let val = unsafe {
                 frame
                     .virtaddr()
@@ -537,9 +424,9 @@ impl Object {
     #[track_caller]
     pub fn ensure_in_core<'a>(
         self: &'a ObjectRef,
-        mut guard: PtGuard<'a>,
-        mut page: PageNumber,
-        mut page_count: usize,
+        guard: PtGuard<'a>,
+        page: PageNumber,
+        page_count: usize,
         pager_was_used: &mut bool,
         all_were_present: &mut bool,
     ) -> Result<PtGuard<'a>, TwzError> {
@@ -582,8 +469,8 @@ impl Object {
     fn ensure_in_core_inner<'a>(
         self: &'a ObjectRef,
         mut guard: PtGuard<'a>,
-        mut page: PageNumber,
-        mut page_count: usize,
+        page: PageNumber,
+        page_count: usize,
         pager_was_used: &mut bool,
         all_were_present: &mut bool,
         is_fault: bool,
@@ -620,41 +507,10 @@ impl Object {
         // unacceptable here -- it would block every other fault on this object -- and there is
         // normally nothing to wait for, so the unconditional drop-and-retake this used to do cost
         // an extra acquisition (~750 ns) on every fill fault to insure against the rare case.
-        let t_pre = stage_start();
         if !first_is_present && alloc.precharge_nowait(page_count) < page_count {
             drop(guard);
             alloc.precharge(page_count, FrameAllocFlags::WAIT_OK);
             guard = self.lock_page_tables();
-        }
-        record_stage(FaultStage::Precharge, t_pre);
-
-        if TRY_LARGE_ANON_PAGES
-            && page != PageNumber::meta_page()
-            && guard.is_empty_at_level(page.as_byte_offset() as u64, 1)
-        {
-            let nr_pages_for_large = PHYS_LEVEL_LAYOUTS[1].size() / PageNumber::PAGE_SIZE;
-            let large_page = page.align_down(nr_pages_for_large);
-            let pre_covered = page - large_page;
-            let mut alloc = FrameAllocator::new(FrameAllocFlags::ZEROED, PHYS_LEVEL_LAYOUTS[1]);
-            let large_frame = alloc.try_allocate();
-            largealloc::record(large_frame.is_some());
-            if let Some(large_frame) = large_frame {
-                *all_were_present = false;
-                guard.map_page_probed(
-                    large_page.as_byte_offset() as u64,
-                    large_frame,
-                    !self.use_pager(),
-                )?;
-                page = large_page.offset(nr_pages_for_large);
-                page_count = page_count.saturating_sub(nr_pages_for_large - pre_covered);
-
-                log::trace!(
-                    "mapped large page at offset {:x} in object {} ({} pages remaining)",
-                    large_page.as_byte_offset(),
-                    self.id(),
-                    page_count
-                );
-            };
         }
 
         log::debug!(
@@ -665,131 +521,58 @@ impl Object {
             current_thread_ref().map(|ct| ct.id()).unwrap_or(0),
             core::panic::Location::caller()
         );
-        let t_fill = stage_start();
-        // Timed with the raw counters rather than `record_stage`: the parts and the whole have to
-        // be measured the same way for "sum of parts against the whole" to mean anything, and a
-        // stage costs an interrupt-disable and a per-cpu lock per call -- five per page here.
-        let t_loop = allocprofile::start();
-        if FILL_BATCH {
-            let mut i = 0;
-            while i < page_count {
-                let t = allocprofile::start();
-                let empty = guard.is_empty_at_level(page.offset(i).as_byte_offset() as u64, 0);
-                allocprofile::record(&allocprofile::FILL_EMPTY_NS, t);
-                if !empty {
-                    i += 1;
-                    continue;
-                }
-                // The emptiness check stays per page even though the install is batched:
-                // `Table::map` consumes an offer for an entry it finds present, so a run allowed
-                // to span one would drop that frame on the floor. Gather the maximal absent run.
-                let mut frames: heapless::Vec<FrameRef, FILL_BATCH_MAX> = heapless::Vec::new();
-                let mut j = i;
-                while j < page_count && !frames.is_full() {
-                    if j > i {
-                        let t = allocprofile::start();
-                        let empty =
-                            guard.is_empty_at_level(page.offset(j).as_byte_offset() as u64, 0);
-                        allocprofile::record(&allocprofile::FILL_EMPTY_NS, t);
-                        if !empty {
-                            break;
-                        }
-                    }
-                    let t = allocprofile::start();
-                    let frame = alloc.try_allocate();
-                    allocprofile::record(&allocprofile::FILL_TAKE_NS, t);
-                    let Some(frame) = frame else {
-                        // Out of precharge mid-run. A short batch is correct -- the next loop
-                        // iteration re-checks and retries -- but an empty one cannot make
-                        // progress, so that is the caller's error.
-                        if frames.is_empty() {
-                            return Err(ResourceError::OutOfMemory.into());
-                        }
-                        break;
-                    };
-                    let _ = frames.push(frame);
-                    j += 1;
-                }
-                *all_were_present = false;
-                allocprofile::add(&allocprofile::FILL_ITERS, frames.len() as u64);
-                let mut installed = 0;
-                let t = allocprofile::start();
-                let r = guard.map_frames(
-                    page.offset(i).as_byte_offset() as u64,
-                    &frames,
-                    true,
-                    &mut installed,
-                );
-                if allocprofile::TIME_ALLOCS {
-                    let dur = allocprofile::elapsed_ns(t);
-                    allocprofile::add(&allocprofile::FILL_MAP_NS, dur);
-                    allocprofile::record_map_bucket(dur);
-                }
-                if let Err(e) = r {
-                    log::error!(
-                        "failed to map {} pages at offset {:x} in object {}",
-                        frames.len(),
-                        page.offset(i).as_byte_offset(),
-                        self.id()
-                    );
-                    alloc.abort(frames[installed..].iter().copied());
-                    return Err(e);
-                }
-                i = j;
+        let mut i = 0;
+        while i < page_count {
+            let empty = guard.is_empty_at_level(page.offset(i).as_byte_offset() as u64, 0);
+            if !empty {
+                i += 1;
+                continue;
             }
-            allocprofile::record(&allocprofile::FILL_LOOP_NS, t_loop);
-            record_stage(FaultStage::Fill, t_fill);
-            return Ok(guard);
-        }
-        for i in 0..page_count {
-            let offset = page.offset(i).as_byte_offset() as u64;
-            let t = allocprofile::start();
-            let empty = guard.is_empty_at_level(offset, 0);
-            allocprofile::record(&allocprofile::FILL_EMPTY_NS, t);
-            if empty {
-                // The rest of the per-page probes only say anything with timing on, and the
-                // bucket one would report every call as sub-microsecond with it off.
-                log::trace!(
-                    "filling frame at offset {:x} in object {}",
-                    offset,
+            // The emptiness check stays per page even though the install is batched:
+            // `Table::map` consumes an offer for an entry it finds present, so a run allowed
+            // to span one would drop that frame on the floor. Gather the maximal absent run.
+            let mut frames: heapless::Vec<FrameRef, FILL_BATCH_MAX> = heapless::Vec::new();
+            let mut j = i;
+            while j < page_count && !frames.is_full() {
+                if j > i {
+                    let empty = guard.is_empty_at_level(page.offset(j).as_byte_offset() as u64, 0);
+                    if !empty {
+                        break;
+                    }
+                }
+                let frame = alloc.try_allocate();
+                let Some(frame) = frame else {
+                    // Out of precharge mid-run. A short batch is correct -- the next loop
+                    // iteration re-checks and retries -- but an empty one cannot make
+                    // progress, so that is the caller's error.
+                    if frames.is_empty() {
+                        return Err(ResourceError::OutOfMemory.into());
+                    }
+                    break;
+                };
+                let _ = frames.push(frame);
+                j += 1;
+            }
+            *all_were_present = false;
+            allocprofile::add(&allocprofile::FILL_ITERS, frames.len() as u64);
+            let mut installed = 0;
+            let r = guard.map_frames(
+                page.offset(i).as_byte_offset() as u64,
+                &frames,
+                &mut installed,
+            );
+            if let Err(e) = r {
+                log::error!(
+                    "failed to map {} pages at offset {:x} in object {}",
+                    frames.len(),
+                    page.offset(i).as_byte_offset(),
                     self.id()
                 );
-                *all_were_present = false;
-                allocprofile::add(&allocprofile::FILL_ITERS, 1);
-                // Back to back: whatever this reads is the floor of every other span here.
-                let t_probe = allocprofile::start();
-                allocprofile::record(&allocprofile::PROBE_NS, t_probe);
-                let t = allocprofile::start();
-                let frame = alloc.try_allocate().ok_or(ResourceError::OutOfMemory)?;
-                allocprofile::record(&allocprofile::FILL_TAKE_NS, t);
-                let t = allocprofile::start();
-                let ints = crate::interrupt::taken();
-                // The anonymous fill is the whole probed population: a frame allocated zeroed
-                // here, installed here, and never seen by the pager. See `zeroprobe`.
-                let r = guard.map_page_probed(offset, frame, !self.use_pager());
-                if allocprofile::TIME_ALLOCS {
-                    allocprofile::add(
-                        &allocprofile::FILL_MAP_INTS,
-                        crate::interrupt::taken() - ints,
-                    );
-                    let dur = allocprofile::elapsed_ns(t);
-                    allocprofile::add(&allocprofile::FILL_MAP_NS, dur);
-                    allocprofile::record_map_bucket(dur);
-                }
-                if let Err(e) = r {
-                    log::error!(
-                        "failed to map page at offset {:x} in object {}",
-                        offset,
-                        self.id()
-                    );
-                    alloc.abort([frame]);
-                    return Err(e);
-                }
+                alloc.abort(frames[installed..].iter().copied());
+                return Err(e);
             }
+            i = j;
         }
-        allocprofile::record(&allocprofile::FILL_LOOP_NS, t_loop);
-        record_stage(FaultStage::Fill, t_fill);
-
         Ok(guard)
     }
 
@@ -822,7 +605,7 @@ impl Object {
             }
             *all_were_present = false;
             let frame = alloc.try_allocate().ok_or(ResourceError::OutOfMemory)?;
-            if let Err(e) = guard.map_page_probed(offset, frame, !self.use_pager()) {
+            if let Err(e) = guard.map_page(offset, frame) {
                 alloc.abort([frame]);
                 return Err(e);
             }
@@ -843,7 +626,7 @@ impl Object {
     /// the FOT growing downward from it (`resolve_fot` reads `meta.cast::<FotEntry>().sub(idx+1)`),
     /// so `fotcount` entries occupy `[meta - fotcount*size_of::<FotEntry>(), meta)`. All of it is
     /// past `known_len` and all of it is real, so `known_len` alone cannot gate zero-fill; this is
-    /// the bound the disabled-`ZERO_FILL_PAST_EOF`-era comment named.
+    /// the bound the earlier zero-fill comment named.
     ///
     /// Read from the *resident* meta page, never populated: populating from here would ask the
     /// pager mid-fault, and `None` (meta absent) simply declines to the pager path -- correct, just
@@ -871,58 +654,9 @@ impl Object {
         Some(PageNumber::from_offset(region_start))
     }
 
-    /// Whether a fault waits only for the pages it asked for, or for the whole region the widening
-    /// below adds around them. See the note at `required` inside [Object::ensure_in_core_pager].
-    const SPLIT_ON_REQUIRED: bool = true;
-
     /// How many large-page regions a touch of an empty region is widened to. See the note at the
     /// clamp in [Object::ensure_in_core_pager]; `2` is the historical behaviour.
     pub(crate) const READAHEAD_REGIONS: usize = 2;
-
-    /// Whether a widened read-ahead range is submitted as one request per 2 MiB region instead of
-    /// one contiguous request spanning them all.
-    ///
-    /// The point is concurrency, not transfer: the pager serves one request on one lane, so a
-    /// single 1024-page request cannot use more than one of its workers however many it has. Two
-    /// 512-page requests can. Measured against `pagepar`, which is the workload built to have
-    /// several page-ins outstanding at once. Set false to restore the single-request shape.
-    ///
-    /// Measured on: kernel max-outstanding 5 -> 11, `REQSTATS` 3 -> 6, and large-page merges *rose*
-    /// from 8-11 to 32 of 32 candidates -- so cutting on region boundaries demonstrably costs no
-    /// merges, which is the tradeoff `page_data_request` warns about for arbitrary splits.
-    ///
-    /// **Off, because on this workload the depth it bought was phantom.** The first attempt raised
-    /// depth to 11 and merges to 32/32, but also doubled pages delivered (11k -> 24.9k) -- the
-    /// extra pages were holes past EOF, from a short file's second region lying wholly beyond the
-    /// object. With that fixed on both sides (the clamp above, and the `start > max_len` case in
-    /// `handle_page_data_request_task`) delivery came back to 11.6k and *the depth went with it*:
-    /// max-outstanding 11 -> 5, merges 32 -> 8, i.e. exactly the pre-split baseline.
-    ///
-    /// So the concurrency was the hole requests, and the 32 merges were merges of holes. Once the
-    /// widening is correctly trimmed, `pagepar`'s files are smaller than one 2 MiB region and there
-    /// is nothing left to split. The mechanism is sound and costs no merges -- worth revisiting for
-    /// a workload of multi-region objects -- but it does nothing here, and "on" would imply
-    /// otherwise.
-    const SPLIT_REQ_PER_REGION: bool = false;
-
-    /// Whether a demand fault past `known_len` and below the metadata floor is backed with a zero
-    /// frame instead of a pager round trip. See the block in [Object::ensure_in_core_pager] and
-    /// [Object::zero_fill_floor]. An A/B switch: the fault path is subtle enough that being able to
-    /// disable it without a source change is worth one `if`.
-    /// Safe only for objects whose `known_len` is an exact logical EOF
-    /// ([Object::known_len_is_exact] -- created-this-boot or external-file-backed). A first cut
-    /// keyed on `known_len` alone corrupted native stored objects, whose reported length is a
-    /// synced-page extent rather than an EOF, and manifested as a symbol-lookup failure loading
-    /// a later library (`Naming(NotFound)` at init's network setup). See
-    /// scratchpad/zerofill-findings.md. Gated on an *exact* `known_len`
-    /// ([Object::known_len_is_exact], i.e. created-this-boot or external-file) and on being a
-    /// non-speculative demand fault. Past an exact EOF the store provably holds nothing, so a
-    /// read there is as correctly a zero as a write; both fault kinds qualify. rustc's /ext
-    /// target files are external objects, which is where the build win lives.
-    const ZERO_FILL_PAST_EOF: bool = true;
-
-    /// DIAG: log zero-fill fires. Off for measurement.
-    const ZERO_FILL_DIAG: bool = false;
 
     /// `flags` distinguishes a demand fault from speculation. It changes nothing about which pages
     /// are requested -- the point of driving this path with [PagerFlags::PREFETCH] rather than
@@ -958,11 +692,7 @@ impl Object {
         // resident meta page). Restricted to the fault path (`is_fault`) and to the caller's own
         // range lying wholly below the floor; a range straddling metadata falls through to the
         // pager, which reads the FOT.
-        if Self::ZERO_FILL_PAST_EOF
-            && is_fault
-            && !speculative
-            && page != PageNumber::meta_page()
-            && self.known_len_is_exact()
+        if is_fault && !speculative && page != PageNumber::meta_page() && self.known_len_is_exact()
         {
             if let Some(len) = self.known_len() {
                 // An external file's object pages sit one null page above the file's bytes (the
@@ -987,20 +717,6 @@ impl Object {
                                 .min(floor.num());
                             let count = widened_end - page.num();
                             crate::pager::profile::PAGER_PROFILE.zero_filled(count);
-                            if Self::ZERO_FILL_DIAG {
-                                static N: AtomicU64 = AtomicU64::new(0);
-                                if N.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 64 {
-                                    emerglogln!(
-                                        "ZEROFILL obj={} known_len={} page={:x} count={} floor={:x} present={}",
-                                        self.id(),
-                                        len,
-                                        page.as_byte_offset(),
-                                        count,
-                                        floor.as_byte_offset(),
-                                        !guard.is_empty_at_level(page.as_byte_offset() as u64, 0),
-                                    );
-                                }
-                            }
                             return self.fill_zero_pages(guard, page, count, all_were_present);
                         }
                         Some(_) => crate::pager::profile::PAGER_PROFILE.zero_fill_declined(true),
@@ -1013,12 +729,8 @@ impl Object {
         // `page_count`. Everything the widening adds is speculative: it exists to install a large
         // page and to save later faults, and nothing is blocked on it. Handing it to
         // `ensure_in_core` is what lets the wait end when this range is backed rather than when
-        // the whole widened region is (`pagerperf.md` 11).
-        //
-        // `None` reproduces the old behaviour exactly -- an empty required range on the wire makes
-        // the pager serve the request in address order as one segment, and the kernel wait for all
-        // of it -- so this is a one-rebuild A/B, in the habit of `PIPELINE_DEPTH`.
-        let required = Self::SPLIT_ON_REQUIRED.then_some((page, page_count));
+        // the whole widened region is.
+        let required = Some((page, page_count));
         // The caller's own end, before the widening moves it. The trim below never goes under this.
         let asked_end = page.offset(page_count);
         log::debug!(
@@ -1047,7 +759,7 @@ impl Object {
             // region everywhere.
             //
             // `READAHEAD_REGIONS = 2` keeps that window deliberately rather than by accident, and
-            // is what the measurements in `pagerperf.md` and `mapperf.md` were taken against. It is
+            // is what the pager and map measurements were taken against. It is
             // not free to lower: object page 0 is never delivered, so a run covering region 0
             // starts at page 1 and fails the 2MB-alignment test in `pager_compl_handle_page_data`.
             // The spill into region 1 is the only reason a first-touch fault installs a large page
@@ -1079,8 +791,9 @@ impl Object {
         // `pages_requested` reports, and it is what every read-amplification number is computed
         // from.
         //
-        // Emphatically *not* the reasoning behind [ZERO_FILL_PAST_EOF] above, which is off because
-        // it is wrong: "past `known_len`" does not mean "the store has nothing there", since an
+        // Emphatically *not* the reasoning behind the zero-fill above, which is gated on an exact
+        // EOF and the metadata floor: "past `known_len`" alone does not mean "the store has
+        // nothing there", since an
         // object's metadata -- the meta page and the FOT growing down from it -- lives at the top
         // of the address range and is entirely past the data length. So this fabricates nothing.
         // All it does is decline to *speculate* past the point where speculation cannot pay.
@@ -1089,7 +802,7 @@ impl Object {
         // range survives verbatim however far past `data_end` it reaches, so a fault in the
         // metadata region still asks for exactly the pages it faulted on. This used to bail out
         // entirely in that case, which left 33 widenings a boot un-trimmed at their full 1024
-        // pages -- and once `SPLIT_REQ_PER_REGION` cut those into per-region requests, the second
+        // pages -- and when per-region request splitting was tried, the second
         // region lay wholly past the length and the pager served it as ~512 pages of holes.
         match self.known_len() {
             // Rounded up: a length landing mid-page still has that page's data behind it.
@@ -1110,24 +823,7 @@ impl Object {
 
         let push_reqs =
             |pn: PageNumber, len: usize, reqs: &mut heapless::Vec<(PageNumber, usize), 16>| {
-                // A new 2 MiB region starts a new request rather than extending the last one.
-                //
-                // The widened range is contiguous by construction, so coalescing turned it into a
-                // single request covering every region -- and one request is one unit of work for
-                // the pager, served by one lane. That is why the submit-all-then-wait split in
-                // `ensure_in_core` changed nothing: there was never a second request to overlap
-                // with the first.
-                //
-                // Splitting *here* specifically costs no large-page merges. A merge requires the
-                // object page to be 2 MiB-aligned (`pager_compl_handle_page_data`), so a region
-                // boundary is the one place a request can be cut without ever landing inside a
-                // run that would have merged -- which is what the warning against splitting
-                // freely in `page_data_request` is about.
-                let starts_region = Self::SPLIT_REQ_PER_REGION
-                    && pn
-                        .as_byte_offset()
-                        .is_multiple_of(PHYS_LEVEL_LAYOUTS[1].size());
-                if reqs.is_empty() || starts_region {
+                if reqs.is_empty() {
                     reqs.push((pn, len)).unwrap();
                 } else {
                     let (last_page, last_count) = reqs.last_mut().unwrap();
@@ -1407,21 +1103,6 @@ impl Object {
         // run the inner guard's wait under the outer lock.
         PtGuard::release_two(self_pt, dst_pt);
 
-        if false {
-            let ok = self.obj_memcmp(dst, len, src_offset, dst_offset)?;
-            if !ok {
-                log::error!(
-                    "cow_copy: memcmp failed after copy from {} to {} (src_offset {:x}, dst_offset {:x}, len {})",
-                    self.id(),
-                    dst.id(),
-                    src_offset,
-                    dst_offset,
-                    len
-                );
-            }
-            assert!(ok);
-        }
-
         Ok(())
     }
 
@@ -1503,13 +1184,7 @@ impl Object {
     /// `setup_zero_range` relies on when it zeroes a whole page by dropping its frame.
     ///
     /// `WRITE` is still passed, so a present COW page is broken rather than written through.
-    ///
-    /// Off, this is `set_bytes` exactly as before, so it is an A/B axis rather than a code path
-    /// that has to be removed.
     fn zero_partial_page(self: &ObjectRef, offset: usize, len: usize) -> Result<(), TwzError> {
-        if !ZERO_PARTIAL_SKIP_ABSENT {
-            return self.set_bytes(offset, len, 0);
-        }
         self.do_with_frame(offset, FindFrameFlags::WRITE, |frame_offset, frame| {
             let Some(frame) = frame else {
                 return;
@@ -1560,47 +1235,6 @@ impl Object {
         );
         pt.setup_zero_range(offset as u64, len, !self.use_pager())?;
         Ok(())
-    }
-
-    pub fn obj_memcmp(
-        self: &ObjectRef,
-        other: &ObjectRef,
-        mut len: usize,
-        mut self_offset: usize,
-        mut other_offset: usize,
-    ) -> Result<bool, TwzError> {
-        if len == 0 {
-            return Ok(true);
-        }
-
-        while len > 0 {
-            let cmp_len = core::cmp::min(len, PHYS_LEVEL_LAYOUTS[0].size());
-            let mut self_buf = [0u8; PHYS_LEVEL_LAYOUTS[0].size()];
-            let mut other_buf = [0u8; PHYS_LEVEL_LAYOUTS[0].size()];
-
-            self.read_bytes(&mut self_buf[0..cmp_len], self_offset)?;
-            other.read_bytes(&mut other_buf[0..cmp_len], other_offset)?;
-
-            if self_buf[0..cmp_len] != other_buf[0..cmp_len] {
-                log::error!(
-                    "obj_memcmp: memcmp failed between {} and {} (self_offset {:x}, other_offset {:x}, len {}): {:?} vs {:?}",
-                    self.id(),
-                    other.id(),
-                    self_offset,
-                    other_offset,
-                    cmp_len,
-                    &self_buf[0..cmp_len],
-                    &other_buf[0..cmp_len]
-                );
-                return Ok(false);
-            }
-
-            self_offset += cmp_len;
-            other_offset += cmp_len;
-            len -= cmp_len;
-        }
-
-        Ok(true)
     }
 }
 

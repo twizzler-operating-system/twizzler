@@ -41,8 +41,8 @@ pub struct ThreadSched {
     pub timeslice: AtomicU32,
     /// When this thread was last made runnable, in raw bench-clock ticks, and how that wake was
     /// classified. Read and cleared when it next reaches a cpu, giving wake-to-run latency per
-    /// wake rather than per boot -- which is the measurement `schedtime.md` keeps needing and
-    /// inferring around. Zero means "no wake outstanding".
+    /// wake rather than per boot -- which is the measurement the wake-latency work kept needing
+    /// and inferring around. Zero means "no wake outstanding".
     ///
     /// Ticks, not nanoseconds. Converting one costs a u128 multiply and two u128 divisions (see
     /// [`crate::instant::Instant`]), and stamping in nanoseconds paid that at *both* ends of every

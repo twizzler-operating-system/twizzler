@@ -199,7 +199,7 @@ impl PagedDevice for Disk {
 
     fn yield_now(&self) {
         // An actual yield. This used to be `Timer::after(100us)` -- a real sleep, ~10ms per 10k
-        // blocks mapped (pagerperf.md 6) -- and the timer was also the last thing on a worker path
+        // blocks mapped -- and the timer was also the last thing on a worker path
         // that needed async-io's reactor, which `threads::park_poll` deliberately does not drive.
         std::thread::yield_now();
     }
@@ -277,76 +277,5 @@ impl PosIo for Disk {
         }
 
         Ok(bytes_read)
-    }
-}
-
-pub mod benches {
-    use rand::{rng, seq::SliceRandom};
-    use twizzler_driver::dma::{PhysAddr, PhysInfo};
-
-    use crate::{disk::PAGE_SIZE, PagerContext};
-
-    extern crate test;
-
-    pub fn do_bench<F: FnMut() -> usize>(mut f: F) -> String {
-        let mut bytes = 0;
-        let mut i = 0;
-        let summary = test::bench::iter(&mut || {
-            i += 1;
-            bytes += f();
-        });
-        let ns_iter = std::cmp::max(summary.median as usize, 1);
-        let mb_s = (bytes * 1000 / i) / ns_iter;
-        let samples = test::bench::BenchSamples {
-            ns_iter_summ: summary,
-            mb_s,
-        };
-        test::bench::fmt_bench_samples(&samples)
-    }
-
-    #[allow(unused)]
-    pub fn bench_disk(ctx: &'static PagerContext) {
-        const NR_PAGES: usize = 128;
-        let mut phys = (0..NR_PAGES)
-            .map(|_| PhysInfo::new(PhysAddr(ctx.data.alloc_page().unwrap())))
-            .collect::<Vec<_>>();
-        // Check if the vector is sorted and each element is sequential
-        let is_sequential = phys
-            .windows(2)
-            .all(|window| window[0].addr().0 + PAGE_SIZE as u64 == window[1].addr().0);
-
-        let phys_size = phys.len() * PAGE_SIZE;
-        let ctrl = crate::disk::init_nvme().unwrap();
-        if is_sequential {
-            tracing::info!(
-                "benching disk sequential read (with sequential memory): {} KB",
-                phys_size / 1024
-            );
-            let result = do_bench(|| {
-                let r = ctrl
-                    .sequential_read::<PAGE_SIZE>(0, phys.as_slice())
-                    .unwrap();
-                assert_eq!(r, NR_PAGES);
-                std::hint::black_box(r);
-                phys_size
-            });
-            tracing::info!(" ==> {}", result);
-        }
-
-        phys.shuffle(&mut rng());
-
-        tracing::info!(
-            "benching disk sequential read (with random memory): {} KB",
-            phys_size / 1024
-        );
-        let result = do_bench(&mut || {
-            let r = ctrl
-                .sequential_read::<PAGE_SIZE>(0, phys.as_slice())
-                .unwrap();
-            assert_eq!(r, NR_PAGES);
-            std::hint::black_box(r);
-            phys_size
-        });
-        tracing::info!(" ==> {}", result);
     }
 }

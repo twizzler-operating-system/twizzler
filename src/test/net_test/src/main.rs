@@ -20,6 +20,9 @@
 //! binary, the peer). Before per-client MACs, the second client's smoltcp answered every frame it
 //! had no socket for with an RST, tearing down the first client's connections.
 
+// Everything but `main` is reachable only from the `#[test]` bodies.
+#![cfg_attr(not(test), allow(dead_code, unused_imports))]
+
 use std::{
     io::{Read, Write},
     net::{TcpListener, UdpSocket},
@@ -499,11 +502,10 @@ const UDP_DIAG_GRACE: Duration = Duration::from_secs(2);
 /// Report *why* the readiness wait timed out, then panic.
 ///
 /// The assert this replaces could not distinguish the two things it might mean, and five
-/// occurrences of this flake were adjudicated without that distinction (see
-/// nightsweep-notes/finding-udp-kvm-residual.md). A nonblocking read is deliberately used rather
-/// than another readiness predicate: it is ground truth about whether a datagram is sitting in the
-/// socket, and adding a fourth expression that decides "is this readable" is exactly the drift
-/// that `stream_socket_ready`/`udp_socket_ready` exist to prevent.
+/// occurrences of this flake were adjudicated without that distinction. A nonblocking read is
+/// deliberately used rather than another readiness predicate: it is ground truth about whether a
+/// datagram is sitting in the socket, and adding a fourth expression that decides "is this
+/// readable" is exactly the drift that `stream_socket_ready`/`udp_socket_ready` exist to prevent.
 ///
 ///   read succeeds now          -- the datagram was there; readiness was never published (family B)
 ///   succeeds within the grace  -- delivery was merely late
