@@ -1,0 +1,23 @@
+[package]
+name = "brush"
+version = "0.1.0"
+edition = "2021"
+
+# Thin wrapper around the vendored brush shell, mirroring how `uuhelper` wraps the
+# vendored coreutils: `src/ports/brush` is a nested workspace and therefore excluded
+# from this one, so it reaches the build as a path dependency rather than a member.
+#
+# All three input backends. These gate brush-shell's own `#[cfg(feature = ...)]` arms in
+# entry.rs, which are separate from the brush-interactive features selected by brush-shell's
+# target-specific dependency block -- enabling one without the other compiles the backend
+# type in but leaves it unreachable behind `InputBackendNotSupported`.
+#
+# `minimal` is load-bearing, not legacy: `get_default_input_backend_type` picks it whenever
+# stdin is not a terminal, which is the script-file path (`brush foo.sh`).
+[dependencies]
+brush-shell = { path = "../../ports/brush/brush-shell", default-features = false, features = [
+    "basic",
+    "reedline",
+    "minimal",
+] }
+twizzler-runtime = { workspace = true }

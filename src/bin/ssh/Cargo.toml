@@ -1,0 +1,23 @@
+[package]
+name = "ssh"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-channel = "*"
+async-executor = "*"
+async-io = "*"
+async-net = "*"
+blocking = "*"
+clap = { workspace = true, features = ["derive"] }
+critical-section = { version = "1.1", features = ["std"] }
+crossterm = "0.29"
+embedded-io-async = "*"
+futures = "*"
+heapless = "0.8"
+miette = "*"
+sunset = { version = "*", features = ["std", "openssh-key"] }
+sunset-async = "*"
+tracing = "*"
+tracing-log = "*"
+tracing-subscriber = "*"
