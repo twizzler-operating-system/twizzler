@@ -50,7 +50,13 @@ fn main() {
     assert!(status.success());
     let target = std::env::var("TARGET").unwrap();
 
-    let mut proc = std::process::Command::new("../../../toolchain/install/bin/bindgen");
+    // xtask exports the resolved toolchain's sysroots dir, so a `--toolchain` pin reaches here
+    // too instead of silently reading whatever `install` points at.
+    let sysroots = std::env::var("TWIZZLER_ABI_SYSROOTS")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("../../../toolchain/install/sysroots"));
+    let bindgen = sysroots.parent().unwrap().join("bin/bindgen");
+    let mut proc = std::process::Command::new(bindgen);
     proc.stdout(stderr())
         .arg("src/lwext4.h")
         .arg("-o")
@@ -58,10 +64,7 @@ fn main() {
         .arg("--")
         .arg(format!("-I{}/cmake-build/include", outdir))
         .arg("-Ilwext4/include")
-        .arg(format!(
-            "-I../../../toolchain/install/sysroots/{}/include",
-            target
-        ))
+        .arg(format!("-I{}/{}/include", sysroots.display(), target))
         .args(cflags.split_whitespace());
     eprintln!("running bindgen : {:?}", proc);
 

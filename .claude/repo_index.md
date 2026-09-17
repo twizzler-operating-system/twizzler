@@ -963,7 +963,6 @@ Multi-call binary bundling many uutils/coreutils utilities (`ls`, `cat`, `echo`,
 - `src/ports/mio` (79 files) — Fork of the `mio` async I/O readiness library, patched for Twizzler's socket/event primitives.
 - `src/ports/hwlocality` (61 files) — Fork of `hwlocality` (safe bindings to `hwloc`), branch `twizzler`.
 - `src/ports/crossterm` (66 files) — Fork of the `crossterm` terminal-manipulation library.
-- `src/ports/rust-rocksdb` (63 files) — Fork of the RocksDB Rust bindings/embedded build.
 - `src/ports/virtio-drivers` (57 files) — Fork of the `virtio-drivers` crate (generic VirtIO device driver support) used by Twizzler's virtio-net/virtio-gpu.
 - `src/ports/termion` (36 files) — Fork of `termion` (terminal I/O), branch `femto-twiz`, used by the `femto` editor port.
 - `src/ports/signal-hook` (29 files) — Fork of `signal-hook` for Unix-style signal handling.
@@ -978,7 +977,6 @@ Multi-call binary bundling many uutils/coreutils utilities (`ls`, `cat`, `echo`,
 - `src/ports/async-net` (5 files) — Fork of `async-net` (async TCP/UDP), part of the ported `smol` async stack.
 - `src/ports/lwext4-rs` (3 files, + `lwext4` C submodule) — Rust bindings to `lwext4` (ext4 filesystem implementation); used by xtask (`disk.rs`) and pager/filesystem code to build/read ext4 images.
 - `src/ports/hwloc` (C source submodule, branch `twizzler`) — The C `hwloc` (Portable Hardware Locality) library itself, wrapped by `hwlocality`.
-- `src/ports/hw-cxx` (2 files) — Small C++ interop shim crate.
 - `src/ports/openssl` (C source, `cloudflare-quiche` vendored inside) — Ported OpenSSL source tree, built via `cargo toolchain ports openssl` into the sysroot; used by `src/rt/monitor`/networking code needing TLS.
 - `src/ports/python/cpython` (C source submodule) — Ported CPython interpreter source, built via `cargo toolchain ports python3`.
 - `src/ports/femto` (1 file) — Thin Twizzler entry-point wrapper around the `femto` text editor (fetched from cosdet/femto, branch `twizzler`).

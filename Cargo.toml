@@ -71,6 +71,7 @@ members = [
     "src/test/net_test",
     "src/test/net_test_peer",
     "src/test/memhog-test",
+    "src/test/memhog",
     "src/test/hmrepro",
     #"src/test/sqlite_test",
 
@@ -166,6 +167,7 @@ initrd = [
     "crate:leakcheck",
     "crate:nullexit",
     "crate:pagepar",
+    "crate:memhog",
     "crate:memlat",
     "crate:hmrepro",
     #"crate:ssh",
@@ -246,7 +248,7 @@ futures = "0.3.21"
 futures-util = "0.3.21"
 gdbstub = "0.7"
 gdbstub_arch = "=0.3.2"
-getrandom = "=0.3.1"
+getrandom = "0.3"
 git2 = "0.20"
 gpt = "4.1"
 guess_host_triple = "0.1"
@@ -400,21 +402,15 @@ twizzler-abi = { path = "src/lib/twizzler-abi" }
 
 [patch.crates-io]
 #ring = { git = "https://github.com/twizzler-operating-system/ring-twizzler.git", branch = "twizzler" }
-getrandom = { git = "https://github.com/twizzler-operating-system/getrandom-twizzler.git", branch = "twizzler" }
 # Note: we can have multiple versions. This key ("getrandom02") is ignored in favor of the "package" field.
 getrandom02 = { git = "https://github.com/twizzler-operating-system/getrandom-twizzler.git", branch = "twizzler-0.2", package = "getrandom" }
-# 0.4 arrives via rand 0.10 <- uu_shuf/uu_sort. Upstream 0.4 ends its backend chain in
-# compile_error! for unknown targets; this is 0.4.3 plus a twizzler arm over
-# twz_rt_get_random, the same shape as the 0.2/0.3 forks. Vendored rather than a
-# submodule only because the fork repo has no 0.4 branch yet.
-getrandom04 = { path = "src/ports/getrandom", package = "getrandom" }
+# getrandom 0.3 and 0.4 need no fork: xtask sets `--cfg getrandom_backend="custom"` for every
+# twizzler target and both runtimes export `__getrandom_v03_custom`. 0.2 predates that hook.
 
 #polling = { git = "https://github.com/twizzler-operating-system/polling.git", branch = "twizzler" }
 polling = { path = "src/ports/polling" }
 #async-io = { git = "https://github.com/twizzler-operating-system/async-io.git", branch = "twizzler" }
 async-io = { path = "src/ports/async-io" }
-#async-executor = { git = "https://github.com/twizzler-operating-system/async-executor.git", branch = "twizzler" }
-async-executor = { path = "src/ports/async-executor" }
 # The submodule existed but was never patched in, so the registry copy was used. Its `unix`
 # module is `std::os::unix::net` (unix-domain sockets), which twizzler does not have.
 async-net = { path = "src/ports/async-net" }
@@ -466,15 +462,15 @@ filetime = { git = "https://github.com/twizzler-operating-system/filetime.git", 
 iana-time-zone = { git = "https://github.com/twizzler-operating-system/iana-time-zone.git", branch = "twizzler" }
 hostname = { git = "https://github.com/twizzler-operating-system/hostname.git", branch = "twizzler" }
 ctrlc = { git = "https://github.com/twizzler-operating-system/rust-ctrlc.git", branch = "twizzler" }
-crossterm = { path = "src/ports/crossterm" }
 mio = { path = "src/ports/mio" }
 signal-hook = { path = "src/ports/signal-hook" }
 signal-hook-mio = { path = "src/ports/signal-hook/signal-hook-mio" }
-#memmap2 = { git = "https://github.com/twizzler-operating-system/memmap2-rs.git", branch = "twizzler" }
+# Registry memmap2 compiles and links here, but it calls `madvise`, which mlibc only builds under
+# `__MLIBC_LINUX_OPTION` (options/posix/generic/sys-mman.cpp) and the twizzler sysdeps do not
+# enable that, so every libc.so in the tree exports only `posix_madvise`. Dropping this fork is
+# one mlibc change plus a libc rebuild away.
 memmap2 = { path = "src/ports/memmap2-rs" }
 tar = { git = "https://github.com/twizzler-operating-system/tar-rs.git", branch = "twizzler" }
-rusqlite = { path = "src/ports/rusqlite" }
-libsqlite3-sys = { path = "src/ports/rusqlite/libsqlite3-sys" }
 #sqlite3-parser = { git = "https://github.com/TheTadLands/lemon-rs.git", branch = "portv014" }
 hwlocality = { path = "src/ports/hwlocality" }
 hwlocality-sys = { path = "src/ports/hwlocality/hwlocality-sys" }
@@ -482,7 +478,3 @@ errno = { path = "src/ports/rust-errno" }
 libc = { path = "src/ports/libc" }
 ferroc = { path = "src/ports/ferroc" }
 virtio-drivers = { path = "src/ports/virtio-drivers" }
-#rocksdb = { path = "src/ports/rust-rocksdb" }
-#librocksdb-sys = { path = "src/ports/rust-rocksdb/librocksdb-sys" }
-libloading = { path = "src/ports/rust_libloading" }
-termion = { path = "src/ports/termion" }

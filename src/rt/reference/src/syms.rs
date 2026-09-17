@@ -1319,6 +1319,24 @@ pub unsafe extern "C-unwind" fn twz_rt_get_random(
 }
 check_ffi_type!(twz_rt_get_random, _, _, _);
 
+// getrandom 0.3 and 0.4 both route `getrandom_backend = "custom"` (set by xtask for every
+// twizzler target) to this symbol, declared there as returning `Result<(), getrandom::Error>`,
+// an `i32` niche layout identical to this one. Keeping the crate out of the runtime is what
+// lets one definition serve both versions.
+#[no_mangle]
+pub unsafe extern "Rust" fn __getrandom_v03_custom(
+    dest: *mut u8,
+    len: usize,
+) -> Result<(), core::num::NonZeroI32> {
+    let buf = unsafe { core::slice::from_raw_parts_mut(dest.cast(), len) };
+    if OUR_RUNTIME.get_random(buf, twizzler_abi::syscall::GetRandomFlags::empty()) == len {
+        Ok(())
+    } else {
+        // getrandom's Error::UNEXPECTED.
+        Err(core::num::NonZeroI32::new((1 << 16) + 2).unwrap())
+    }
+}
+
 // additional definitions for C.
 //
 // `malloc`/`free` warn-stubs used to live here too. They returned NULL / did nothing, and which

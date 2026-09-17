@@ -290,7 +290,7 @@ pub fn set_dynamic(target: &Triple) -> anyhow::Result<()> {
         ""
     };
     let args = format!(
-        "-C link-args=--export-dynamic {} -C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z pre-link-arg=--pack-dyn-relocs=relr -C link-arg=--no-as-needed -C link-arg=-lunwind {}",
+        "--cfg getrandom_backend=\"custom\" -C link-args=--export-dynamic {} -C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z pre-link-arg=--pack-dyn-relocs=relr -C link-arg=--no-as-needed -C link-arg=-lunwind {}",
         extra_rustflags,
         sysroot_path.display(),
         sysroot_path.display(),
@@ -311,7 +311,7 @@ pub fn set_static(target: &Triple) {
     std::env::set_var(
         "RUSTFLAGS",
         &format!(
-            "-C prefer-dynamic=n -Z staticlib-prefer-dynamic=n -C target-feature=+crt-static -C relocation-model=static -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z link-native-libraries=no -C link-arg=-L{} -C link-arg=-lunwind -C link-arg={}/libc.a {}",
+            "--cfg getrandom_backend=\"custom\" -C prefer-dynamic=n -Z staticlib-prefer-dynamic=n -C target-feature=+crt-static -C relocation-model=static -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z link-native-libraries=no -C link-arg=-L{} -C link-arg=-lunwind -C link-arg={}/libc.a {}",
             sysroot_path.display(),
             sysroot_path.display(),
             rustlib_path.display(),
