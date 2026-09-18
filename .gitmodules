@@ -15,9 +15,6 @@
 [submodule "src/ports/lwext4-rs/lwext4"]
 	path = src/ports/lwext4-rs/lwext4
 	url = ../../twizzler-operating-system/lwext4.git
-[submodule "src/ports/rusqlite"]
-	path = src/ports/rusqlite
-	url = https://github.com/TheTadLands/rusqlite.git
 [submodule "src/ports/hwlocality"]
 	path = src/ports/hwlocality
 	url = ../../twizzler-operating-system/hwlocality.git
@@ -46,12 +43,6 @@
 [submodule "src/ports/async-io"]
 	path = src/ports/async-io
 	url = ../../twizzler-operating-system/async-io
-[submodule "src/ports/async-executor"]
-	path = src/ports/async-executor
-	url = ../../twizzler-operating-system/async-executor
-[submodule "src/ports/crossterm"]
-	path = src/ports/crossterm
-	url = ../../twizzler-operating-system/crossterm.git
 [submodule "src/ports/mio"]
 	path = src/ports/mio
 	url = ../../twizzler-operating-system/mio.git
@@ -70,10 +61,6 @@
 [submodule "src/ports/rust_libloading"]
 	path = src/ports/rust_libloading
 	url = ../../dbittman/rust_libloading.git
-[submodule "src/ports/termion"]
-	path = src/ports/termion
-	url = https://github.com/cosdet/termion-twiz
-	branch = femto-twiz
 [submodule "src/ports/femto"]
 	path = src/ports/femto
 	url = https://github.com/cosdet/femto

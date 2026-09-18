@@ -111,8 +111,12 @@ fn worker(thread: usize, deadline: Instant) {
 #[cfg_attr(test, test)]
 fn simd_state_survives_context_switch() {
     // Oversubscribe: the race needs a thread to be queued onto another cpu while it is still
-    // running here, which takes more runnable threads than cpus.
-    let nthreads = std::thread::available_parallelism().map_or(8, |n| n.get().max(2) * 4);
+    // running here, which takes more runnable threads than cpus. One cpu has nowhere to migrate
+    // to, and eight spinners there starved the concurrently running net tests for the whole 30s.
+    let nthreads = std::thread::available_parallelism().map_or(8, |n| match n.get() {
+        1 => 2,
+        n => n * 4,
+    });
     println!("simdtest: {nthreads} threads for {SECONDS}s, buffer {BUF_BYTES} bytes");
     let deadline = Instant::now() + std::time::Duration::from_secs(SECONDS);
     let handles: Vec<_> = (0..nthreads)

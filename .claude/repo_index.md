@@ -959,12 +959,9 @@ Multi-call binary bundling many uutils/coreutils utilities (`ls`, `cat`, `echo`,
 
 - `src/ports/libc` (337 files) — Fork of the `libc` crate (branch `twizzler-2025-04`) with Twizzler libc bindings added.
 - `src/ports/nix` (114 files) — Fork of the `nix` crate providing safe Unix syscall wrappers on top of the ported libc.
-- `src/ports/rusqlite` (75 files) — Fork of `rusqlite` (SQLite bindings), submodule from TheTadLands/rusqlite.
 - `src/ports/mio` (79 files) — Fork of the `mio` async I/O readiness library, patched for Twizzler's socket/event primitives.
 - `src/ports/hwlocality` (61 files) — Fork of `hwlocality` (safe bindings to `hwloc`), branch `twizzler`.
-- `src/ports/crossterm` (66 files) — Fork of the `crossterm` terminal-manipulation library.
 - `src/ports/virtio-drivers` (57 files) — Fork of the `virtio-drivers` crate (generic VirtIO device driver support) used by Twizzler's virtio-net/virtio-gpu.
-- `src/ports/termion` (36 files) — Fork of `termion` (terminal I/O), branch `femto-twiz`, used by the `femto` editor port.
 - `src/ports/signal-hook` (29 files) — Fork of `signal-hook` for Unix-style signal handling.
 - `src/ports/async-io` (23 files) — Fork of `async-io` (async I/O reactor), part of the `smol` async stack ported to Twizzler.
 - `src/ports/ferroc` (26 files) — Fork of the `ferroc` allocator (dbittman/ferroc), used as a memory allocator port.
@@ -972,7 +969,6 @@ Multi-call binary bundling many uutils/coreutils utilities (`ls`, `cat`, `echo`,
 - `src/ports/kibi` (18 files) — Fork of the `kibi` text editor.
 - `src/ports/rust_libloading` (18 files) — Fork of `libloading` (dynamic library loading), backed by Twizzler's `dynlink`.
 - `src/ports/rust-errno` (6 files) — Fork of the `errno` crate, branch `twizzler`.
-- `src/ports/async-executor` (11 files) — Fork of `async-executor`, part of the ported `smol` async stack.
 - `src/ports/lwext4-rs` (3 files, + `lwext4` C submodule) — Rust bindings to `lwext4` (ext4 filesystem implementation); used by xtask (`disk.rs`) and pager/filesystem code to build/read ext4 images.
 - `src/ports/hwloc` (C source submodule, branch `twizzler`) — The C `hwloc` (Portable Hardware Locality) library itself, wrapped by `hwlocality`.
 - `src/ports/openssl` (C source, `cloudflare-quiche` vendored inside) — Ported OpenSSL source tree, built via `cargo toolchain ports openssl` into the sysroot; used by `src/rt/monitor`/networking code needing TLS.

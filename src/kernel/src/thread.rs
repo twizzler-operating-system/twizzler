@@ -1276,10 +1276,12 @@ const HANG_TABLE_MAX_THREADS: usize = 64;
 /// stopped moving while it is `Sleeping`?) was structurally blind to the case it was needed for.
 /// 6s leaves room for the two scans a report requires inside that window.
 ///
-/// Service threads parked on a condvar now cross this in every boot. That is affordable because
-/// what each one costs is a single line (see `StuckRecord`), not a table: the expensive table is
-/// still rationed by [`MAX_HANG_REPORTS`].
-const HANG_REPORT_SECS: u64 = 6;
+/// Service threads parked on a condvar cross 6s in every boot, so that threshold is a `--diag`
+/// setting; a quiet boot reports only at 60s, still well inside the harness's five-minute
+/// watchdog, so a genuine wedge is named before the guest is killed.
+fn hang_report_secs() -> u64 {
+    if crate::is_diag_mode() { 6 } else { 60 }
+}
 
 /// What a newly-stuck thread reports, gathered under `with_all_threads`' spinlock and printed
 /// after it drops.
@@ -1336,7 +1338,7 @@ static HANG_REPORTS: AtomicU32 = AtomicU32::new(0);
 static HANG_SCANS: AtomicU64 = AtomicU64::new(0);
 
 /// Print where every thread is parked, once any one of them has been in the same thread-sync sleep
-/// for [`HANG_REPORT_SECS`].
+/// for [`hang_report_secs`].
 ///
 /// The wedges this exists for leave every cpu halted and every thread `Sleeping`, which the state
 /// list alone cannot take apart: it says they are all blocked and nothing about *on what*. The
@@ -1392,7 +1394,7 @@ pub fn check_system_hang() {
                 thread.hang_since.store(now, Ordering::Relaxed);
                 continue;
             }
-            if now.saturating_sub(since) >= HANG_REPORT_SECS * 1_000_000_000 {
+            if now.saturating_sub(since) >= hang_report_secs() * 1_000_000_000 {
                 // Restart this thread's window first, so the early return below still puts a
                 // permanently parked thread on an interval rather than on every scan.
                 thread.hang_since.store(now, Ordering::Relaxed);
@@ -1444,7 +1446,7 @@ pub fn check_system_hang() {
             rec.id,
             rec.objid,
             rec.sctx,
-            HANG_REPORT_SECS,
+            hang_report_secs(),
             rec.state,
             rec.active,
             rec.ip,
@@ -1501,7 +1503,7 @@ pub fn check_system_hang() {
         "== thread {} ({}) has been asleep for {}s; thread wait table:",
         stuck_tid,
         stuck_objid,
-        HANG_REPORT_SECS
+        hang_report_secs()
     );
     // Snapshot the thread list, then print outside the lock. The name lookup below ends in
     // `ControlObjectCacher::summarize`, which takes a **mutex**, while `with_all_threads` holds a

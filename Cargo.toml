@@ -49,8 +49,6 @@ members = [
     "src/srv/net-srv",
 
     "src/ports/lwext4-rs",
-    #"src/ports/rusqlite",
-    #"src/ports/rusqlite/libsqlite3-sys",
 
     #"src/ports/candle-test",
 
