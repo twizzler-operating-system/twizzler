@@ -208,6 +208,10 @@ fn generate_native_config_toml(triple: &Triple) -> anyhow::Result<()> {
     // `-ltwz_rt` can be emitted from libstd itself so a bare `rustc prog.rs` links without extra
     // flags. The cross-compiler's std is built without it (it builds libtwz_rt.so in the first
     // place). --check-cfg keeps the unexpected_cfgs lint quiet for every other crate built here.
+    // Same getrandom arrangement as the OS tree: 0.3/0.4 call the runtime's
+    // __getrandom_v03_custom instead of needing a per-target backend.
+    rustflags_array.push("--cfg");
+    rustflags_array.push("getrandom_backend=\"custom\"");
     rustflags_array.push("--cfg");
     rustflags_array.push("twizzler_hosted");
     rustflags_array.push("--check-cfg");
