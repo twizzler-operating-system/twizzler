@@ -972,9 +972,7 @@ Multi-call binary bundling many uutils/coreutils utilities (`ls`, `cat`, `echo`,
 - `src/ports/kibi` (18 files) — Fork of the `kibi` text editor.
 - `src/ports/rust_libloading` (18 files) — Fork of `libloading` (dynamic library loading), backed by Twizzler's `dynlink`.
 - `src/ports/rust-errno` (6 files) — Fork of the `errno` crate, branch `twizzler`.
-- `src/ports/memmap2-rs` (7 files) — Fork of `memmap2` (memory-mapped file I/O), branch `twizzler`.
 - `src/ports/async-executor` (11 files) — Fork of `async-executor`, part of the ported `smol` async stack.
-- `src/ports/async-net` (5 files) — Fork of `async-net` (async TCP/UDP), part of the ported `smol` async stack.
 - `src/ports/lwext4-rs` (3 files, + `lwext4` C submodule) — Rust bindings to `lwext4` (ext4 filesystem implementation); used by xtask (`disk.rs`) and pager/filesystem code to build/read ext4 images.
 - `src/ports/hwloc` (C source submodule, branch `twizzler`) — The C `hwloc` (Portable Hardware Locality) library itself, wrapped by `hwlocality`.
 - `src/ports/openssl` (C source, `cloudflare-quiche` vendored inside) — Ported OpenSSL source tree, built via `cargo toolchain ports openssl` into the sysroot; used by `src/rt/monitor`/networking code needing TLS.

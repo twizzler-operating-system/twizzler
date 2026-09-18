@@ -1063,13 +1063,13 @@ fn result_id_to_bindings(value: Result<ObjID, TwzError>) -> objid_result {
     match value {
         Ok(id) => objid_result {
             err: RawTwzError::success().raw(),
-            __bindgen_padding_0: 0,
             val: id.raw(),
+            ..Default::default()
         },
         Err(err) => objid_result {
             err: err.raw(),
-            __bindgen_padding_0: 0,
             val: 0,
+            ..Default::default()
         },
     }
 }

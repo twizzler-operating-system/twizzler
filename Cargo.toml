@@ -411,9 +411,6 @@ getrandom02 = { git = "https://github.com/twizzler-operating-system/getrandom-tw
 polling = { path = "src/ports/polling" }
 #async-io = { git = "https://github.com/twizzler-operating-system/async-io.git", branch = "twizzler" }
 async-io = { path = "src/ports/async-io" }
-# The submodule existed but was never patched in, so the registry copy was used. Its `unix`
-# module is `std::os::unix::net` (unix-domain sockets), which twizzler does not have.
-async-net = { path = "src/ports/async-net" }
 # parking_lot/lock_api forks dropped: the fork's twizzler ThreadParker became unreachable when
 # this target gained `target_family = "unix"`. Its cfg_if tries `else if #[cfg(unix)]` *before*
 # `target_os = "twizzler"`, so the 108-line twizzler.rs has been dead code and the registry
@@ -427,8 +424,6 @@ async-net = { path = "src/ports/async-net" }
 # version already locked -- with one change: the `target_os = "twizzler"` arm moved ABOVE the
 # `unix` arm, which is what made the fork's parker unreachable in the first place.
 parking_lot_core = { path = "src/ports/parking_lot_core" }
-# `conn/impls/mod.rs` gates `mod unixstream` on bare `unix`; twizzler has no AF_UNIX.
-gdbstub = { path = "src/ports/gdbstub" }
 # The crates.io copy has no twizzler arm, so `native_libraries()` returns empty, `avma_to_svma`
 # always misses, and every symbolization is a silent no-op -- backtraces of bare addresses.
 # std's own copy already carries the port (library/backtrace/.../gimli/twizzler.rs); this is that
@@ -465,11 +460,6 @@ ctrlc = { git = "https://github.com/twizzler-operating-system/rust-ctrlc.git", b
 mio = { path = "src/ports/mio" }
 signal-hook = { path = "src/ports/signal-hook" }
 signal-hook-mio = { path = "src/ports/signal-hook/signal-hook-mio" }
-# Registry memmap2 compiles and links here, but it calls `madvise`, which mlibc only builds under
-# `__MLIBC_LINUX_OPTION` (options/posix/generic/sys-mman.cpp) and the twizzler sysdeps do not
-# enable that, so every libc.so in the tree exports only `posix_madvise`. Dropping this fork is
-# one mlibc change plus a libc rebuild away.
-memmap2 = { path = "src/ports/memmap2-rs" }
 tar = { git = "https://github.com/twizzler-operating-system/tar-rs.git", branch = "twizzler" }
 #sqlite3-parser = { git = "https://github.com/TheTadLands/lemon-rs.git", branch = "portv014" }
 hwlocality = { path = "src/ports/hwlocality" }

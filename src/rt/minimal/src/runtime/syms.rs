@@ -654,8 +654,8 @@ pub unsafe extern "C-unwind" fn twz_rt_resolve_name(
     let Some(id) = parsed else {
         return objid_result {
             err: TwzError::from(ArgumentError::InvalidArgument).raw(),
-            __bindgen_padding_0: 0,
             val: 0,
+            ..Default::default()
         };
     };
     // Parsing says the name is well formed, not that anything answers to it. Ask the kernel,
@@ -665,13 +665,13 @@ pub unsafe extern "C-unwind" fn twz_rt_resolve_name(
     match sys_object_stat(ObjID::new(id)) {
         Ok(_) => objid_result {
             err: RawTwzError::success().raw(),
-            __bindgen_padding_0: 0,
             val: id,
+            ..Default::default()
         },
         Err(e) => objid_result {
             err: e.raw(),
-            __bindgen_padding_0: 0,
             val: 0,
+            ..Default::default()
         },
     }
 }

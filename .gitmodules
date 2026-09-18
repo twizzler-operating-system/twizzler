@@ -34,10 +34,6 @@
 	path = src/ports/libc
 	url = ../../twizzler-operating-system/libc.git
 	branch = twizzler-2025-04
-[submodule "src/ports/memmap2-rs"]
-	path = src/ports/memmap2-rs
-	url = ../../twizzler-operating-system/memmap2-rs.git
-	branch = twizzler
 [submodule "src/ports/ferroc"]
 	path = src/ports/ferroc
 	url = ../../dbittman/ferroc
@@ -53,9 +49,6 @@
 [submodule "src/ports/async-executor"]
 	path = src/ports/async-executor
 	url = ../../twizzler-operating-system/async-executor
-[submodule "src/ports/async-net"]
-	path = src/ports/async-net
-	url = ../../twizzler-operating-system/async-net
 [submodule "src/ports/crossterm"]
 	path = src/ports/crossterm
 	url = ../../twizzler-operating-system/crossterm.git
