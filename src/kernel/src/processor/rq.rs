@@ -50,7 +50,7 @@ struct Align64;
 #[repr(C)]
 pub struct RunQueue<const N: usize> {
     realtime: SchedSpinlock<PriorityQueue<N>>,
-    timeshare: SchedSpinlock<TimeshareQueue<N>>,
+    timeshare: SchedSpinlock<TimeshareQueue>,
     idle: SchedSpinlock<PriorityQueue<N>>,
     /// Everything below is read by every other cpu's `select_cpu` walk while the fields above
     /// are written under this cpu's locks. The boundary (with `repr(C)` making declaration
@@ -60,6 +60,8 @@ pub struct RunQueue<const N: usize> {
     _remote_read_split: Align64,
     current_priority: AtomicU32,
     flags: AtomicU32,
+    /// Realtime-class threads in the realtime queue, which also holds boosted User threads.
+    realtime_class: AtomicU32,
     load: AtomicU32,
     timeshare_load: AtomicU32,
     movable: AtomicU32,
@@ -149,13 +151,16 @@ impl<const N: usize> PriorityQueue<N> {
         }
     }
 
-    fn highest_priority(&self) -> Option<u16> {
+    /// The priority of the thread `take` would return: bucket 0 holds both boosted User threads
+    /// and low realtime values, so the bucket index alone would misreport a User thread as
+    /// realtime to every preempt and placement decision.
+    fn highest_priority(&self) -> Option<Priority> {
         if self.count == 0 {
             return None;
         }
         for q in (0..N).rev() {
-            if !self.queues[q].is_empty() {
-                return Some((q * (MAX_PRIORITY as usize / N)) as u16);
+            if let Some(front) = self.queues[q].front().get() {
+                return Some(front.get_stable_effective_priority());
             }
         }
         None
@@ -166,7 +171,7 @@ impl<const N: usize> PriorityQueue<N> {
     }
 
     fn insert(&mut self, th: ThreadRef) {
-        let priority = th.effective_priority();
+        let priority = th.get_stable_effective_priority();
         let q = if priority.class == PriorityClass::User {
             // A user thread getting a deadline boost: lowest realtime slot, so it beats
             // timeshare/idle without cutting ahead of genuine realtime work.
@@ -223,6 +228,7 @@ impl<const N: usize> RunQueue<N> {
             _remote_read_split: Align64,
             current_priority: AtomicU32::new(0),
             flags: AtomicU32::new(0),
+            realtime_class: AtomicU32::new(0),
             load: AtomicU32::new(0),
             timeshare_load: AtomicU32::new(0),
             last_clock: AtomicU64::new(0),
@@ -244,20 +250,44 @@ impl<const N: usize> RunQueue<N> {
         logln!("     idle: {:?}", &*self.idle.lock());
     }
 
-    /// Whether `insert` would file `th` in the realtime queue: a realtime thread, or a user
-    /// thread past its deadline (see `deadline`). One predicate for the insert and for the
-    /// wake path's preempt decision, so the two cannot disagree.
+    /// Whether `insert` would file `th` in the realtime queue: a realtime thread, or a User
+    /// thread that is interactive (`interact`), holds a donated priority, or is past its
+    /// deadline (see `deadline`). These are the User threads that preempt a running batch
+    /// thread at once; batch threads themselves only ever meet in the calendar. One predicate
+    /// for the insert and for the wake path's preempt decision, so the two cannot disagree.
     pub fn files_realtime(&self, th: &Thread) -> bool {
         let pri = th.effective_priority();
         match pri.class {
             PriorityClass::Realtime => true,
-            PriorityClass::User => th.sched.get_deadline() <= get_current_ticks(),
+            PriorityClass::User => {
+                th.interact.is_interactive()
+                    || th.get_donated_priority().is_some()
+                    || th.sched.get_deadline() <= get_current_ticks()
+            }
             _ => false,
         }
     }
 
     pub fn has_realtime(&self) -> bool {
         self.flags.load(Ordering::Acquire) & RQ_HAS_RT != 0
+    }
+
+    /// A realtime-*class* thread is queued, as opposed to a User thread filed in the realtime
+    /// queue by `files_realtime`.
+    pub fn has_realtime_class(&self) -> bool {
+        self.realtime_class.load(Ordering::Acquire) != 0
+    }
+
+    fn note_realtime_class(&self, th: &Thread, delta: i32) {
+        if th.get_stable_effective_priority().class == PriorityClass::Realtime {
+            if delta > 0 {
+                self.realtime_class.fetch_add(1, Ordering::AcqRel);
+            } else {
+                let _ =
+                    self.realtime_class
+                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+            }
+        }
     }
 
     pub fn wake_pending(&self) -> bool {
@@ -273,14 +303,15 @@ impl<const N: usize> RunQueue<N> {
     }
 
     /// `wake`: a timeshare thread made runnable (not reinserted or migrated) goes to the front
-    /// of the calendar and is counted in `pending_wakes`.
-    pub fn insert(&self, th: ThreadRef, wake: bool) -> bool {
+    /// of the calendar and is counted in `pending_wakes`. `preempted`: a reinsertion of a thread
+    /// that lost its cpu mid-slice, which also resumes at the front.
+    pub fn insert(&self, th: ThreadRef, wake: bool, preempted: bool) -> bool {
         assert!(!th.is_idle_thread());
         if th.sched.note_queued_movable() {
             self.movable.fetch_add(1, Ordering::SeqCst);
         }
         self.load.fetch_add(1, Ordering::SeqCst);
-        let th_pri = th.effective_priority();
+        let th_pri = th.stable_effective_priority();
         let cur_pri = self.current_priority.load(Ordering::Acquire);
         if Priority::from_raw(cur_pri) < th_pri {
             self.current_priority.store(th_pri.raw(), Ordering::Release);
@@ -288,18 +319,17 @@ impl<const N: usize> RunQueue<N> {
 
         match th_pri.class {
             PriorityClass::Realtime => {
+                self.note_realtime_class(&th, 1);
                 self.realtime.lock().insert(th);
                 self.flags.fetch_or(RQ_HAS_RT, Ordering::SeqCst);
                 true
             }
             PriorityClass::User => {
                 if self.files_realtime(&th) {
-                    log::trace!(
-                        "thread {} expired deadline ({} {})",
-                        th.id(),
-                        th.sched.get_deadline(),
-                        get_current_ticks()
-                    );
+                    if wake {
+                        th.sched.set_woken();
+                        self.pending_wakes.fetch_add(1, Ordering::AcqRel);
+                    }
                     self.realtime.lock().insert(th);
                     self.flags.fetch_or(RQ_HAS_RT, Ordering::SeqCst);
                 } else {
@@ -310,7 +340,7 @@ impl<const N: usize> RunQueue<N> {
                         self.pending_wakes.fetch_add(1, Ordering::AcqRel);
                         timeshare.insert_front(th);
                     } else {
-                        timeshare.insert(th);
+                        timeshare.insert(th, preempted);
                     }
                     self.flags.fetch_or(RQ_HAS_TS, Ordering::SeqCst);
                 }
@@ -324,13 +354,14 @@ impl<const N: usize> RunQueue<N> {
         }
     }
 
-    fn recalc_priority_timeshare(&self, queue: SchedLockGuard<TimeshareQueue<N>>) {
+    fn recalc_priority_timeshare(&self, queue: SchedLockGuard<TimeshareQueue>) {
         if self.current_priority().class == PriorityClass::User {
             if queue.is_empty() {
-                let priority = Priority {
-                    value: self.idle.lock().highest_priority().unwrap_or(0),
-                    class: PriorityClass::Idle,
-                };
+                let priority = self
+                    .idle
+                    .lock()
+                    .highest_priority()
+                    .unwrap_or(Priority::from_raw(0));
                 self.current_priority
                     .store(priority.raw(), Ordering::SeqCst);
             } else {
@@ -350,6 +381,7 @@ impl<const N: usize> RunQueue<N> {
         }
         let mut realtime = self.realtime.lock();
         let th = realtime.take()?;
+        self.note_realtime_class(&th, -1);
         if realtime.is_empty() {
             self.flags.fetch_and(!RQ_HAS_RT, Ordering::Release);
         }
@@ -382,10 +414,7 @@ impl<const N: usize> RunQueue<N> {
                 self.current_priority
                     .store(priority.raw(), Ordering::SeqCst);
             } else {
-                let priority = Priority {
-                    value: realtime.highest_priority().unwrap_or(0),
-                    class: PriorityClass::Realtime,
-                };
+                let priority = realtime.highest_priority().unwrap_or(Priority::from_raw(0));
                 self.current_priority
                     .store(priority.raw(), Ordering::SeqCst);
             }
@@ -428,10 +457,7 @@ impl<const N: usize> RunQueue<N> {
             assert!(old > 0);
         }
         self.load.fetch_sub(1, Ordering::Release);
-        let priority = Priority {
-            value: idle.highest_priority().unwrap_or(0),
-            class: PriorityClass::Idle,
-        };
+        let priority = idle.highest_priority().unwrap_or(Priority::from_raw(0));
         self.current_priority
             .store(priority.raw(), Ordering::SeqCst);
         Some(th)
@@ -454,8 +480,11 @@ impl<const N: usize> RunQueue<N> {
         let (removed, from) = {
             let mut realtime = self.realtime.lock();
             let removed = realtime.remove_thread(th);
-            if removed.is_some() && realtime.is_empty() {
-                self.flags.fetch_and(!RQ_HAS_RT, Ordering::Release);
+            if let Some(removed) = &removed {
+                self.note_realtime_class(removed, -1);
+                if realtime.is_empty() {
+                    self.flags.fetch_and(!RQ_HAS_RT, Ordering::Release);
+                }
             }
             (removed, RemovedFrom::Realtime)
         };
@@ -561,7 +590,7 @@ impl<const N: usize> RunQueue<N> {
     }
 
     pub fn clock(&self) {
-        self.timeshare.lock().advance_insert_index(1, true);
+        self.timeshare.lock().clock();
     }
 
     pub fn current_priority(&self) -> Priority {
@@ -616,7 +645,7 @@ mod test {
         for b in insert_order {
             pq.insert(thread_at(PriorityClass::Realtime, b * BUCKET_WIDTH));
         }
-        assert_eq!(pq.highest_priority(), Some(7 * BUCKET_WIDTH));
+        assert_eq!(pq.highest_priority().map(|p| p.value), Some(7 * BUCKET_WIDTH));
 
         let got: Vec<u16> = drain(&mut pq).iter().map(|p| p.value).collect();
         let expected: Vec<u16> = (0..NR_QUEUES as u16)
@@ -661,7 +690,7 @@ mod test {
         // counter insert touched, or the queue reports load with nothing to take.
         let rq = RunQueue::<NR_QUEUES>::new();
         let bg = thread_at(PriorityClass::Background, MAX_PRIORITY / 2);
-        rq.insert(bg.clone(), false);
+        rq.insert(bg.clone(), false, false);
         assert_eq!(rq.current_load(), 1);
         let (removed, from) = rq.remove_thread(&bg).expect("queued thread must be found");
         assert_eq!(removed.id(), bg.id());
@@ -671,7 +700,7 @@ mod test {
         assert!(rq.is_empty());
         assert!(rq.take(false).is_none());
         // Re-inserting the removed reference must work (the re-file path).
-        rq.insert(removed, false);
+        rq.insert(removed, false, false);
         assert_eq!(rq.current_load(), 1);
         assert_eq!(rq.take(false).unwrap().id(), bg.id());
     }
@@ -685,7 +714,7 @@ mod test {
         // An unexpired deadline keeps the insert on the timeshare arm rather than the
         // deadline-boost one.
         user.sched.set_deadline(get_current_ticks() + 1_000_000);
-        rq.insert(user.clone(), false);
+        rq.insert(user.clone(), false, false);
         assert_eq!(rq.current_timeshare_load(), 1);
         let (removed, from) = rq
             .remove_thread(&user)

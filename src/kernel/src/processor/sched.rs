@@ -444,9 +444,50 @@ fn set_deadline(thread: &Thread, processor: &Processor) {
     );
 }
 
-fn schedule_thread_on_cpu(thread: ThreadRef, processor: &Processor, is_new: bool, is_wake: bool) {
+/// ULE's preempt threshold: a wake takes the cpu at once from a lower class, or from a lower
+/// value in a class other than User. Batch User threads never preempt each other on value
+/// alone; the User threads that must (interactive, donated, past deadline) are filed in the
+/// realtime queue (`files_realtime`) and preempt through it.
+fn preempts_at_once(woken: Priority, cur: Priority) -> bool {
+    woken.class > cur.class || (cur.class != PriorityClass::User && woken > cur)
+}
+
+/// A User thread the realtime queue carries for its own sake (not a past deadline, which a
+/// running thread's stamp cannot tell).
+fn is_boosted_user(th: &Thread, pri: Priority) -> bool {
+    pri.class == PriorityClass::User
+        && (th.interact.is_interactive() || th.get_donated_priority().is_some())
+}
+
+/// The wake-path preempt decision: `preempts_at_once`, or a thread the realtime queue will
+/// carry (`boosted`) over a running thread it does not carry -- or a strictly higher one it does,
+/// so a mutex hand-off at the class ceiling still lands at once.
+fn preempts_boosted(boosted: bool, cur: &Thread, woken_pri: Priority) -> bool {
+    let cur_pri = cur.effective_priority();
+    preempts_at_once(woken_pri, cur_pri)
+        || (boosted && (!is_boosted_user(cur, cur_pri) || woken_pri > cur_pri))
+}
+
+fn schedule_thread_on_cpu(
+    thread: ThreadRef,
+    processor: &Processor,
+    is_new: bool,
+    is_wake: bool,
+    preempted: bool,
+) {
     if thread.is_exiting() {
         return;
+    }
+    if thread.base_priority().class == PriorityClass::User {
+        if is_wake {
+            let slept = thread.sched.sleep_tick.swap(0, Ordering::Relaxed);
+            if slept != 0 {
+                let now = crate::thread::interact::now_ticks();
+                thread.interact.credit_sleep(now.saturating_sub(slept));
+                thread.interact.pctcpu_update(now, false);
+            }
+        }
+        thread.recompute_user_priority();
     }
     let is_remote = processor.id != current_processor().id;
     let outranks_target =
@@ -478,10 +519,8 @@ fn schedule_thread_on_cpu(thread: ThreadRef, processor: &Processor, is_new: bool
     // A timeshare *wake* (not a migration or reinsertion) goes to the front of the calendar and
     // rotates at equal priority: at once if the running thread has had its `WAKE_GRAN_TICKS`,
     // else at that tick, which the wake path arms (`needs_reschedule`).
-    let timeshare_wake = is_wake
-        && !is_reinsertion
-        && !boosted
-        && woken_priority.class == PriorityClass::User;
+    let timeshare_wake =
+        is_wake && !is_reinsertion && !boosted && woken_priority.class == PriorityClass::User;
     let kind = if is_reinsertion {
         0
     } else if is_remote {
@@ -489,7 +528,7 @@ fn schedule_thread_on_cpu(thread: ThreadRef, processor: &Processor, is_new: bool
     } else {
         match cur.as_ref() {
             Some(cur) if cur.is_idle_thread() => wakestats::WAKE_LOCAL_IDLE,
-            Some(cur) if boosted || woken_priority > cur.effective_priority() => {
+            Some(cur) if preempts_boosted(boosted, cur, woken_priority) => {
                 // A thread holding a mutex is in a critical section that some waiter -- possibly
                 // the one being woken -- is queued behind, so stopping it there trades a short
                 // hold for a scheduling round trip plus a wake for everyone waiting. Deferred only
@@ -504,7 +543,11 @@ fn schedule_thread_on_cpu(thread: ThreadRef, processor: &Processor, is_new: bool
                     wakestats::WAKE_LOCAL_MARKED
                 }
             }
-            Some(cur) if timeshare_wake && woken_priority == cur.effective_priority() => {
+            Some(cur)
+                if timeshare_wake
+                    && cur.effective_priority().class == PriorityClass::User
+                    && woken_priority >= cur.effective_priority() =>
+            {
                 if cur.sched.ran_ns(crate::instant::current_ns()) < WAKE_GRAN_NS {
                     wakestats::WAKE_LOCAL_LOST
                 } else if cur.get_mutex_count() > 0 {
@@ -547,7 +590,7 @@ fn schedule_thread_on_cpu(thread: ThreadRef, processor: &Processor, is_new: bool
 
     thread.sched.moving_to_queue(processor.id);
     thread.sched.reset_timeslice();
-    processor.rq.insert(thread, timeshare_wake);
+    processor.rq.insert(thread, timeshare_wake, preempted);
     // The bsp ticks every ms regardless; a remote target arms from `schedule_resched`.
     if timeshare_wake && kind != wakestats::WAKE_LOCAL_MARKED && !is_remote && !processor.is_bsp() {
         crate::clock::schedule_oneshot_tick(WAKE_GRAN_TICKS);
@@ -619,7 +662,7 @@ fn admit_on(th: ThreadRef, cpu: u32) -> Option<ThreadRef> {
         return Some(th);
     }
     let cpuid = select_cpu(&th, Some(cpu));
-    schedule_thread_on_cpu(th, get_processor(cpuid), false, false);
+    schedule_thread_on_cpu(th, get_processor(cpuid), false, false, false);
     None
 }
 
@@ -737,7 +780,7 @@ fn balance_node(node: &CPUTopoNode, steps: &mut usize) {
                         donor.id,
                         recipient.id
                     );
-                    schedule_thread_on_cpu(thread, recipient, false, false);
+                    schedule_thread_on_cpu(thread, recipient, false, false, false);
                     *steps += 10;
                 }
             } else if donor.current_load() == 1 {
@@ -1017,6 +1060,13 @@ pub fn schedule_new_thread(thread: Thread) -> ThreadRef {
     }
     *unsafe { thread.self_reference.get().as_mut().unwrap() } =
         Box::into_raw(Box::new(thread.clone()));
+    // Its spawner's sleep/run shape, scaled back so it is reclassified quickly on its own.
+    if let Some(cur) = current_thread_ref() {
+        if !cur.is_idle_thread() {
+            thread.interact.inherit_from(&cur.interact);
+            thread.recompute_user_priority();
+        }
+    }
     let cpuid = select_cpu(&thread, None);
     let processor = get_processor(cpuid);
     // A thread that has never run has no wait to be owed for. Without a stamp its zero
@@ -1024,7 +1074,7 @@ pub fn schedule_new_thread(thread: Thread) -> ThreadRef {
     // of its spawner's bookkeeping often enough to turn signal-test's "reader sees itself as
     // objid 0x0" race from 0/300 runs into 8/80.
     set_deadline(&thread, processor);
-    schedule_thread_on_cpu(thread.clone(), processor, true, false);
+    schedule_thread_on_cpu(thread.clone(), processor, true, false, false);
     thread
 }
 
@@ -1126,7 +1176,7 @@ pub fn schedule_thread(thread: ThreadRef) {
         processor.rq.current_load(),
         thread.id()
     );
-    schedule_thread_on_cpu(thread, processor, false, true);
+    schedule_thread_on_cpu(thread, processor, false, true, false);
 }
 
 pub fn create_idle_thread() {
@@ -1220,6 +1270,7 @@ fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
     }
 
     if !old.is_idle_thread() {
+        old.interact.pctcpu_update(now_ns / 1_000_000, true);
         set_deadline(old, cp);
         old.sched.left_tick.store(
             crate::instant::Instant::now().raw_ticks().max(1),
@@ -1227,6 +1278,7 @@ fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
         );
     }
     if !thread.is_idle_thread() {
+        thread.interact.pctcpu_update(now_ns / 1_000_000, false);
         cp.current_priority
             .store(thread.effective_priority().raw(), Ordering::Release);
         cp.exit_idle();
@@ -1302,6 +1354,21 @@ fn do_schedule(flags: SchedFlags) {
         processor.push_exited(cur.clone());
     }
 
+    // Preempted mid-slice, as opposed to expired (`schedule_hardtick`) or yielding: such a
+    // thread resumes at the head of the calendar's drain slot. Consumed on every path so a
+    // stale expiry cannot label a later preemption.
+    let preempted = !cur.sched.take_slice_end() && flags.contains(SchedFlags::PREEMPT);
+    if !cur.is_idle_thread()
+        && !cur.is_exiting()
+        && !flags.contains(SchedFlags::REINSERT)
+        && cur.base_priority().class == PriorityClass::User
+    {
+        cur.sched.sleep_tick.store(
+            crate::thread::interact::now_ticks().max(1),
+            Ordering::Relaxed,
+        );
+    }
+
     if !cur.is_idle_thread() && flags.contains(SchedFlags::REINSERT) {
         // If we are re-inserting the thread, we may want to send it to another CPUs queue.
         // Check if either we were preempted (timeslice expired, or needed reschedule for another
@@ -1324,13 +1391,13 @@ fn do_schedule(flags: SchedFlags) {
                 processor.id
             };
             let processor = get_processor(cpuid);
-            schedule_thread_on_cpu(cur.clone(), processor, false, false);
+            schedule_thread_on_cpu(cur.clone(), processor, false, false, preempted);
         } else {
             // This is a current thread to reinsert, but only count it as such if it is not
             // yielding so that other threads will run first. A yield with nothing queued would
             // only insert and take itself straight back, so it takes the shortcut.
             if flags.contains(SchedFlags::YIELD) && !processor.rq.is_empty() {
-                schedule_thread_on_cpu(cur.clone(), processor, false, false);
+                schedule_thread_on_cpu(cur.clone(), processor, false, false, false);
             } else {
                 // shortcut -- we are intending to just run this thread again.
                 processor.stats.resched_noop.fetch_add(1, Ordering::Relaxed);
@@ -1491,21 +1558,34 @@ pub fn needs_reschedule(ticking: bool) -> bool {
         return false;
     }
     let cur_pri = cur.effective_priority();
-    // The realtime queue -- realtime threads and timeshare ones past their deadline -- runs
-    // ahead of every timeshare thread, at once.
-    if processor.rq.has_realtime() && cur_pri.class < PriorityClass::Realtime {
+    let rq_pri = processor.rq.current_priority();
+    // The realtime queue -- realtime threads and the User threads `files_realtime` carries --
+    // runs ahead of every batch thread at once; over a boosted User thread only a realtime-class
+    // thread or a strictly higher value does (mirrors `preempts_boosted`).
+    if processor.rq.has_realtime()
+        && cur_pri.class < PriorityClass::Realtime
+        && (processor.rq.has_realtime_class()
+            || !is_boosted_user(&cur, cur_pri)
+            || rq_pri > cur_pri)
+    {
         return true;
     }
-    // Equal priority rotates for a queued wake once the running thread has had `WAKE_GRAN_TICKS`,
-    // and otherwise only on slice expiry (`schedule_hardtick`). Rotating at every tick switched
-    // two busy threads on the bsp every ms; rotating on expiry alone made a spin-waiting pair on
-    // one cpu wait a slice per hand-off, which a spinner has to avoid by yielding.
-    let rq_pri = processor.rq.current_priority();
-    rq_pri > cur_pri
-        || (ticking
-            && rq_pri == cur_pri
-            && processor.rq.wake_pending()
-            && cur.sched.ran_ns(crate::instant::current_ns()) >= WAKE_GRAN_NS)
+    if rq_pri.class > cur_pri.class {
+        return true;
+    }
+    if cur_pri.class != PriorityClass::User {
+        return rq_pri > cur_pri;
+    }
+    // ULE's preempt threshold: a batch User thread is never preempted for a higher User value
+    // alone -- values order the calendar, and the realtime queue above carries every User case
+    // that must preempt. A queued wake of equal or higher value rotates in once the running
+    // thread has had `WAKE_GRAN_TICKS`, and otherwise only on slice expiry (`schedule_hardtick`).
+    // Rotating at every tick switched two busy threads on the bsp every ms; rotating on expiry
+    // alone made a spin-waiting pair on one cpu wait a slice per hand-off.
+    ticking
+        && rq_pri >= cur_pri
+        && processor.rq.wake_pending()
+        && cur.sched.ran_ns(crate::instant::current_ns()) >= WAKE_GRAN_NS
 }
 
 #[thread_local]
@@ -1886,6 +1966,9 @@ pub fn schedule_hardtick() -> Option<u64> {
     let (current_tick, diff) = cp.rq.hardtick();
     let cur_pri = cur.effective_priority();
     let ts_expire = cur.sched.pay_ticks(diff, cp.rq.timeslice(cur_pri.class));
+    if ts_expire {
+        cur.sched.set_slice_end();
+    }
     // After paying, so the granularity `needs_reschedule` reads counts this tick.
     let resched = needs_reschedule(true);
     let rq_pri = cp.rq.current_priority();
@@ -1916,9 +1999,7 @@ pub fn schedule_hardtick() -> Option<u64> {
 
 pub fn schedule_resched() {
     let cp = current_processor();
-    cp.stats
-        .wakeups
-        .fetch_add(1, Ordering::Relaxed);
+    cp.stats.wakeups.fetch_add(1, Ordering::Relaxed);
     let cur = current_thread_ref();
     let is_idle = cur.map_or(true, |t| t.is_idle_thread());
     // A critical thread makes `needs_reschedule` answer no -- which means "I cannot tell yet", not
@@ -1979,10 +2060,15 @@ pub fn schedule_stattick(dt: Nanoseconds) {
                 Ordering::Relaxed,
             );
 
-            // Charge and re-rate the running thread. Its penalty may have moved, and this cpu's
-            // advertised priority is what remote wakes compare against.
+            // Charge and re-rate the running thread: cache misses, a stattick of run history,
+            // the cpu window, then the User value they feed. This cpu's advertised priority is
+            // what remote wakes compare against.
             crate::thread::cachemiss::charge_tick(&cur);
             cur.cachemiss.sample();
+            cur.interact.charge_run_tick();
+            cur.interact
+                .pctcpu_update(crate::thread::interact::now_ticks(), true);
+            cur.recompute_user_priority();
             cp.current_priority
                 .store(cur.effective_priority().raw(), Ordering::Release);
         }

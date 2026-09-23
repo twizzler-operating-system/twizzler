@@ -670,6 +670,9 @@ impl ThreadTracker {
                             cpu: stats.cpu,
                             cache_penalty: stats.cache_penalty,
                             llc_misses: stats.llc_misses.saturating_sub(thread.stats.llc_misses),
+                            interact_score: stats.interact_score,
+                            cpu_pct: stats.cpu_pct,
+                            priority: stats.priority,
                         }
                     };
                     thread.stats = stats;
@@ -999,7 +1002,11 @@ impl ThreadTracker {
             ids.len().max(1)
         };
         let cores = distinct(CpuTopoLevelKind::Core);
-        let now: Vec<String> = self.cpu_info.iter().map(|c| c.cur_mhz().to_string()).collect();
+        let now: Vec<String> = self
+            .cpu_info
+            .iter()
+            .map(|c| c.cur_mhz().to_string())
+            .collect();
         let caches: Vec<String> = first
             .caches()
             .iter()

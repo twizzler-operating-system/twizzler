@@ -13,8 +13,8 @@ use crate::pmc;
 pub const THRESHOLD: u64 = 10_000;
 /// Each further `STEP` misses per stattick costs one priority level.
 pub const STEP: u64 = 5_000;
-/// Three timeshare calendar buckets (`MAX_PRIORITY / NR_QUEUES` = 16 levels each). A User
-/// thread's value saturates at 0, so the class never changes.
+/// Levels taken off a batch User value (`interact::recompute`; interactive threads are exempt,
+/// as in the FreeBSD patch). Saturates at 0, so the class never changes.
 pub const MAX_PENALTY: u32 = 48;
 /// Each stattick keeps `1 - 2^-DECAY_SHIFT` of the smoothed history.
 pub const DECAY_SHIFT: u32 = 3;

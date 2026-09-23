@@ -409,6 +409,13 @@ pub struct ThreadSchedStats {
     pub cache_penalty: u32,
     /// Last-level cache misses charged to this thread since it started.
     pub llc_misses: u64,
+    /// ULE interactivity score: 0 is fully interactive, 100 fully batch; below 30 the thread
+    /// is filed ahead of the timeshare calendar.
+    pub interact_score: u32,
+    /// Recent cpu use, percent of the scheduler's decayed window.
+    pub cpu_pct: u32,
+    /// The priority the scheduler currently runs this thread at, packed `(class << 16) | value`.
+    pub priority: u32,
 }
 
 pub fn sys_thread_read_stats(target: ObjID, stats: &mut ThreadSchedStats) -> Result<(), TwzError> {

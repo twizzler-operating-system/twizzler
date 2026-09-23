@@ -87,9 +87,14 @@ pub struct ThreadSched {
     /// insert and read at take, so an affinity change while queued cannot desync the count.
     queued_movable: AtomicBool,
     pub deadline: AtomicU64,
+    /// `interact::now_ticks()` when this thread blocked, 0 while runnable; the wake credits the
+    /// difference as voluntary sleep.
     pub sleep_tick: AtomicU64,
     pub current_processor_queue: AtomicI32,
     pub timeslice: AtomicU32,
+    /// The hardtick expired this thread's slice; consumed at its reinsertion, which then files
+    /// it at the calendar offset instead of the drain head a preempted thread gets.
+    slice_end: AtomicBool,
     /// Queued by a wake and counted in its run queue's `pending_wakes`; cleared when taken.
     pub woken: AtomicBool,
     /// Bench-clock ns when this thread last took a cpu (`switch_to`); the wake granularity
@@ -145,6 +150,7 @@ impl Default for ThreadSched {
             sleep_tick: AtomicU64::new(0),
             current_processor_queue: AtomicI32::new(-1),
             timeslice: AtomicU32::new(0),
+            slice_end: AtomicBool::new(false),
             woken: AtomicBool::new(false),
             switched_in_ns: AtomicU64::new(0),
             wake_ticks: AtomicU64::new(0),
@@ -235,6 +241,14 @@ impl ThreadSched {
 
     pub fn reset_timeslice(&self) {
         self.timeslice.store(0, Ordering::Release);
+    }
+
+    pub fn set_slice_end(&self) {
+        self.slice_end.store(true, Ordering::Release);
+    }
+
+    pub fn take_slice_end(&self) -> bool {
+        self.slice_end.swap(false, Ordering::AcqRel)
     }
 
     pub fn moving_to_queue(&self, cpu: u32) {

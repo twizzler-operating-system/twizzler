@@ -53,6 +53,7 @@ use crate::{
 pub mod cachemiss;
 pub mod entry;
 mod flags;
+pub mod interact;
 pub mod kstack;
 pub mod locktrack;
 pub mod priority;
@@ -93,6 +94,7 @@ pub struct Thread {
     pub kernel_stack: KernelStack,
     pub stats: ThreadStats,
     pub cachemiss: cachemiss::CacheMiss,
+    pub interact: interact::Interact,
     spawn_args: Option<ThreadSpawnArgs>,
     pub control_object: ControlObjectCacher<ThreadRepr>,
     pub upcall_target: Spinlock<Option<UpcallTarget>>,
@@ -353,6 +355,7 @@ impl Thread {
             donated_priority: AtomicU32::new(u32::MAX),
             stats: ThreadStats::new(crate::processor::sched::current_stat_ticks()),
             cachemiss: cachemiss::CacheMiss::default(),
+            interact: interact::Interact::new(priority.value),
             memory_context: ctx,
             spawn_args,
             control_object: ControlObjectCacher::new(ThreadRepr::new(repr_flags)),

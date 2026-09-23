@@ -166,6 +166,9 @@ pub fn thread_ctrl(
                 stats_ptr.cpu = thread.sched.last_cpu.load(Ordering::Relaxed) as u32;
                 stats_ptr.cache_penalty = thread.cachemiss.penalty();
                 stats_ptr.llc_misses = thread.cachemiss.total();
+                stats_ptr.interact_score = thread.interact.score();
+                stats_ptr.cpu_pct = thread.interact.cpu_pct();
+                stats_ptr.priority = thread.effective_priority().raw();
             } else {
                 return [1, TwzError::INVALID_ARGUMENT.raw()];
             }

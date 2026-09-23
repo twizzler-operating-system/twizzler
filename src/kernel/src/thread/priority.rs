@@ -138,6 +138,7 @@ impl Thread {
         if pri == old {
             return;
         }
+        self.recompute_user_priority();
         if self.is_current_thread() {
             // Lowering our own priority can mean something already queued here outranks us now.
             if pri < old && needs_reschedule(false) {
@@ -152,13 +153,21 @@ impl Thread {
         }
     }
 
+    /// Recompute the dynamic User value (`interact`) from the base value, the sleep/run
+    /// history and the cache-miss penalty. No-op for other classes.
+    pub fn recompute_user_priority(&self) {
+        let base = Priority::from_raw(self.priority.load(Ordering::SeqCst));
+        if base.class == PriorityClass::User {
+            self.interact
+                .recompute(base.value, self.cachemiss.penalty());
+        }
+    }
+
     pub fn effective_priority(&self) -> Priority {
         let mut priority = Priority::from_raw(self.priority.load(Ordering::SeqCst));
-        // Cache-hostile User threads run at a lower value in the same class; see `cachemiss`.
+        // A User thread's base value is its nice weight; the value it runs at is computed.
         if priority.class == PriorityClass::User {
-            priority.value = priority
-                .value
-                .saturating_sub(self.cachemiss.penalty() as u16);
+            priority.value = self.interact.value();
         }
         if self.flags.load(Ordering::SeqCst) & THREAD_HAS_DONATED_PRIORITY != 0 {
             let donated_priority = Priority::from_raw(self.donated_priority.load(Ordering::SeqCst));
