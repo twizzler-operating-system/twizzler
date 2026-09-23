@@ -12,7 +12,12 @@ use crate::{
     interrupt::Destination,
     memory::VirtAddr,
     once::Once,
-    processor::{Processor, mp::current_processor},
+    processor::{
+        Processor,
+        mp::current_processor,
+        sched::CPUTopoType,
+        topology::{CacheDesc, CacheKind, TopoPath, TopoStep},
+    },
 };
 
 #[repr(C)]
@@ -221,63 +226,137 @@ pub fn enumerate_clocks() {
     if let Some(wall) = super::kvm::realtime_clock() {
         crate::time::register_best_realtime(wall);
     }
+
+    super::freq::init();
 }
 
-/// Derive this CPU's path through the topology tree, from coarsest grouping to finest. Each
-/// entry is the index of the containing node at that level, paired with whether that level
-/// groups SMT threads.
-pub fn get_topology() -> Vec<(usize, bool)> {
+/// This cpu's path through the topology tree, coarsest grouping first, from CPUID leaf 0xb
+/// (which groups the x2APIC id bits into SMT/core/module/die) merged with leaf 4 (which says
+/// how many logical cpus share each cache, i.e. at which id bit each cache is shared).
+pub fn get_topology() -> TopoPath {
     let cpuid = x86::cpuid::CpuId::new();
 
+    let caches: Vec<(u32, CacheDesc)> = cpuid
+        .get_cache_parameters()
+        .map(|params| {
+            params
+                .filter_map(|c| {
+                    let kind = match c.cache_type() {
+                        x86::cpuid::CacheType::Data => CacheKind::Data,
+                        x86::cpuid::CacheType::Instruction => CacheKind::Instruction,
+                        x86::cpuid::CacheType::Unified => CacheKind::Unified,
+                        _ => return None,
+                    };
+                    let desc = CacheDesc {
+                        level: c.level(),
+                        kind,
+                        size: (c.associativity()
+                            * c.physical_line_partitions()
+                            * c.coherency_line_size()
+                            * c.sets()) as u64,
+                        line_size: c.coherency_line_size() as u32,
+                        ways: c.associativity() as u32,
+                        sets: c.sets() as u32,
+                        inclusive: c.is_inclusive(),
+                        fully_assoc: c.is_fully_associative(),
+                    };
+                    Some((sharing_shift(c.max_cores_for_cache()), desc))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     let Some(bitsinfo) = cpuid.get_extended_topology_info() else {
-        // No CPUID leaf 0xb. Fall back to the legacy initial APIC ID, which gives each CPU its
-        // own node but no grouping information.
+        // No CPUID leaf 0xb: the legacy initial APIC id and whatever leaf 4 says about sharing.
         let id = cpuid
             .get_feature_info()
-            .map_or(0, |fi| fi.initial_local_apic_id() as usize);
-        return alloc::vec![(id, false)];
+            .map_or(0, |fi| fi.initial_local_apic_id() as u32);
+        return topo_path(&[(0, CPUTopoType::Core)], &caches, id);
     };
 
-    // Each level reports a cumulative shift: shifting the x2APIC ID right by shifts[i] yields the
-    // ID of the entity one level above level i, so shifts[0] (past the SMT bits) yields the core.
-    let mut shifts: Vec<u32> = alloc::vec![];
-    let mut smt_level = None;
+    let mut reported: Vec<(u32, x86::cpuid::TopologyType)> = alloc::vec![];
     let mut id = 0;
     for bi in bitsinfo {
-        let level = bi.level_number() as usize;
-        shifts.resize(core::cmp::max(level + 1, shifts.len()), 0);
-        shifts[level] = bi.shift_right_for_next_apic_id();
-        if bi.level_type() == x86::cpuid::TopologyType::SMT && bi.processors() > 1 {
-            smt_level = Some(level);
-        }
+        reported.push((bi.shift_right_for_next_apic_id(), bi.level_type()));
         id = bi.x2apic_id();
     }
-
-    topo_path(&shifts, smt_level, id)
+    topo_path(&group_levels(&reported), &caches, id)
 }
 
-/// Build the topology path from the per-level cumulative APIC ID shifts reported by CPUID leaf
-/// 0xb. Split out from [get_topology] so it can be tested against topologies we cannot boot.
-fn topo_path(shifts: &[u32], smt_level: Option<usize>, id: u32) -> Vec<(usize, bool)> {
-    // Walk levels coarsest-first, omitting the outermost (a single package adds no grouping).
-    // Levels contributing no ID bits are skipped so we don't nest a node with an identical
-    // cpuset; that test is on the shifts rather than the IDs, so every CPU agrees on the shape
-    // of the path even though the indices differ.
-    let mut path = alloc::vec![];
-    for i in (1..shifts.len()).rev() {
-        if shifts[i] == shifts[i - 1] {
-            continue;
+/// The id bit above which `sharing` logical cpus agree: the shift of the node a cache shared by
+/// that many sits at.
+fn sharing_shift(sharing: usize) -> u32 {
+    if sharing <= 1 {
+        0
+    } else {
+        u32::BITS - (sharing as u32 - 1).leading_zeros()
+    }
+}
+
+/// Leaf 0xb's levels as the groups they delimit. Level i's shift is where the entity one level
+/// up begins, so the group at that shift has level i+1's type; the outermost is the package.
+fn group_levels(reported: &[(u32, x86::cpuid::TopologyType)]) -> Vec<(u32, CPUTopoType)> {
+    use x86::cpuid::TopologyType;
+    let mut levels: Vec<(u32, CPUTopoType)> = reported
+        .iter()
+        .enumerate()
+        .map(|(i, (shift, _))| {
+            let kind = match reported.get(i + 1).map(|r| &r.1) {
+                Some(TopologyType::Core) => CPUTopoType::Core,
+                Some(TopologyType::Module) => CPUTopoType::Module,
+                Some(TopologyType::Die) => CPUTopoType::Die,
+                Some(_) => CPUTopoType::Other,
+                None => CPUTopoType::Package,
+            };
+            (*shift, kind)
+        })
+        .collect();
+    // Without an SMT level nothing groups a cpu with its own core.
+    if reported.first().is_none_or(|r| r.1 != TopologyType::SMT) {
+        levels.insert(0, (0, CPUTopoType::Core));
+    }
+    levels
+}
+
+/// Build the path from the groups, each `(shift, kind)`: the cpus whose id bits above `shift`
+/// agree form one node. Split out from [get_topology] so it can be tested against topologies we
+/// cannot boot.
+fn topo_path(levels: &[(u32, CPUTopoType)], caches: &[(u32, CacheDesc)], id: u32) -> TopoPath {
+    // Coarsest first. Equal shifts collapse to one node keeping the outer kind (a die that is its
+    // whole package adds nothing). A cache shared at an existing group's shift attaches there;
+    // one shared at a new shift becomes a group of its own. All of this is decided on shifts,
+    // never on ids, so every cpu derives the same shape.
+    let mut groups: Vec<(u32, CPUTopoType)> = levels.iter().rev().copied().collect();
+    for (shift, _) in caches {
+        if !groups.iter().any(|g| g.0 == *shift) {
+            groups.push((*shift, CPUTopoType::Cache));
         }
-        path.push(((id >> shifts[i - 1]) as usize, false));
     }
-    if path.is_empty() {
-        path.push((0, false));
+    groups.sort_by(|a, b| b.0.cmp(&a.0));
+    groups.dedup_by_key(|g| g.0);
+
+    let mut steps = Vec::with_capacity(groups.len());
+    let mut above: Option<u32> = None;
+    for (shift, kind) in &groups {
+        // Relative to the parent, so children index densely.
+        let index = match above {
+            None => id >> shift,
+            Some(above) => (id >> shift) & ((1u32 << (above - shift)) - 1),
+        };
+        steps.push(TopoStep {
+            index: index as usize,
+            kind: *kind,
+        });
+        above = Some(*shift);
     }
-    // SMT siblings share one thread node beneath their core.
-    if smt_level == Some(0) {
-        path.push((0, true));
-    }
-    path
+    let caches = caches
+        .iter()
+        .map(|(shift, cache)| {
+            let depth = groups.iter().position(|g| g.0 == *shift).unwrap() + 1;
+            (depth, *cache)
+        })
+        .collect();
+    TopoPath { steps, caches }
 }
 
 /// The number of PCIDs the hardware provides: cr3[11:0].
@@ -491,64 +570,71 @@ pub fn spin_wait_iteration() {
 
 #[cfg(test)]
 mod tests {
-    use super::topo_path;
+    use alloc::vec::Vec;
 
-    /// A single CPU reports no meaningful levels, and collapses to one flat node.
+    use x86::cpuid::TopologyType::{self, *};
+
+    use super::{group_levels, sharing_shift, topo_path};
+    use crate::processor::{
+        sched::CPUTopoType,
+        topology::{CacheDesc, CacheKind},
+    };
+
+    fn steps(reported: &[(u32, TopologyType)], id: u32) -> Vec<(usize, CPUTopoType)> {
+        topo_path(&group_levels(reported), &[], id)
+            .steps
+            .iter()
+            .map(|s| (s.index, s.kind))
+            .collect()
+    }
+
+    fn cache(level: u8, sharing: usize) -> (u32, CacheDesc) {
+        (
+            sharing_shift(sharing),
+            CacheDesc {
+                level,
+                kind: CacheKind::Unified,
+                size: 0,
+                line_size: 64,
+                ways: 8,
+                sets: 64,
+                inclusive: false,
+                fully_assoc: false,
+            },
+        )
+    }
+
+    /// A single CPU collapses to one node.
     #[twizzler_kernel_macros::kernel_test]
     fn test_topo_single_cpu() {
-        assert_eq!(topo_path(&[0, 0], None, 0), alloc::vec![(0, false)]);
-    }
-
-    /// Four cores, no SMT: each core is its own node, no thread level.
-    #[twizzler_kernel_macros::kernel_test]
-    fn test_topo_no_smt() {
-        for id in 0..4u32 {
-            assert_eq!(
-                topo_path(&[0, 2], None, id),
-                alloc::vec![(id as usize, false)]
-            );
-        }
-    }
-
-    /// Two threads by two cores: siblings share a core node and a thread node.
-    #[twizzler_kernel_macros::kernel_test]
-    fn test_topo_smt_two_cores() {
-        let paths: alloc::vec::Vec<_> = (0..4u32)
-            .map(|id| topo_path(&[1, 2], Some(0), id))
-            .collect();
-        assert_eq!(paths[0], alloc::vec![(0, false), (0, true)]);
-        assert_eq!(paths[0], paths[1]);
-        assert_eq!(paths[2], alloc::vec![(1, false), (0, true)]);
-        assert_eq!(paths[2], paths[3]);
-    }
-
-    /// Two threads by four cores. The old code shifted by (core_bits - logical_bits) == 2 here,
-    /// which grouped pairs of cores together instead of SMT siblings.
-    #[twizzler_kernel_macros::kernel_test]
-    fn test_topo_smt_four_cores() {
-        for id in 0..8u32 {
-            assert_eq!(
-                topo_path(&[1, 3], Some(0), id),
-                alloc::vec![((id >> 1) as usize, false), (0, true)]
-            );
-        }
-        // Siblings share a core; neighbours across a core boundary do not.
         assert_eq!(
-            topo_path(&[1, 3], Some(0), 4),
-            topo_path(&[1, 3], Some(0), 5)
-        );
-        assert_ne!(
-            topo_path(&[1, 3], Some(0), 5),
-            topo_path(&[1, 3], Some(0), 6)
+            steps(&[(0, SMT), (0, Core)], 0),
+            alloc::vec![(0, CPUTopoType::Package)]
         );
     }
 
-    /// Three levels (SMT, core, die) used to hit the unimplemented!().
+    /// SMT siblings land in one core; cpus in different cores do not.
+    #[twizzler_kernel_macros::kernel_test]
+    fn test_topo_smt_siblings() {
+        let r = [(1, SMT), (4, Core)];
+        assert_eq!(
+            steps(&r, 5),
+            alloc::vec![(0, CPUTopoType::Package), (2, CPUTopoType::Core)]
+        );
+        assert_eq!(steps(&r, 4), steps(&r, 5));
+        assert_ne!(steps(&r, 5), steps(&r, 6));
+    }
+
+    /// Three levels, with indices relative to the parent.
     #[twizzler_kernel_macros::kernel_test]
     fn test_topo_three_levels() {
         assert_eq!(
-            topo_path(&[1, 3, 5], Some(0), 107),
-            alloc::vec![(13, false), (53, false), (0, true)]
+            steps(&[(1, SMT), (3, Core), (5, Die)], 107),
+            alloc::vec![
+                (3, CPUTopoType::Package),
+                (1, CPUTopoType::Die),
+                (1, CPUTopoType::Core)
+            ]
         );
     }
 
@@ -556,20 +642,66 @@ mod tests {
     #[twizzler_kernel_macros::kernel_test]
     fn test_topo_degenerate_level_skipped() {
         assert_eq!(
-            topo_path(&[1, 2, 2], Some(0), 7),
-            alloc::vec![(3, false), (0, true)]
+            steps(&[(1, SMT), (2, Core), (2, Die)], 7),
+            alloc::vec![(1, CPUTopoType::Package), (1, CPUTopoType::Core)]
         );
     }
 
     /// Every CPU must derive the same path length, or the topology tree is inconsistent.
     #[twizzler_kernel_macros::kernel_test]
     fn test_topo_uniform_depth() {
-        for shifts in [[0u32, 2, 2], [1, 3, 5], [1, 2, 2], [0, 0, 0]] {
-            let len = topo_path(&shifts, Some(0), 0).len();
+        for r in [
+            alloc::vec![(0, SMT), (2, Core), (2, Die)],
+            alloc::vec![(1, SMT), (3, Core), (5, Die)],
+            alloc::vec![(1, SMT), (2, Core), (2, Die)],
+            alloc::vec![(0, SMT), (0, Core), (0, Die)],
+        ] {
+            let len = steps(&r, 0).len();
             for id in 1..64u32 {
-                assert_eq!(topo_path(&shifts, Some(0), id).len(), len);
+                assert_eq!(steps(&r, id).len(), len);
             }
         }
+    }
+
+    /// Caches attach to the group they are shared at: per-core caches to the core, a
+    /// package-wide L3 to the package, and one shared at a shift no level uses gets a level.
+    #[twizzler_kernel_macros::kernel_test]
+    fn test_topo_cache_levels() {
+        let levels = group_levels(&[(1, SMT), (4, Core)]);
+        let caches = [cache(1, 2), cache(2, 4), cache(3, 16)];
+        let path = topo_path(&levels, &caches, 5);
+        let kinds: Vec<_> = path.steps.iter().map(|s| (s.index, s.kind)).collect();
+        assert_eq!(
+            kinds,
+            alloc::vec![
+                (0, CPUTopoType::Package),
+                (1, CPUTopoType::Cache),
+                (0, CPUTopoType::Core)
+            ]
+        );
+        let depths: Vec<_> = path.caches.iter().map(|(d, c)| (c.level, *d)).collect();
+        assert_eq!(depths, alloc::vec![(1, 3), (2, 2), (3, 1)]);
+    }
+
+    /// Without leaf 0xb every cpu is its own core, and cache sharing still groups them.
+    #[twizzler_kernel_macros::kernel_test]
+    fn test_topo_no_leaf_b() {
+        let path = topo_path(&[(0, CPUTopoType::Core)], &[cache(3, 16)], 5);
+        let kinds: Vec<_> = path.steps.iter().map(|s| (s.index, s.kind)).collect();
+        assert_eq!(
+            kinds,
+            alloc::vec![(0, CPUTopoType::Cache), (5, CPUTopoType::Core)]
+        );
+        assert_eq!(path.caches[0].0, 1);
+    }
+
+    #[twizzler_kernel_macros::kernel_test]
+    fn test_sharing_shift() {
+        assert_eq!(sharing_shift(0), 0);
+        assert_eq!(sharing_shift(1), 0);
+        assert_eq!(sharing_shift(2), 1);
+        assert_eq!(sharing_shift(3), 2);
+        assert_eq!(sharing_shift(16), 4);
     }
 }
 

@@ -3,7 +3,9 @@ use core::sync::atomic::Ordering;
 use twizzler_abi::{
     arch::ArchRegisters,
     object::ObjID,
-    syscall::{SctxSwitchFlags, ThreadControl, ThreadSchedStats, ThreadSctxIds, ThreadSpawnArgs},
+    syscall::{
+        CpuMask, SctxSwitchFlags, ThreadControl, ThreadSchedStats, ThreadSctxIds, ThreadSpawnArgs,
+    },
     thread::ExecutionState,
     upcall::{ResumeFlags, UpcallFrame, UpcallTarget},
 };
@@ -11,8 +13,8 @@ use twizzler_rt_abi::{Result, error::TwzError};
 
 use crate::{
     processor::{
-        mp::all_processors,
-        sched::{SchedFlags, lookup_thread_repr, schedule},
+        mp::{all_processors, current_processor, with_each_active_processor},
+        sched::{CpuSet, SchedFlags, lookup_thread_repr, schedule},
     },
     security::SwitchResult,
     syscall::{
@@ -21,6 +23,27 @@ use crate::{
     },
     thread::{current_thread_ref, priority::Priority},
 };
+
+/// A [CpuMask] from `len` user bytes at `ptr`: a shorter mask is zero-extended, a longer one
+/// truncated, so the layout can grow without breaking either side.
+fn read_cpu_mask(ptr: u64, len: u64) -> Option<CpuMask> {
+    let src = unsafe { crate::syscall::create_user_slice::<u8>(ptr, len)? };
+    let mut mask = CpuMask::empty();
+    let n = src.len().min(core::mem::size_of::<CpuMask>());
+    let dst = unsafe { core::slice::from_raw_parts_mut(&mut mask as *mut CpuMask as *mut u8, n) };
+    dst.copy_from_slice(&src[..n]);
+    Some(mask)
+}
+
+fn write_cpu_mask(ptr: u64, len: u64, mask: &CpuMask) -> bool {
+    let Some(dst) = (unsafe { crate::syscall::create_user_slice::<u8>(ptr, len) }) else {
+        return false;
+    };
+    let n = dst.len().min(core::mem::size_of::<CpuMask>());
+    let src = unsafe { core::slice::from_raw_parts(mask as *const CpuMask as *const u8, n) };
+    dst[..n].copy_from_slice(src);
+    true
+}
 
 pub fn sys_spawn(args: &ThreadSpawnArgs) -> Result<ObjID> {
     crate::thread::entry::start_new_user(*args)
@@ -138,6 +161,11 @@ pub fn thread_ctrl(
                 stats_ptr.pager_pages = thread.stats.pager_pages.load(Ordering::Relaxed);
                 stats_ptr.syscalls = thread.stats.syscalls.load(Ordering::Relaxed);
                 stats_ptr.wakes = thread.stats.wakes.load(Ordering::Relaxed);
+                stats_ptr.switches = thread.stats.switches.load(Ordering::Relaxed);
+                stats_ptr.migrations = thread.stats.migrations.load(Ordering::Relaxed);
+                stats_ptr.cpu = thread.sched.last_cpu.load(Ordering::Relaxed) as u32;
+                stats_ptr.cache_penalty = thread.cachemiss.penalty();
+                stats_ptr.llc_misses = thread.cachemiss.total();
             } else {
                 return [1, TwzError::INVALID_ARGUMENT.raw()];
             }
@@ -284,6 +312,53 @@ pub fn thread_ctrl(
             // TODO: check perms (raising priority, and touching another thread, should both be
             // privileged).
             thread.set_priority(pri);
+            return [0, 0];
+        }
+        ThreadControl::SetAffinity => {
+            let thread = if let Some(target) = target {
+                lookup_thread_repr(target)
+            } else {
+                current_thread_ref().cloned()
+            };
+            let Some(thread) = thread else {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            };
+            let Some(mask) = read_cpu_mask(arg, arg2) else {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            };
+            let set = CpuSet::from_words(mask.bits);
+            // A mask naming no cpu that is up would strand the thread.
+            let mut runnable = false;
+            with_each_active_processor(|p| runnable |= set.contains(p.id));
+            if !runnable {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            }
+            // TODO: check perms, as for SetPriority.
+            thread.sched.set_affinity(&set);
+            // The caller moves now if it must; any other thread running outside its new mask
+            // moves at its next hardtick (`needs_reschedule`), a queued one when it is taken.
+            if current_thread_ref().is_some_and(|cur| *cur == thread)
+                && !set.contains(current_processor().id)
+            {
+                schedule(SchedFlags::YIELD | SchedFlags::REINSERT);
+            }
+            return [0, 0];
+        }
+        ThreadControl::GetAffinity => {
+            let thread = if let Some(target) = target {
+                lookup_thread_repr(target)
+            } else {
+                current_thread_ref().cloned()
+            };
+            let Some(thread) = thread else {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            };
+            let mask = CpuMask {
+                bits: *thread.sched.affinity.get().words(),
+            };
+            if !write_cpu_mask(arg, arg2, &mask) {
+                return [1, TwzError::INVALID_ARGUMENT.raw()];
+            }
             return [0, 0];
         }
         ThreadControl::GetPriority => {

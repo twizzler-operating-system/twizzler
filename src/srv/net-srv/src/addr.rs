@@ -1,11 +1,16 @@
-use std::sync::Mutex;
+use std::{
+    collections::{HashSet, VecDeque},
+    sync::Mutex,
+};
 
 use smoltcp::wire::EthernetAddress;
 
-/// QEMU user networking hands the guest 10.0.2.15 first, and `qemu.rs`'s `hostfwd` targets that
-/// address, so the first client to open keeps it and later ones climb from there. `.2` (gateway)
-/// and `.3` (DNS) belong to slirp.
-const FIRST_OCTET: u8 = 15;
+/// QEMU user networking's default guest address, which `qemu.rs`'s `hostfwd` targets. It is
+/// never handed out automatically: only a client that asks for it (sshd, via `TWZ_NET_ADDR` in
+/// init) gets it, so the forwarded port lands on sshd whatever order compartments open in. `.2`
+/// (gateway) and `.3` (DNS) belong to slirp.
+pub const HOSTFWD_OCTET: u8 = 15;
+const FIRST_AUTO_OCTET: u8 = 16;
 const LAST_OCTET: u8 = 250;
 
 /// Per-client L2/L3 identity.
@@ -34,27 +39,54 @@ impl ClientAddr {
     }
 }
 
+/// FIFO on purpose: a released octet goes to the back, so it is reused only after every other
+/// free one. Its MAC is derived from it, so neighbor caches stay right across reuse; the quiet
+/// period is for the peer side, where slirp or a remote may still hold TCP state for the old
+/// holder's tuples. Same reasoning as `PortAssigner::get_ephemeral_port`.
 pub struct AddrAssigner {
-    inner: Mutex<Vec<u8>>,
+    inner: Mutex<Pool>,
+}
+
+struct Pool {
+    free: VecDeque<u8>,
+    taken: HashSet<u8>,
 }
 
 impl AddrAssigner {
     pub fn new() -> Self {
-        // Popped from the end, so the first client gets FIRST_OCTET.
         Self {
-            inner: Mutex::new((FIRST_OCTET..=LAST_OCTET).rev().collect()),
+            inner: Mutex::new(Pool {
+                free: (FIRST_AUTO_OCTET..=LAST_OCTET).collect(),
+                taken: HashSet::new(),
+            }),
         }
     }
 
     pub fn allocate(&self) -> Option<ClientAddr> {
-        self.inner
-            .lock()
-            .unwrap()
-            .pop()
-            .map(|octet| ClientAddr { octet })
+        let mut pool = self.inner.lock().unwrap();
+        let octet = pool.free.pop_front()?;
+        pool.taken.insert(octet);
+        Some(ClientAddr { octet })
+    }
+
+    /// A specific octet, if nobody holds it. Pulls it out of the free list if it is there.
+    pub fn reserve(&self, octet: u8) -> Option<ClientAddr> {
+        if !(HOSTFWD_OCTET..=LAST_OCTET).contains(&octet) {
+            return None;
+        }
+        let mut pool = self.inner.lock().unwrap();
+        if !pool.taken.insert(octet) {
+            return None;
+        }
+        pool.free.retain(|o| *o != octet);
+        Some(ClientAddr { octet })
     }
 
     pub fn release(&self, addr: ClientAddr) {
-        self.inner.lock().unwrap().push(addr.octet);
+        let mut pool = self.inner.lock().unwrap();
+        pool.taken.remove(&addr.octet);
+        if addr.octet != HOSTFWD_OCTET {
+            pool.free.push_back(addr.octet);
+        }
     }
 }

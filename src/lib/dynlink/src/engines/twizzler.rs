@@ -77,15 +77,8 @@ pub fn load_segments(
         let len = directive.filesz;
 
         if !directive.load_flags.contains(LoadFlags::TARGETS_DATA) {
-            // Ensure we can direct-map the object for the text directives.
-            //
-            // The logic for direct mapping between x86_64 and aarch64 is different
-            // because the linker/compiler sets the page size to be 64K on aarch64.
-            // So we only check if we can direct map for x86_64. The source and
-            // destination offsets (for aarch64) would match up if a 64K page size
-            // for the NULLPAGE was used or we modified the destination address to
-            // be after the NULLPAGE. Loading still works on aarch64, but copies data.
-            #[cfg(target_arch = "x86_64")]
+            // The text object is the ELF object itself, so text must be direct-mappable: the
+            // target links with -z max-page-size=0x1000 to keep p_offset == p_vaddr - NULLPAGE.
             if src_start != dest_start {
                 tracing::error!(
                     "invalid align: {:?}, {:x} {:x}",

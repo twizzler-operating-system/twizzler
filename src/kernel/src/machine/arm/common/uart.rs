@@ -74,15 +74,15 @@ impl PL011 {
             let cr = self.read_reg(Registers::UARTCR);
             self.write_reg(Registers::UARTCR, (cr & !0b1) as u32);
         }
-        // wait for end of tx or rx of current char
-        // while BUSY, !TXFE, !RXFE --> wait
+        // wait for the end of the current tx char: while BUSY, !TXFE --> wait. Not for rx to
+        // drain -- nothing drains it before this returns, and the harness may already have sent
+        // input (xtask writes `status` to qemu's stdin as a liveness probe).
         loop {
             let flag_reg = self.read_reg(Registers::UARTFR);
             let tx_busy = (flag_reg >> 3) & 0b1 == 1;
             let tx_empty = (flag_reg >> 7) & 0b1 == 1;
-            let rx_empty = (flag_reg >> 4) & 0b1 == 1;
 
-            if !tx_busy && tx_empty && rx_empty {
+            if !tx_busy && tx_empty {
                 break;
             }
         }
@@ -138,41 +138,10 @@ impl PL011 {
 
     /// Enable interrupts for the RX side if the UART.
     pub unsafe fn enable_rx_interrupt(&self) {
-        // program the UART: (page 62/3-16)
-        // disable UART
-        {
-            let cr = self.read_reg(Registers::UARTCR);
-            self.write_reg(Registers::UARTCR, (cr & !0b1) as u32);
-        }
-        // wait for end of tx or rx of current char
-        // while BUSY, !TXFE, !RXFE --> wait
-        loop {
-            let flag_reg = self.read_reg(Registers::UARTFR);
-            let tx_busy = (flag_reg >> 3) & 0b1 == 1;
-            let tx_empty = (flag_reg >> 7) & 0b1 == 1;
-            let rx_empty = (flag_reg >> 4) & 0b1 == 1;
-
-            if !tx_busy && tx_empty && rx_empty {
-                break;
-            }
-        }
-        // Flush the transmit FIFO by setting the FEN bit to 0 in the
-        // Line Control Register, UARTLCR_H on page 3-12.
-        let lcr = self.read_reg(Registers::UARTLCR_H);
-        self.write_reg(Registers::UARTLCR_H, (lcr & !(0b1 << 4)) as u32);
-
-        // Enable interrupts for the RX side.
-        // See RXIM: bit 4 of UARTIMSC from table 3-14, pg 3-18
-        // - On a write of 1, the mask of the UARTRXINTR interrupt is set.
-        // - A write of 0 clears the mask.
-        // From 2.8, pg 2-22: "Setting the mask bit HIGH enables the interrupt."
+        // Just the mask bit (RXIM, bit 4 of UARTIMSC): unlike `init`, this must not wait for the
+        // rx side to drain, since input already received is only ever drained by the interrupt
+        // being enabled here.
         self.write_reg(Registers::UARTIMSC, (0b1 << 4) as u32);
-
-        // enable uart
-        {
-            let cr = self.read_reg(Registers::UARTCR);
-            self.write_reg(Registers::UARTCR, (cr | 0b1) as u32);
-        }
     }
 
     pub fn clear_rx_interrupt(&self) {

@@ -69,6 +69,18 @@ impl TryFrom<u128> for DevFs {
 const NSID_EXTERNAL: ObjID = ObjID::new(1);
 const NSID_DEV: ObjID = ObjID::new(2);
 
+/// The object a directory stat reads the mtime of for namespace `id`. The external root's own id
+/// is a placeholder the pager cannot serve, so it reads the ext4 root; `/dev` has no object at all.
+pub fn namespace_stat_object(id: ObjID) -> Option<ObjID> {
+    if id == NSID_DEV {
+        None
+    } else if id == NSID_EXTERNAL {
+        Some(ObjID::new(pager_dynamic::ino_to_objid(2)))
+    } else {
+        Some(id)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, twizzler::Invariant)]
 #[repr(C)]
 pub struct NsNode {

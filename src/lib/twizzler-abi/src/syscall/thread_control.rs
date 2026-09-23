@@ -398,6 +398,17 @@ pub struct ThreadSchedStats {
     /// Times this thread went from blocked to runnable. A thread with a high wake rate and
     /// little cpu time is polling: it is being woken to do nothing.
     pub wakes: u64,
+    /// Times this thread was switched onto a cpu, and how many of those were a different cpu
+    /// than the one it last ran on.
+    pub switches: u64,
+    pub migrations: u64,
+    /// The cpu this thread last ran on (`u32::MAX` if never).
+    pub cpu: u32,
+    /// Priority levels the scheduler is currently taking off this thread for its last-level
+    /// cache miss rate (0 when it is not cache-hostile, or the kernel has no counter).
+    pub cache_penalty: u32,
+    /// Last-level cache misses charged to this thread since it started.
+    pub llc_misses: u64,
 }
 
 pub fn sys_thread_read_stats(target: ObjID, stats: &mut ThreadSchedStats) -> Result<(), TwzError> {
@@ -590,4 +601,105 @@ pub fn sys_thread_ctrl(
         )
     };
     todo!("not ready yet!")
+}
+
+/// Words in a [CpuMask]: room for 1024 cpus, the kernel's limit.
+pub const CPU_MASK_WORDS: usize = 16;
+
+/// A set of cpus by kernel cpu id -- the ids [super::CpuInfo::id] and [ThreadSchedStats::cpu]
+/// report, which are not dense. Used for thread affinity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct CpuMask {
+    pub bits: [u64; CPU_MASK_WORDS],
+}
+
+impl CpuMask {
+    pub const MAX_CPUS: usize = CPU_MASK_WORDS * 64;
+
+    pub const fn empty() -> Self {
+        Self {
+            bits: [0; CPU_MASK_WORDS],
+        }
+    }
+
+    pub const fn all() -> Self {
+        Self {
+            bits: [u64::MAX; CPU_MASK_WORDS],
+        }
+    }
+
+    pub fn single(cpu: u32) -> Self {
+        let mut mask = Self::empty();
+        mask.insert(cpu);
+        mask
+    }
+
+    pub fn insert(&mut self, cpu: u32) {
+        self.bits[cpu as usize / 64] |= 1 << (cpu % 64);
+    }
+
+    pub fn remove(&mut self, cpu: u32) {
+        self.bits[cpu as usize / 64] &= !(1 << (cpu % 64));
+    }
+
+    pub fn contains(&self, cpu: u32) -> bool {
+        (cpu as usize) < Self::MAX_CPUS && self.bits[cpu as usize / 64] & (1 << (cpu % 64)) != 0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bits.iter().all(|w| *w == 0)
+    }
+
+    pub fn count(&self) -> usize {
+        self.bits.iter().map(|w| w.count_ones() as usize).sum()
+    }
+
+    /// The cpus in the set, ascending.
+    pub fn iter(&self) -> impl Iterator<Item = u32> + '_ {
+        (0..Self::MAX_CPUS as u32).filter(move |c| self.contains(*c))
+    }
+}
+
+/// Restrict `target` to the cpus in `mask`, which must name at least one cpu that exists. A
+/// thread running somewhere the new mask excludes moves at its next scheduler tick.
+pub fn sys_thread_set_affinity(target: ObjID, mask: &CpuMask) -> Result<(), TwzError> {
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[
+                target.parts()[0],
+                target.parts()[1],
+                ThreadControl::SetAffinity as u64,
+                mask as *const CpuMask as usize as u64,
+                core::mem::size_of::<CpuMask>() as u64,
+            ],
+        )
+    };
+    convert_codes_to_result(code, val, |c, _| c != 0, |_, _| (), twzerr)
+}
+
+/// The cpus `target` may run on. A thread that was never restricted reports every bit set,
+/// including bits for cpus that do not exist.
+pub fn sys_thread_get_affinity(target: ObjID) -> Result<CpuMask, TwzError> {
+    let mut mask = MaybeUninit::<CpuMask>::zeroed();
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::ThreadCtrl,
+            &[
+                target.parts()[0],
+                target.parts()[1],
+                ThreadControl::GetAffinity as u64,
+                &mut mask as *mut MaybeUninit<CpuMask> as usize as u64,
+                core::mem::size_of::<CpuMask>() as u64,
+            ],
+        )
+    };
+    convert_codes_to_result(
+        code,
+        val,
+        |c, _| c != 0,
+        |_, _| unsafe { mask.assume_init() },
+        twzerr,
+    )
 }

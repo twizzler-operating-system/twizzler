@@ -1,50 +1,37 @@
-// use alloc::boxed::Box;
-
 use crate::{
-    arch::{
-        address::{PhysAddr, VirtAddr},
-        context::ArchContextTarget,
-    },
-    // interrupt::Destination,
+    arch::{address::VirtAddr, context::ArchContextTarget},
+    memory::pagetables::{MappingCursor, TlbOrigin},
 };
 
+/// Cache-line maintenance for page-table writes. The walker here may not snoop the data caches,
+/// so a written entry's line is cleaned to the point of coherency before the MMU is expected to
+/// see it. One line is batched at a time; a different line flushes the batched one first.
 #[derive(Default)]
-/// An object that manages cache line invalidations during page table updates.
 pub struct ArchCacheLineMgr {
-    dirty: Option<u64>, // a single cacheline address to flush
+    dirty: Option<u64>,
 }
 
 impl ArchCacheLineMgr {
-    /// Flush a given cache line when this [ArchCacheLineMgr] is dropped. Subsequent flush requests
-    /// for the same cache line will be batched. Flushes for different cache lines will cause
-    /// older requests to flush immediately, and the new request will be flushed when this
-    /// object is dropped.
-    pub fn flush(&mut self, line: VirtAddr) {
-        // logln!("[arch::cacheln] flush called on: {:#018x}", line.raw());
-        let addr: u64 = line.into();
-        // According to the AArch64 instruction manual:
-        // "No alignment restrictions apply to this VA."
-        if let Some(dirty) = self.dirty {
-            if dirty != addr {
-                self.do_flush();
-                self.dirty = Some(addr);
-            }
-        } else {
-            self.dirty = Some(addr);
+    pub fn add_cache_line(&mut self, line: VirtAddr) {
+        let addr = line.raw();
+        if self.dirty.is_some_and(|dirty| dirty != addr) {
+            self.do_flush();
         }
+        self.dirty = Some(addr);
+    }
+
+    pub fn flush(&mut self) {
+        self.do_flush();
     }
 
     fn do_flush(&mut self) {
-        if let Some(addr) = self.dirty {
+        if let Some(addr) = self.dirty.take() {
             unsafe {
                 core::arch::asm!(
-                    // clean to point of coherency so all observers see the same thing
-                    // dc - data cache
-                    // cvac - clean by va to point of coherency
+                    // Clean by VA to the point of coherency, then order it before the walker's
+                    // next access.
                     "dc cvac, {}",
-                    // ensure the change to the table entry is visible to the MMU
                     "dsb ishst",
-                    // ensure that the dsb has completed before the next instruction
                     "isb",
                     in(reg) addr
                 );
@@ -59,168 +46,202 @@ impl Drop for ArchCacheLineMgr {
     }
 }
 
+/// One `tlbi vae1is` operand: the page number, ASID 0. Contexts do not use ASIDs, so a VA
+/// invalidation reaches every context at once.
 #[derive(Clone, Copy, Default)]
 struct TlbInvData(u64);
 
 impl TlbInvData {
     const TLBI_SHIFT: usize = 12;
+
     fn new(addr: VirtAddr) -> Self {
-        let va: u64 = addr.into();
-        TlbInvData(va >> Self::TLBI_SHIFT)
+        TlbInvData(addr.raw() >> Self::TLBI_SHIFT)
     }
 
-    fn data(&self) -> u64 {
-        self.0
-    }
-
-    fn addr(&self) -> u64 {
-        self.0 << Self::TLBI_SHIFT
+    fn offset(&self, by: u64) -> Self {
+        TlbInvData(((self.0 << Self::TLBI_SHIFT) + by) >> Self::TLBI_SHIFT)
     }
 
     fn execute(&self) {
-        // logln!("[arch::tlb] addr: {:#018x}", self.addr());
-        // TODO: can we batch sync barriers?
         unsafe {
             core::arch::asm!(
-                // wait for other data modifications to finish
                 "dsb ishst",
-                // e1 - EL1
-                // va - by virtual address
-                // is - inner sharable
                 "tlbi vae1is, {}",
-                // wait for tlbi instruction to finish
                 "dsb ish",
-                // wait for data sync barrier to finish
                 "isb",
-                in(reg) self.data()
+                in(reg) self.0
             );
         }
     }
 }
 
-// A queue of TLB invalidations containg the data arguments
+#[derive(Clone, Copy)]
 struct TlbInvQueue {
-    data: [TlbInvData; Self::MAX_OUTSTANDING_INVALIDATIONS],
+    data: [TlbInvData; Self::CAPACITY],
     len: u8,
 }
 
 impl TlbInvQueue {
-    const MAX_OUTSTANDING_INVALIDATIONS: usize = 16;
+    const CAPACITY: usize = 16;
 
     fn new() -> Self {
         Self {
-            data: [TlbInvData::default(); Self::MAX_OUTSTANDING_INVALIDATIONS],
+            data: [TlbInvData::default(); Self::CAPACITY],
             len: 0,
         }
     }
 
-    fn enqueue(&mut self, addr: VirtAddr) {
-        // check if the queue is full
-        if self.is_full() {
-            self.drain();
+    /// False when full: the caller falls back to a full invalidation rather than executing
+    /// early, because a queue may hold object-relative addresses that are only meaningful once
+    /// [`ArchTlbMgr::apply_offset_from_map`] has rebased them.
+    fn push(&mut self, data: TlbInvData) -> bool {
+        if self.len as usize == Self::CAPACITY {
+            return false;
         }
-        // enqueue tlb invalidation data
-        let next = self.len as usize;
-        self.data[next] = TlbInvData::new(addr);
+        self.data[self.len as usize] = data;
         self.len += 1;
+        true
     }
 
-    fn is_full(&self) -> bool {
-        self.len as usize == Self::MAX_OUTSTANDING_INVALIDATIONS
+    fn entries(&self) -> &[TlbInvData] {
+        &self.data[..self.len as usize]
     }
 
-    fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    fn enqueue_data(&mut self, data: TlbInvData) {
-        if self.is_full() {
-            self.drain();
-        }
-        let next = self.len as usize;
-        self.data[next] = data;
-        self.len += 1;
+    fn entries_mut(&mut self) -> &mut [TlbInvData] {
+        &mut self.data[..self.len as usize]
     }
 
     fn drain(&mut self) {
-        for i in 0..self.len as usize {
-            let inv = &self.data[i];
+        for inv in self.entries() {
             inv.execute();
         }
         self.len = 0;
     }
 }
 
-/// A management object for TLB invalidations that occur during a page table operation.
+/// The invalidations queued by one page-table operation. `tlbi ... is` broadcasts in hardware and
+/// completes at the `dsb`, so there is no remote half to wait for: [`Self::finish_send`] runs
+/// everything and hands back an empty token.
+#[derive(Clone)]
 pub struct ArchTlbMgr {
     queue: TlbInvQueue,
-    root: PhysAddr,
-    /// Everything, on every core: `tlbi vmalle1is` at `finish` instead of the queue.
+    target: ArchContextTarget,
+    /// Everything, on every core, via `tlbi vmalle1is` instead of the queue.
     full: bool,
+    /// Whether any queued page was global. Reporting only, see the amd64 counterpart.
+    global: bool,
+}
+
+impl core::fmt::Debug for ArchTlbMgr {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ArchTlbMgr")
+            .field("target", &self.target)
+            .field("full", &self.full)
+            .field("global", &self.global)
+            .field("queued", &self.queue.len)
+            .finish()
+    }
 }
 
 impl ArchTlbMgr {
-    /// Construct a new [ArchTlbMgr].
     pub fn new(target: ArchContextTarget) -> Self {
         Self {
             queue: TlbInvQueue::new(),
-            root: target.0,
+            target,
             full: false,
+            global: false,
         }
     }
 
-    /// Mirrors amd64: a manager whose `finish` flushes every translation on every core, for the
-    /// paths that cannot enumerate what they changed.
+    /// Statistics only on amd64, where a shootdown has a remote half worth attributing.
+    pub fn set_origin(&mut self, _origin: TlbOrigin) {}
+
     pub fn new_full_global() -> Self {
         let mut this = Self::new(ArchContextTarget::null());
-        this.full = true;
+        this.set_full_global();
         this
     }
 
-    pub fn has_pending(&self) -> bool {
-        self.full || !self.queue.is_empty()
+    pub fn set_full_global(&mut self) {
+        self.full = true;
+        self.global = true;
     }
 
-    /// Fold `other`'s queued invalidations into this one; `other` then has nothing left to run
-    /// when it drops.
+    pub fn set_full(&mut self) {
+        self.full = true;
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.full
+    }
+
+    pub fn is_global(&self) -> bool {
+        self.global
+    }
+
+    pub fn set_target(&mut self, target: ArchContextTarget) {
+        self.target = target;
+    }
+
+    pub fn reset(&mut self) {
+        self.queue.len = 0;
+        self.full = false;
+        self.global = false;
+    }
+
+    /// The same invalidations, rebased from object-relative to `map`'s addresses.
+    pub fn apply_offset_from_map(&self, map: &MappingCursor) -> Self {
+        let mut this = self.clone();
+        let by = map.start().raw();
+        for inv in this.queue.entries_mut() {
+            *inv = inv.offset(by);
+        }
+        this
+    }
+
+    /// Fold `other`'s invalidations into this one; `other` then has nothing left to run when it
+    /// drops. Targets need not match: without ASIDs every VA invalidation is context-wide.
     pub fn merge(&mut self, mut other: Self) {
+        self.global |= other.global;
         self.full |= other.full;
-        for i in 0..other.queue.len as usize {
-            self.queue.enqueue_data(other.queue.data[i]);
+        if !self.full {
+            for inv in other.queue.entries() {
+                if !self.queue.push(*inv) {
+                    self.full = true;
+                    break;
+                }
+            }
         }
-        other.queue.len = 0;
-        other.full = false;
+        other.reset();
     }
 
-    /// Enqueue a new TLB invalidation. is_global should be set iff the page is global, and
-    /// is_terminal should be set iff the invalidation is for a leaf.
-    pub fn enqueue(&mut self, addr: VirtAddr, _is_global: bool, is_terminal: bool, _level: usize) {
-        // only invalidate leaves
-        if is_terminal {
-            self.queue.enqueue(addr);
+    /// Enqueue a new TLB invalidation. `is_global` should be set iff the page is global, and
+    /// `is_terminal` iff the invalidation is for a leaf. Both kinds are queued: a table-link
+    /// change has to evict the walk-cache entry for that VA as well.
+    pub fn enqueue(&mut self, addr: VirtAddr, is_global: bool, _is_terminal: bool, _level: usize) {
+        self.global |= is_global;
+        if !self.full && !self.queue.push(TlbInvData::new(addr)) {
+            self.full = true;
         }
     }
 
-    /// Statistics only on amd64, where a shootdown has a remote half worth attributing. Every
-    /// invalidation here is local, so there is nothing to count.
-    pub fn set_origin(&mut self, _origin: crate::memory::pagetables::TlbOrigin) {}
+    pub fn has_pending(&self) -> bool {
+        self.full || self.queue.len != 0
+    }
 
     /// Execute all queued invalidations.
     pub fn finish(&mut self) {
         if self.full {
-            self.full = false;
-            self.queue.len = 0;
             unsafe {
                 core::arch::asm!("dsb ishst", "tlbi vmalle1is", "dsb ish", "isb");
             }
-            return;
+        } else {
+            self.queue.drain();
         }
-        self.queue.drain()
+        self.reset();
     }
 
-    /// Counterpart to the amd64 split. Invalidation here is `tlbi ... is` plus a barrier, which
-    /// broadcasts in hardware and needs no acknowledgement from software, so there is no remote
-    /// half to defer and the token is empty.
+    /// Counterpart to the amd64 split: nothing is deferred here, the token is empty.
     pub fn finish_send(&mut self) -> PendingShootdown {
         self.finish();
         PendingShootdown
@@ -229,12 +250,14 @@ impl ArchTlbMgr {
 
 impl Drop for ArchTlbMgr {
     fn drop(&mut self) {
-        self.finish();
+        if self.has_pending() {
+            self.finish();
+        }
     }
 }
 
-/// See the amd64 type this mirrors. Nothing to wait for here; it exists so generic code can name
-/// one API.
+/// See the amd64 type this mirrors. Nothing to wait for; it exists so generic code can name one
+/// API.
 #[must_use]
 pub struct PendingShootdown;
 

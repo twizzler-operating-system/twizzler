@@ -1313,10 +1313,27 @@ unsafe impl Sync for FrameIndexer {}
 #[doc(hidden)]
 static FI: Once<Vec<FrameIndexer>> = Once::new();
 
+/// One past the highest physical address the boot memory map reported.
+static MAX_PHYS_ADDR: AtomicU64 = AtomicU64::new(0);
+
+/// One past the highest physical address the boot memory map reported. Zero before
+/// [`init`].
+pub fn max_phys_addr() -> u64 {
+    MAX_PHYS_ADDR.load(Ordering::Relaxed)
+}
+
 /// Initialize the global physical frame allocator.
 /// # Arguments
 ///  * `regions`: An array of memory regions passed from the boot info system.
 pub fn init(regions: &[MemoryRegion]) {
+    MAX_PHYS_ADDR.store(
+        regions
+            .iter()
+            .map(|r| r.start.raw() + r.length as u64)
+            .max()
+            .unwrap_or(0),
+        Ordering::Relaxed,
+    );
     let pfa = PhysicalFrameAllocator::new(regions);
     let total = pfa.total();
     log::info!(

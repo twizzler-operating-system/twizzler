@@ -33,6 +33,8 @@ pub struct PcieDeviceInfo {
     pub subclass: u8,
     pub progif: u8,
     pub revision: u8,
+    /// MSI doorbell physical address for this device's segment; 0 where the arch fixes it.
+    pub msi_addr: u64,
 }
 
 /// PCIe-specific [crate::kso::KactionGenericCmd] values.

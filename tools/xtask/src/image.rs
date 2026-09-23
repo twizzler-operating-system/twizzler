@@ -341,7 +341,11 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
                 "lib" => {
                     initrd_files.append(&mut get_lib_initrd_files(comp, split[1], &cli.config)?)
                 }
-                "crate" => initrd_files.append(&mut get_crate_initrd_files(comp, split[1])?),
+                "crate" => {
+                    if crate::build::package_builds_on(split[1], cli.config.arch) {
+                        initrd_files.append(&mut get_crate_initrd_files(comp, split[1])?)
+                    }
+                }
                 "third-party" => {
                     initrd_files.append(&mut get_third_party_initrd_files(comp, split[1])?)
                 }

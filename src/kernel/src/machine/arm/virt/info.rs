@@ -1,7 +1,7 @@
 use fdt::Fdt;
 use twizzler_abi::device::{CacheType, MmioInfo};
 
-use crate::{BootInfo, arch::BootInfoSystemTable, once::Once};
+use crate::{BootInfo, arch::BootInfoSystemTable, memory::PhysAddr, once::Once};
 
 // We use device tree to describe the hardware on this machine
 static FDT: Once<Fdt<'static>> = Once::new();
@@ -133,4 +133,24 @@ pub fn get_gicv2_info() -> (MmioInfo, MmioInfo) {
         gicc_mmio.length = regs.size.unwrap() as u64;
     }
     (gicd_mmio, gicc_mmio)
+}
+
+/// The ECAM region of the `pci-host-ecam-generic` node, if any.
+pub fn get_pcie_ecam() -> Option<(PhysAddr, usize)> {
+    let node = devicetree().find_compatible(&["pci-host-ecam-generic"])?;
+    let regs = node.reg()?.next()?;
+    Some((
+        PhysAddr::new(regs.starting_address as u64).ok()?,
+        regs.size?,
+    ))
+}
+
+/// The GICv2m MSI frame's registers, if any.
+pub fn get_msi_frame() -> Option<(PhysAddr, usize)> {
+    let node = devicetree().find_compatible(&["arm,gic-v2m-frame"])?;
+    let regs = node.reg()?.next()?;
+    Some((
+        PhysAddr::new(regs.starting_address as u64).ok()?,
+        regs.size?,
+    ))
 }

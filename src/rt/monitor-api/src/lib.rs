@@ -515,7 +515,7 @@ impl TlsTemplateInfo {
         // Step 1: copy the template to the new memory.
         core::ptr::copy_nonoverlapping(self.alloc_base.as_ptr(), new, self.layout.size());
 
-        let tcb = new.add(self.tp_offset) as *mut Tcb<T>;
+        let tcb = dynlink::tls::tcb_from_thread_pointer::<T>(new.add(self.tp_offset));
         let dtv_ptr = new.add(self.dtv_offset) as *mut *mut u8;
         let dtv = core::slice::from_raw_parts_mut(dtv_ptr, self.num_dtv_entries);
 
@@ -706,10 +706,15 @@ impl<'a> LibraryLoader<'a> {
         };
         for ctor in ctor_slice {
             unsafe {
-                let init_array = core::slice::from_raw_parts(ctor.init_array, ctor.init_array_len);
-                for func in init_array {
-                    if let Some(f) = func {
-                        f();
+                // A library without `.init_array` reports a null pointer, which
+                // `from_raw_parts` rejects even at length zero.
+                if !ctor.init_array.is_null() {
+                    let init_array =
+                        core::slice::from_raw_parts(ctor.init_array, ctor.init_array_len);
+                    for func in init_array {
+                        if let Some(f) = func {
+                            f();
+                        }
                     }
                 }
                 if let Some(f) = ctor.legacy_init {
@@ -1336,15 +1341,19 @@ pub struct RuntimeThreadControl {
     pub stack_canary: u64,
     /// Reserved for mlibc: `Tcb<RuntimeThreadControl>` deliberately overlays mlibc's `Tcb`
     /// (tcb.hpp), and this is the continuation past `stackCanary` -- `cancelBits` through
-    /// `guardSize` live in here (on x86_64, `stackSize`/`stackAddr` are words 9/10). Initialized
-    /// by `__mlibc_init_tcb`; the runtime never writes it. NOTE: mlibc's `stackSize`/`stackAddr`
+    /// `guardSize` live in here (`stackSize`/`stackAddr` are words 9/10). Initialized by
+    /// `__mlibc_init_tcb`; the runtime never writes it. NOTE: mlibc's `stackSize`/`stackAddr`
     /// therefore stay ZERO on twz-rt threads, so any mlibc path reading them (e.g.
     /// `pthread_getattr_np`, currently not compiled for twizzler) would report a zero stack
     /// base -- which callers like stacker's unix backend read as "infinite stack". Populate
-    /// these at spawn (per-arch offsets!) before ever enabling such a path; stack bounds are
-    /// available honestly via `twz_rt_get_stack_bounds` instead.
-    pub libc_data: [u64; 16],
+    /// these at spawn before ever enabling such a path; stack bounds are available honestly via
+    /// `twz_rt_get_stack_bounds` instead.
+    pub libc_data: [u64; 12],
 }
+
+// Exactly mlibc's `Tcb`: on aarch64 the thread pointer is 16 bytes before its end, and the first
+// TLS block follows, so nothing may extend past it.
+const _: () = assert!(core::mem::size_of::<Tcb<RuntimeThreadControl>>() == 144);
 
 impl Default for RuntimeThreadControl {
     fn default() -> Self {
@@ -1360,7 +1369,7 @@ impl RuntimeThreadControl {
             id: UnsafeCell::new(id),
             did_exit: UnsafeCell::new(0),
             stack_canary: 0,
-            libc_data: [0; 16],
+            libc_data: [0; 12],
         }
     }
 

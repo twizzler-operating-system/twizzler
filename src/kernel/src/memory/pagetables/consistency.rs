@@ -264,7 +264,6 @@ impl Consistency {
         this
     }
 
-    #[cfg(target_arch = "x86_64")]
     pub fn new_full_global() -> Self {
         let mut this = Self::new(ArchContextTarget::null());
         this.set_full_global();
@@ -338,7 +337,6 @@ impl Consistency {
         }
     }
 
-    #[cfg(target_arch = "x86_64")]
     pub fn set_full_global(&mut self) {
         self.tlb.set_full_global();
     }

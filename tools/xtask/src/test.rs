@@ -16,8 +16,8 @@ use crate::{
 pub enum Scenario {
     /// The standard kernel + userspace test suite, as `start-qemu --tests` runs it.
     Default,
-    /// The standard suite under constrained guest memory, to exercise the reclaim/pager paths
-    /// `memhog-test` is written to stress.
+    /// The standard suite under constrained guest memory with a resident hog pinning most of it,
+    /// so the demand-paged test binaries have to be replaced rather than cached.
     Lowmem,
 }
 
@@ -48,6 +48,16 @@ pub enum Scenario {
 /// starting *after* `test_main()` (see `boot_sequence`), which left 500 of that test's spawns
 /// holding a 2 MiB kernel stack each, and with that fixed 1024 boots well past `pager ready`.
 const LOWMEM_DEFAULT_MB: u32 = 1280;
+
+/// Free memory (in MB) the resident hog leaves before the suite starts under `--scenario lowmem`.
+///
+/// Guest size alone never squeezed the page cache: every size that completed ran with zero
+/// pressure (the table above), so shrinking the guest tested the memory floor rather than
+/// replacement. Pinning everything but this much instead caps what the ~850 MiB of demand-paged
+/// test binaries can keep resident, whatever the guest size, and every page past the cap has to be
+/// replaced. Init starts the hog (`memhog`, via `--memhog-free`) and waits for it to hold its
+/// memory before the suite runs.
+const LOWMEM_MEMHOG_FREE_MB: u32 = 256;
 
 /// Low-memory boots are much slower (heavier reclaim/pager traffic); give the suite roughly 3x the
 /// default run's wait budget before calling it a hang.
@@ -100,6 +110,14 @@ pub struct TestOptions {
         help = "Override the scenario's guest memory size in MB (currently only read by --scenario lowmem; used to bisect the memory floor)"
     )]
     pub memory: Option<u32>,
+    #[clap(
+        long,
+        help = "Before the suite (or autostart program) runs, have init start a resident hog that \
+                pins memory until only this many MB are free. --scenario lowmem defaults it on; \
+                0 disables. Baked into the image's kernel command line, so it is ignored with \
+                --boot-image or --no-build."
+    )]
+    pub memhog_free: Option<u32>,
     #[clap(
         long,
         help = "Boot this image instead of the one in the build tree. Implies --no-build. Pair with \
@@ -160,7 +178,11 @@ pub struct TestOptions {
 impl TestOptions {
     /// Build the qemu options for a run. Scenarios own the knobs that decide *how* the system
     /// boots, so those are set here rather than exposed on the command line.
-    fn qemu_options(&self, tests: bool) -> QemuOptions {
+    fn qemu_options(&self, tests: bool, memhog_free: u32) -> QemuOptions {
+        let mut kernel_arg = self.kernel_arg.clone();
+        if memhog_free > 0 {
+            kernel_arg.push(format!("--memhog-free={memhog_free}"));
+        }
         QemuOptions {
             config: self.config,
             qemu_options: self.qemu_options.clone(),
@@ -173,7 +195,7 @@ impl TestOptions {
             data: None,
             repeat: false,
             autostart: self.autostart.clone(),
-            kernel_arg: self.kernel_arg.clone(),
+            kernel_arg,
             // Leave the gdb serial port unbound; scenarios are run unattended, and binding it
             // would collide between concurrent runs.
             gdb: 0,
@@ -209,11 +231,12 @@ fn run_default(cli: &TestOptions) -> anyhow::Result<()> {
         serial_log: cli.serial_log.clone(),
         ..Default::default()
     };
-    run_and_report(cli, run)
+    run_and_report(cli, run, cli.memhog_free.unwrap_or(0))
 }
 
-/// Boot the standard suite under constrained guest memory (`memhog-test` is what actually leans on
-/// this), with a longer wait budget since low-memory boots are much slower.
+/// Boot the standard suite under constrained guest memory with the resident hog pinning all but
+/// [`LOWMEM_MEMHOG_FREE_MB`] of it, with a longer wait budget since low-memory boots are much
+/// slower.
 fn run_lowmem(cli: &TestOptions) -> anyhow::Result<()> {
     let mb = cli.memory.unwrap_or(LOWMEM_DEFAULT_MB);
     let run = RunConfig {
@@ -223,7 +246,7 @@ fn run_lowmem(cli: &TestOptions) -> anyhow::Result<()> {
         heartbeat_tries: LOWMEM_HEARTBEAT_TRIES,
         serial_log: cli.serial_log.clone(),
     };
-    run_and_report(cli, run)
+    run_and_report(cli, run, cli.memhog_free.unwrap_or(LOWMEM_MEMHOG_FREE_MB))
 }
 
 /// Exit code for "the run itself was fine, but the data disk did not survive it". Distinct from
@@ -272,12 +295,19 @@ fn check_disk(cli: &TestOptions) -> bool {
 }
 
 /// Boot `image` with `run` and report what the guest's test suite said. Shared by every scenario
-/// that just runs the normal test suite under a different `RunConfig`.
-fn run_and_report(cli: &TestOptions, run: RunConfig) -> anyhow::Result<()> {
+/// that just runs the normal test suite under a different `RunConfig`. `memhog_free` is the
+/// resident hog's free-memory target in MB (0 for no hog), baked into the image's command line.
+fn run_and_report(cli: &TestOptions, run: RunConfig, memhog_free: u32) -> anyhow::Result<()> {
     // An autostart run builds a *non*-test image on purpose. init runs the suite before it reaches
     // the autostart program and shuts the guest down at the end of it, so a test-enabled image
     // would never run the program at all.
-    let options = cli.qemu_options(cli.autostart.is_none());
+    let options = cli.qemu_options(cli.autostart.is_none(), memhog_free);
+    if memhog_free > 0 && options.no_build {
+        println!(
+            "note: --memhog-free={memhog_free} needs an image built by this run; the image being \
+             booted keeps whatever command line it was built with"
+        );
+    }
     let image = match &cli.boot_image {
         Some(path) => {
             if !path.is_file() {

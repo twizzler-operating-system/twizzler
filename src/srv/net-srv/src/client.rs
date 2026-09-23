@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, OnceLock, Weak,
     },
     thread::JoinHandle,
 };
@@ -12,11 +12,11 @@ use smoltcp::{
     time::Instant,
     wire::{ArpPacket, EthernetAddress, EthernetFrame, EthernetProtocol, Ipv4Packet, Ipv6Packet},
 };
-use twizzler_abi::syscall::{sys_thread_sync, ThreadSync};
+use twizzler_abi::syscall::{sys_thread_sync, ThreadSync, ThreadSyncWake};
 use twizzler_net::{NetServer, MAX_PACKETS_SET};
 use virtio_net::TxBuffer;
 
-use crate::{addr::ClientAddr, NETINFO};
+use crate::{addr::ClientAddr, ADDRS, NETINFO, PORTS};
 
 pub struct Client {
     pub ep: Mutex<NetServer>,
@@ -35,10 +35,10 @@ impl Client {
             ports: Mutex::new(HashMap::new()),
             addr,
         });
-        let _client = client.clone();
+        let weak = Arc::downgrade(&client);
         let jh = std::thread::Builder::new()
             .name("net-client".into())
-            .spawn(move || client_thread(_client))
+            .spawn(move || client_thread(weak))
             .unwrap();
         client.jh.set(jh).unwrap();
         client
@@ -46,6 +46,32 @@ impl Client {
 
     fn active(&self) -> bool {
         self.active.load(Ordering::SeqCst)
+    }
+
+    /// Retire the client: hand its ports and address back and get its thread out of its rx
+    /// sleep, which a dead compartment would otherwise never end. Idempotent, so the explicit
+    /// drop gate, the dead-compartment sweep, and `Drop` can all call it.
+    pub fn teardown(&self) {
+        if self.active.swap(false, Ordering::SeqCst) {
+            for (port, _) in self.ports.lock().unwrap().drain() {
+                PORTS.get().unwrap().return_port(port);
+            }
+            ADDRS.get().unwrap().release(self.addr);
+        }
+        let waiter = self.ep.lock().unwrap().rx_waiter();
+        let _ = sys_thread_sync(
+            &mut [ThreadSync::new_wake(ThreadSyncWake::new(
+                waiter.reference,
+                usize::MAX,
+            ))],
+            None,
+        );
+    }
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        self.teardown();
     }
 }
 
@@ -191,10 +217,16 @@ fn deliver_local(pending: &[(Vec<u8>, Dest)], sender: EthernetAddress) {
     }
 }
 
-fn client_thread(client: Arc<Client>) {
+/// Holds the client only while working. Sleeping on a `Weak` lets the handle table's last strong
+/// reference drop the client, whose `Drop` wakes this thread to find the upgrade failing.
+fn client_thread(weak: Weak<Client>) {
+    let Some(client) = weak.upgrade() else {
+        return;
+    };
     let device = NETINFO.get().unwrap().device.clone();
     let tx_po = client.ep.lock().unwrap().client_tx_packet_object().clone();
     let sender = client.addr.hwaddr();
+    drop(client);
     // Frames destined for a sibling, copied out of the packet object so this client's `ep` lock
     // can be dropped before any target's is taken.
     let mut pending: Vec<(Vec<u8>, Dest)> = Vec::new();
@@ -202,7 +234,13 @@ fn client_thread(client: Arc<Client>) {
     // `ep` lock, but the heap alloc/free per frame does not.
     let mut spare: Vec<Vec<u8>> = Vec::new();
     let mut local_macs: Vec<EthernetAddress> = Vec::new();
-    while client.active() {
+    loop {
+        let Some(client) = weak.upgrade() else {
+            break;
+        };
+        if !client.active() {
+            break;
+        }
         // Snapshot sibling MACs *before* taking our own `ep`. Reading them inside the frame loop
         // would mean holding `ep` while taking the handles lock, inverting device_thread's
         // handles-then-ep order. A client that opens after this snapshot is simply not local yet,
@@ -287,6 +325,7 @@ fn client_thread(client: Arc<Client>) {
         } else {
             1
         };
+        drop(client);
         let _ = sys_thread_sync(&mut sleeps[..n], None);
     }
 }

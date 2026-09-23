@@ -4,3 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+
+# Not used here; this turns on getrandom 0.2's `custom` backend for every program that links the
+# runtime, so the unmodified registry crate resolves to the runtime's `__getrandom_custom`.
+[target.'cfg(target_os = "twizzler")'.dependencies]
+getrandom = { version = "0.2", features = ["custom"] }

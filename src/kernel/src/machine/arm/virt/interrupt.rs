@@ -1,5 +1,13 @@
 use super::super::common::gicv2::GICv2;
-use crate::{arch::context::ArchContextTarget, memory::pagetables::Consistency, once::Once};
+use crate::{
+    arch::context::ArchContextTarget,
+    memory::{
+        frame::PHYS_LEVEL_LAYOUTS,
+        pagetables::Consistency,
+        tracker::{FrameAllocFlags, FrameAllocator},
+    },
+    once::Once,
+};
 
 // used by generic kernel interrupt code
 pub const MIN_VECTOR: usize = GICv2::MIN_VECTOR;
@@ -59,10 +67,19 @@ pub fn interrupt_controller() -> &'static GICv2 {
         // map in with curent memory context
         unsafe {
             let mut mapper = Mapper::current();
-            let consist = Consistency::new(ArchContextTarget(mapper.root_address()));
-            mapper.map(gicc_region, &mut gicc_phys, consist);
-            let consist = Consistency::new(ArchContextTarget(mapper.root_address()));
-            mapper.map(gicd_region, &mut gicd_phys, consist);
+            let mut fa = FrameAllocator::new(
+                FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL,
+                PHYS_LEVEL_LAYOUTS[0],
+            );
+            let mut consist = Consistency::new(ArchContextTarget(mapper.root_address()));
+            mapper
+                .map(gicc_region, &mut gicc_phys, &mut consist, &mut fa)
+                .unwrap();
+            mapper
+                .map(gicd_region, &mut gicd_phys, &mut consist, &mut fa)
+                .unwrap();
+            consist.tlb_mut().finish();
+            consist.into_deferred().run_all();
         }
         GICv2::new(
             // TODO: might need to lock global distributor state,
@@ -70,5 +87,17 @@ pub fn interrupt_controller() -> &'static GICv2 {
             gicd_mmio_base,
             gicc_mmio_base,
         )
+    })
+}
+
+/// The GICv2m MSI frame: (doorbell physical address, first SPI, count), from MSI_TYPER.
+pub fn msi_frame() -> Option<(u64, u32, u32)> {
+    static FRAME: Once<Option<(u64, u32, u32)>> = Once::new();
+    *FRAME.call_once(|| {
+        let (phys, len) = crate::machine::info::get_msi_frame()?;
+        let va = super::super::common::mmio::map_device_region(phys, len);
+        let typer =
+            unsafe { core::ptr::read_volatile(va.offset(0x8usize).unwrap().as_ptr::<u32>()) };
+        Some((phys.raw() + 0x40, (typer >> 16) & 0x3ff, typer & 0x3ff))
     })
 }

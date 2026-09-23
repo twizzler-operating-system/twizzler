@@ -29,3 +29,8 @@ twizzler-build = "static"
 [features]
 default = ["std"]
 std = []
+
+# Same as the reference runtime's wrapper: enables getrandom 0.2's `custom` backend for static
+# programs, which resolve it to this runtime's `__getrandom_custom`.
+[target.'cfg(target_os = "twizzler")'.dependencies]
+getrandom = { version = "0.2", features = ["custom"] }

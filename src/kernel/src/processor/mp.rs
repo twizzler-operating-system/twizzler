@@ -9,6 +9,7 @@ use super::{
     Processor,
     sched::{CPUTopoNode, CPUTopoType},
     tls_ready,
+    topology::TopoPath,
 };
 use crate::{
     arch::{self, VirtAddr},
@@ -27,10 +28,19 @@ static CURRENT_PROCESSOR: UnsafeCell<*const Processor> = UnsafeCell::new(null_mu
 pub fn init_cpu(tls_template: TlsInfo, bsp_id: u32) {
     let tcb_base = crate::arch::image::init_tls(tls_template);
     crate::arch::processor::init(tcb_base);
+    //TODO: get the stack from bootloader config?
+    init_cpu_locals(bsp_id, 0xfffffff000001000u64 as *mut u8);
+}
+
+/// Everything that touches a thread-local after the thread pointer is set. Kept out of the caller
+/// because LLVM treats the thread pointer as invariant within a function and hoists its read above
+/// the write (seen on aarch64: `mrs tpidr_el1` scheduled before the `msr`).
+#[inline(never)]
+fn init_cpu_locals(id: u32, kernel_stack_base: *mut u8) {
     unsafe {
-        *BOOT_KERNEL_STACK.borrow_mut() = 0xfffffff000001000u64 as *mut u8; //TODO: get this from bootloader config?
-        *CPU_ID.borrow_mut() = bsp_id;
-        *CURRENT_PROCESSOR.get() = &**ALL_PROCESSORS[*CPU_ID.borrow() as usize].as_ref().unwrap();
+        *BOOT_KERNEL_STACK.borrow_mut() = kernel_stack_base;
+        *CPU_ID.borrow_mut() = id;
+        *CURRENT_PROCESSOR.get() = &**ALL_PROCESSORS[id as usize].as_ref().unwrap();
     }
     let topo_path = arch::processor::get_topology();
     current_processor().set_topology(topo_path);
@@ -56,12 +66,19 @@ static CPU_MAIN_BARRIER: AtomicBool = AtomicBool::new(false);
 
 pub fn secondary_entry(id: u32, tcb_base: VirtAddr, kernel_stack_base: *mut u8) -> ! {
     crate::arch::processor::init(tcb_base);
+    secondary_main(id, kernel_stack_base)
+}
+
+/// See [`init_cpu_locals`].
+#[inline(never)]
+fn secondary_main(id: u32, kernel_stack_base: *mut u8) -> ! {
     unsafe {
         *BOOT_KERNEL_STACK.borrow_mut() = kernel_stack_base;
         *CPU_ID.borrow_mut() = id;
         *CURRENT_PROCESSOR.get() = &**ALL_PROCESSORS[id as usize].as_ref().unwrap();
     }
     arch::init_secondary();
+    crate::pmc::init_cpu();
     let topo_path = arch::processor::get_topology();
     current_processor().set_topology(topo_path);
     current_processor()
@@ -102,33 +119,68 @@ pub fn boot_all_secondaries(tls_template: TlsInfo) {
     for p in all_processors().iter().flatten() {
         let topo_path = p.topology_path.wait();
         cpu_topo_root.set_cpu(p.id);
+        attach_caches(&mut cpu_topo_root, topo_path, 0);
         let mut level = &mut *cpu_topo_root;
-        for (path, is_thread) in topo_path {
-            let mut child = level.child_mut(*path);
-            if child.is_none() {
-                let ty = if *is_thread {
-                    CPUTopoType::Thread
-                } else {
-                    CPUTopoType::Cache
-                };
-                level.add_child(*path, CPUTopoNode::new(ty));
-                child = level.child_mut(*path);
+        for (depth, step) in topo_path.steps.iter().enumerate() {
+            // A placeholder `add_child` padded in has no cpus; the first real occupant names it.
+            if level
+                .child_mut(step.index)
+                .is_none_or(|child| child.count() == 0)
+            {
+                level.add_child(step.index, CPUTopoNode::new(step.kind));
             }
-
-            let child = child.unwrap();
-
+            let child = level.child_mut(step.index).unwrap();
             child.set_cpu(p.id);
+            attach_caches(child, topo_path, depth + 1);
 
-            let next = level.child_mut(*path);
+            let next = level.child_mut(step.index);
             level = next.unwrap();
         }
     }
+    log_topology(&cpu_topo_root, 0);
     crate::processor::sched::set_cpu_topology(cpu_topo_root);
     // Every cpu waited for above has run `arch::processor::init`, so no cpu can be executing
     // without a thread pointer from here on. Lets `tls_ready` stop reading an MSR per call.
     crate::processor::note_all_tls_ready();
     CPU_MAIN_BARRIER.store(true, core::sync::atomic::Ordering::SeqCst);
     crate::memory::prep_smp();
+}
+
+/// The first cpu to reach a node describes the caches shared there; every cpu under it reports
+/// the same hardware.
+fn attach_caches(node: &mut CPUTopoNode, path: &TopoPath, depth: usize) {
+    if !node.caches().is_empty() {
+        return;
+    }
+    for (cache_depth, cache) in &path.caches {
+        if *cache_depth == depth {
+            node.add_cache(*cache);
+        }
+    }
+}
+
+fn log_topology(node: &CPUTopoNode, depth: usize) {
+    if node.count() == 0 {
+        return;
+    }
+    log::debug!(
+        "topology: {:width$}{:?} #{} ({} cpus){}",
+        "",
+        node.kind(),
+        node.id(),
+        node.count(),
+        node.caches()
+            .iter()
+            .fold(alloc::string::String::new(), |mut s, (id, c)| {
+                use core::fmt::Write;
+                let _ = write!(s, " L{}{:?}#{}:{}K", c.level, c.kind, id, c.size / 1024);
+                s
+            }),
+        width = depth * 2,
+    );
+    for child in node.children() {
+        log_topology(child, depth + 1);
+    }
 }
 
 pub fn register(id: u32, bsp_id: u32) {

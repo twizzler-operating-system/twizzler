@@ -153,7 +153,13 @@ impl Thread {
     }
 
     pub fn effective_priority(&self) -> Priority {
-        let priority = Priority::from_raw(self.priority.load(Ordering::SeqCst));
+        let mut priority = Priority::from_raw(self.priority.load(Ordering::SeqCst));
+        // Cache-hostile User threads run at a lower value in the same class; see `cachemiss`.
+        if priority.class == PriorityClass::User {
+            priority.value = priority
+                .value
+                .saturating_sub(self.cachemiss.penalty() as u16);
+        }
         if self.flags.load(Ordering::SeqCst) & THREAD_HAS_DONATED_PRIORITY != 0 {
             let donated_priority = Priority::from_raw(self.donated_priority.load(Ordering::SeqCst));
             return core::cmp::max(donated_priority, priority);

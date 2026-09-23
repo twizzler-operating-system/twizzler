@@ -268,6 +268,12 @@ fn build_libcxxabi(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Result<(
     cfg.define("LIBCXXABI_USE_LLVM_UNWINDER", "OFF");
     cfg.define("LIBCXXABI_ENABLE_THREADS", "ON");
     cfg.define("LIBCXXABI_ENABLE_EXCEPTIONS", "ON");
+    // aarch64 clang calls the outline-atomics helpers; without the builtins archive the shared
+    // library leaves them undefined and every executable linking it fails (see
+    // `clang_builtins_flag`).
+    if let Some(builtins) = crate::toolchain::clang_builtins_archive(triple) {
+        cfg.define("LIBCXXABI_ADDITIONAL_LIBRARIES", builtins);
+    }
 
     cfg.out_dir(&build_dir);
 

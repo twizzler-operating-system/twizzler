@@ -17,4 +17,3 @@ naming-core = { workspace = true }
 libc = { workspace = true }
 twizzler-display = { workspace = true }
 secgate = { workspace = true }
-twizzler-io = { path = "../../lib/twizzler-io" }

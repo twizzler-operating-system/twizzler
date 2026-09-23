@@ -44,6 +44,7 @@ use gdbstub::{
         },
     },
 };
+#[cfg(target_arch = "x86_64")]
 use gdbstub_arch::x86::reg::{X86SegmentRegs, X87FpuInternalRegs};
 use miette::IntoDiagnostic;
 use monitor_api::{CompartmentFlags, CompartmentHandle};
@@ -51,8 +52,10 @@ use twizzler::{
     object::{Object, RawObject},
     ptr::{RefMut, RefSlice, RefSliceMut},
 };
+#[cfg(target_arch = "x86_64")]
+use twizzler_abi::arch::XSAVE_LEN;
 use twizzler_abi::{
-    arch::{ArchRegisters, XSAVE_LEN},
+    arch::ArchRegisters,
     object::{MAX_SIZE, NULLPAGE_SIZE, ObjID, Protections},
     syscall::{
         KernelConsoleReadFlags, KernelConsoleSource, KernelConsoleWriteFlags, MapControlCmd,
@@ -85,6 +88,7 @@ type ChanMsg = Event<MultiThreadStopReason<u64>>;
 
 struct TwzRegs(ArchRegisters);
 
+#[cfg(target_arch = "x86_64")]
 impl From<TwzRegs> for gdbstub_arch::x86::reg::X86_64CoreRegs {
     fn from(value: TwzRegs) -> Self {
         gdbstub_arch::x86::reg::X86_64CoreRegs {
@@ -124,6 +128,7 @@ impl From<TwzRegs> for gdbstub_arch::x86::reg::X86_64CoreRegs {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 impl From<&gdbstub_arch::x86::reg::X86_64CoreRegs> for TwzRegs {
     fn from(value: &gdbstub_arch::x86::reg::X86_64CoreRegs) -> Self {
         Self(ArchRegisters {
@@ -156,6 +161,83 @@ impl From<&gdbstub_arch::x86::reg::X86_64CoreRegs> for TwzRegs {
             ds: value.segments.ds,
             ss: value.segments.ss,
             cs: value.segments.cs,
+        })
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl From<TwzRegs> for gdbstub_arch::aarch64::reg::AArch64CoreRegs {
+    fn from(value: TwzRegs) -> Self {
+        let f = &value.0.frame;
+        let mut x = [0u64; 31];
+        x[0..29].copy_from_slice(&[
+            f.x0, f.x1, f.x2, f.x3, f.x4, f.x5, f.x6, f.x7, f.x8, f.x9, f.x10, f.x11, f.x12, f.x13,
+            f.x14, f.x15, f.x16, f.x17, f.x18, f.x19, f.x20, f.x21, f.x22, f.x23, f.x24, f.x25,
+            f.x26, f.x27, f.x28,
+        ]);
+        x[29] = f.x29;
+        // `UpcallFrame::fp` holds x30, the link register (see the kernel's ExceptionContext).
+        x[30] = f.fp;
+        gdbstub_arch::aarch64::reg::AArch64CoreRegs {
+            x,
+            sp: f.sp,
+            pc: f.pc,
+            cpsr: f.spsr as u32,
+            // TODO: SIMD state is not saved in the upcall frame yet.
+            v: [0; 32],
+            fpcr: 0,
+            fpsr: 0,
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl From<&gdbstub_arch::aarch64::reg::AArch64CoreRegs> for TwzRegs {
+    fn from(value: &gdbstub_arch::aarch64::reg::AArch64CoreRegs) -> Self {
+        let x = &value.x;
+        Self(ArchRegisters {
+            frame: UpcallFrame {
+                x0: x[0],
+                x1: x[1],
+                x2: x[2],
+                x3: x[3],
+                x4: x[4],
+                x5: x[5],
+                x6: x[6],
+                x7: x[7],
+                x8: x[8],
+                x9: x[9],
+                x10: x[10],
+                x11: x[11],
+                x12: x[12],
+                x13: x[13],
+                x14: x[14],
+                x15: x[15],
+                x16: x[16],
+                x17: x[17],
+                x18: x[18],
+                x19: x[19],
+                x20: x[20],
+                x21: x[21],
+                x22: x[22],
+                x23: x[23],
+                x24: x[24],
+                x25: x[25],
+                x26: x[26],
+                x27: x[27],
+                x28: x[28],
+                x29: x[29],
+                fp: x[30],
+                sp: value.sp,
+                pc: value.pc,
+                spsr: value.cpsr as u64,
+                tpidr: 0,
+                tpidrro: 0,
+                prior_ctx: 0.into(),
+                fpcr: 0,
+                fpsr: 0,
+                v: [0; 32],
+            },
         })
     }
 }
@@ -951,7 +1033,10 @@ impl SwBreakpoint for TwizzlerTarget {
 }
 
 impl Target for TwizzlerTarget {
+    #[cfg(target_arch = "x86_64")]
     type Arch = gdbstub_arch::x86::X86_64_SSE;
+    #[cfg(target_arch = "aarch64")]
+    type Arch = gdbstub_arch::aarch64::AArch64;
 
     type Error = TwzError;
 

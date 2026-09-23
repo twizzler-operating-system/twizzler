@@ -6,11 +6,14 @@ use crate::{
     interrupt::{Destination, TriggerMode},
     memory::{
         PhysAddr,
+        frame::PHYS_LEVEL_LAYOUTS,
         pagetables::{
             Consistency, ContiguousProvider, Mapper, MappingCursor, MappingFlags, MappingSettings,
         },
+        tracker::{FrameAllocFlags, FrameAllocator},
     },
     once::Once,
+    spinlock::Spinlock,
 };
 
 pub fn serial() -> &'static PL011 {
@@ -40,13 +43,23 @@ pub fn serial() -> &'static PL011 {
         // map in with curent memory context
         unsafe {
             let mut mapper = Mapper::current();
-            let consist = Consistency::new(ArchContextTarget(mapper.root_address()));
-            mapper.map(cursor, &mut phys, consist);
+            let mut fa = FrameAllocator::new(
+                FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL,
+                PHYS_LEVEL_LAYOUTS[0],
+            );
+            let mut consist = Consistency::new(ArchContextTarget(mapper.root_address()));
+            mapper
+                .map(cursor, &mut phys, &mut consist, &mut fa)
+                .unwrap();
+            consist.tlb_mut().finish();
+            consist.into_deferred().run_all();
         }
 
         // create instance of the PL011 UART driver
         let serial_port = unsafe { PL011::new(uart_mmio_base.into()) };
         serial_port.early_init(clock_freq as u32);
+        let early = EARLY.lock();
+        serial_port.write_str(unsafe { core::str::from_utf8_unchecked(&early.buf[..early.len]) });
         serial_port
     })
 }
@@ -89,25 +102,34 @@ impl PL011 {
         crate::arch::set_interrupt(
             serial_int_id(),
             false,
-            TriggerMode::Edge,
+            TriggerMode::Level,
             crate::interrupt::PinPolarity::ActiveHigh,
             Destination::Bsp,
         );
     }
 }
 
+/// Output logged before `memory::init`, when the UART cannot be mapped yet (Limine's direct map
+/// does not cover MMIO). Replayed the first time the mapped port comes up.
+struct EarlyBuf {
+    buf: [u8; EARLY_LEN],
+    len: usize,
+}
+const EARLY_LEN: usize = 16 * 1024;
+static EARLY: Spinlock<EarlyBuf> = Spinlock::new(EarlyBuf {
+    buf: [0; EARLY_LEN],
+    len: 0,
+});
+
 pub fn write(data: &[u8], _flags: crate::log::KernelConsoleWriteFlags, _debug: bool) {
-    // We need the memory management system up and running to use MMIO.
-    // Other requests to log to the console are ignored. The console is
-    // initialized lazily on first access.
-    //
-    // This means that we cannot and should not ouput logging messages to
-    // the UART before this happens. Mapping in some memory might require
-    // allocating physical frames for the page tables.
     if crate::memory::is_init() {
-        unsafe {
-            serial().write_str(core::str::from_utf8_unchecked(data));
-        }
+        serial().write_str(unsafe { core::str::from_utf8_unchecked(data) });
+    } else {
+        let mut early = EARLY.lock();
+        let len = early.len;
+        let n = data.len().min(EARLY_LEN - len);
+        early.buf[len..len + n].copy_from_slice(&data[..n]);
+        early.len += n;
     }
 }
 

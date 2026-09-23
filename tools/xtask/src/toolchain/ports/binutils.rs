@@ -18,8 +18,8 @@ const BFDCONFIG_PATCH: &str = r#"
 >     want64=true
 >     ;;
 >   aarch64-*-twizzler*)
->     targ_defvec=aarch64_elf64_vec
->     targ_selvecs=""
+>     targ_defvec=aarch64_elf64_le_vec
+>     targ_selvecs="aarch64_elf64_be_vec"
 >     want64=true
 >     ;;
 "#;

@@ -2,8 +2,8 @@ use std::{cell::RefCell, net::IpAddr};
 
 use monitor_api::CompartmentHandle;
 use secgate::{
-    TwzError,
     util::{Descriptor, Handle},
+    TwzError,
 };
 use smoltcp::{
     phy::{DeviceCapabilities, Medium, RxToken, TxToken},
@@ -15,8 +15,8 @@ use twizzler_io::packet::PacketObject;
 use twizzler_queue::{Queue, QueueBase};
 
 use crate::{
-    ClientMsg, ClientMsgKind, ClientRet, INVALID_PACKET, MAX_PACKETS_SET, PacketNum, PacketSet,
-    ServerMsg, ServerMsgKind, ServerRet, endpoint::Pair,
+    endpoint::Pair, ClientMsg, ClientMsgKind, ClientRet, PacketNum, PacketSet, ServerMsg,
+    ServerMsgKind, ServerRet, INVALID_PACKET, MAX_PACKETS_SET,
 };
 
 /// Ethernet MTU advertised to smoltcp by both ends of the local delivery path.
@@ -205,9 +205,13 @@ impl Drop for NetClient {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
-pub struct NetClientConfig {}
+pub struct NetClientConfig {
+    /// Host octet of the 10.0.2.x address to reserve, or 0 for whatever is free. The server
+    /// refuses an octet another client holds; see `AddrAssigner::reserve` in net-srv.
+    pub requested_octet: u8,
+}
 
 impl NetClient {
     /// Whether this poll reclaimed tx packets -- progress smoltcp's `PollResult` cannot see.

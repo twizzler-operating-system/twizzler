@@ -18,8 +18,31 @@ use crate::{
 pub struct Entry(u64);
 
 impl Entry {
+    /// Descriptor bit 1 is stored inverted from [`EntryFlags::HUGE`]; see that flag.
+    const TYPE_BIT: u64 = 1 << 1;
+
     fn new_internal(addr: PhysAddr, flags: EntryFlags) -> Self {
-        Self(addr.raw() | flags.bits())
+        Self(addr.raw() | (Self::hw_bits(flags).bits() ^ Self::TYPE_BIT))
+    }
+
+    /// The hardware permission bits follow the portable `WRITE`/`DIRTY`/execute flags, and this
+    /// is the only place that decides them. A writable-but-clean entry is installed read-only
+    /// with DBM set: the first write clears AP[2] in hardware (FEAT_HAFDBS) or faults and is
+    /// dirtied by software, and either way [`Entry::flags`] reads it back as `DIRTY`.
+    fn hw_bits(mut flags: EntryFlags) -> EntryFlags {
+        let write = flags.contains(EntryFlags::WRITE);
+        let dirty = flags.contains(EntryFlags::DIRTY);
+        flags.set(EntryFlags::AP2_READ_OR_RW, !(write && dirty));
+        flags.set(EntryFlags::AP_TABLE_RO, !write);
+        flags.set(
+            EntryFlags::PXN_TABLE,
+            flags.contains(EntryFlags::KERNEL_NO_EXECUTE),
+        );
+        flags.set(
+            EntryFlags::UXN_TABLE,
+            flags.contains(EntryFlags::USER_NO_EXECUTE),
+        );
+        flags
     }
 
     /// Construct a new _present_ [Entry] out of an address and flags.
@@ -52,6 +75,16 @@ impl Entry {
         Self(0)
     }
 
+    pub fn is_object_table(&self) -> bool {
+        self.flags().contains(EntryFlags::OBJECT_TABLE)
+    }
+
+    pub fn set_object_table(&mut self, value: bool) {
+        let mut flags = self.flags();
+        flags.set(EntryFlags::OBJECT_TABLE, value);
+        self.set_flags(flags);
+    }
+
     pub(super) fn get_avail_bit(&self) -> bool {
         todo!("get_avail_bit")
     }
@@ -60,13 +93,9 @@ impl Entry {
         todo!("set_avail_bit")
     }
 
-    /// Is this a huge page, or a page table?
+    /// Is this a huge page (a block descriptor)?
     pub fn is_huge(&self) -> bool {
-        // The meaning of this bit is only valid at levels != 3
-        // If this bit is set then this entry points to another
-        // page table. If this bit is set at level 3, then we are
-        // looking at a page
-        !self.flags().contains(EntryFlags::TABLE_OR_HUGE_PAGE)
+        self.flags().contains(EntryFlags::HUGE)
     }
 
     /// Is the entry mapped Present?
@@ -76,44 +105,43 @@ impl Entry {
     }
 
     // bits [47:30]
-    const LVL1_BLK_ADDR_MASK: u64 = 0x0000_FFFF_C000_0000;
+    const BLK_1G_ADDR_MASK: u64 = 0x0000_FFFF_C000_0000;
     // bits [47:21]
-    const LVL2_BLK_ADDR_MASK: u64 = 0x0000_FFFF_FFE0_0000;
+    const BLK_2M_ADDR_MASK: u64 = 0x0000_FFFF_FFE0_0000;
     // bits [47:12]
-    const LVL3_PAGE_ADDR_MASK: u64 = 0x0000_FFFF_FFFF_F000;
+    const PAGE_ADDR_MASK: u64 = 0x0000_FFFF_FFFF_F000;
 
-    /// Address contained in the [Entry].
+    /// Address contained in the [Entry], for a 4 KiB granule: a block's address width depends
+    /// on its level (generic numbering, see [`super::Table`]); pages and table descriptors
+    /// carry bits [47:12].
     pub fn addr(&self, level: usize) -> PhysAddr {
-        // The bits that indicate the address depends on
-        // the translation granule used and the descriptor
-        // type which depends on the level. For now we are
-        // assuming a 4KiB translation granule.
-        //
-        // we assume the user wants the address of a page given
-        // the level the entry is currently in
-        match level {
-            1 => PhysAddr::new(self.0 & Self::LVL1_BLK_ADDR_MASK).unwrap(),
-            2 => PhysAddr::new(self.0 & Self::LVL2_BLK_ADDR_MASK).unwrap(),
-            3 => PhysAddr::new(self.0 & Self::LVL3_PAGE_ADDR_MASK).unwrap(),
-            // this is used when changing/unmapping entries
-            0 => self.table_addr(),
-            _ => todo!("getting the address from this level: {}", level),
-        }
+        let mask = match level {
+            2 if self.is_huge() => Self::BLK_1G_ADDR_MASK,
+            1 if self.is_huge() => Self::BLK_2M_ADDR_MASK,
+            _ => Self::PAGE_ADDR_MASK,
+        };
+        PhysAddr::new(self.0 & mask).unwrap()
     }
 
     /// Set the address.
-    pub fn set_addr(&mut self, _addr: PhysAddr) {
-        todo!("setting the address on aarch64 depends on the level")
+    pub fn set_addr(&mut self, addr: PhysAddr) {
+        *self = Entry::new_internal(addr, self.flags());
     }
 
     /// Clear the entry.
     pub fn clear(&mut self) {
-        todo!("clear")
+        self.0 = 0;
     }
 
     /// Get the flags.
     pub fn flags(&self) -> EntryFlags {
-        EntryFlags::from_bits_truncate(self.0)
+        let mut flags = EntryFlags::from_bits_truncate(self.0 ^ Self::TYPE_BIT);
+        // AP[2] cleared on a writable entry means it was written: by DBM hardware, or by the
+        // dirty fault. See `hw_bits`.
+        if flags.contains(EntryFlags::WRITE) && !flags.contains(EntryFlags::AP2_READ_OR_RW) {
+            flags.insert(EntryFlags::DIRTY);
+        }
+        flags
     }
 
     /// Set the flags.
@@ -141,12 +169,15 @@ impl Entry {
 }
 
 bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     /// The possible flags in an AArch64 page table entry.
     pub struct EntryFlags: u64 {
         /// Indicates if the entry is valid
         const PRESENT = 1 << 0;
-        /// Indicates if this entry is a Table/Huge Page at a given level.
-        const TABLE_OR_HUGE_PAGE = 1 << 1;
+        /// A block (huge page). Descriptor bit 1, seen inverted: the hardware sets it for
+        /// tables and pages and clears it for blocks, while the generic code adds a flag for
+        /// huge pages and nothing for pages. Flipped on the way in and out of the raw word.
+        const HUGE = 1 << 1;
 
         // Here we are assuming bit flags that corrspond to the upper/lower
         // attributes found in a block/page descriptor in a stage 1 translation.
@@ -216,8 +247,10 @@ bitflags::bitflags! {
         // [50] => GP
         //   - If FEAT_BTI is implemented, then Gaurd page for stage 1
         // [51] => DBM
-        //   - RES0 if FEAT_HAFDBS is not implemented.
-        //   - Dirty Bit Modifier. Hw managed dirty state
+        //   - Dirty Bit Modifier: with FEAT_HAFDBS, hardware clears AP[2] on a write.
+        //   - Doubles as the portable write bit; AP[2] is derived from it. See `Entry::hw_bits`.
+        /// Writable. AP[2] is set (read-only) while the entry is also clean.
+        const WRITE = 1 << 51;
         // [52] => Contiguous
         //   - descr. belongs to group of adj entries that point to contig OA
 
@@ -232,9 +265,19 @@ bitflags::bitflags! {
         const USER_NO_EXECUTE = 1 << 54;
 
         // [58:55] => Ignored/Reserved for software use
-        /// Software bit: installed zeroed, so the hardware `DIRTY` bit records real writes.
+        /// Software bit: installed zeroed, so `DIRTY` records real writes.
         const PROBED = 1 << 55;
-        const SHARED_PAGE_TABLE = 1 << 58;
+        /// Software bit: this table entry links to an object's shared page table.
+        const OBJECT_TABLE = 1 << 56;
+        /// Written since installed. Set by software, or read from a hardware-cleared AP[2].
+        const DIRTY = 1 << 57;
+        /// Software bit: the frame stays allocated across unmap.
+        const WIRED = 1 << 58;
+        // [62:59] => PXNTable, UXNTable, APTable[1:0] in table descriptors, derived in
+        // `Entry::hw_bits`. Page descriptors ignore them (PBHA, not enabled in TCR_EL1).
+        const PXN_TABLE = 1 << 59;
+        const UXN_TABLE = 1 << 60;
+        const AP_TABLE_RO = 1 << 62;
         // [62:59] => PBHA
         //   - IGNORED if FEAT_HPDS2 is not implemented
         //   - Page based hardware attributes
@@ -266,18 +309,31 @@ impl EntryFlags {
 
     /// Get the represented permissions as a [Protections].
     pub fn perms(&self) -> Protections {
-        let rw = if self.contains(Self::AP2_READ_OR_RW) {
-            Protections::READ
-        } else {
+        // AP[2] clear without DBM is a plain read-write entry from the bootloader's tables.
+        let rw = if self.contains(Self::WRITE) || !self.contains(Self::AP2_READ_OR_RW) {
             Protections::WRITE | Protections::READ
+        } else {
+            Protections::READ
         };
-        // TODO: decide on more sophisitcated execution permissions
-        let ex = if self.contains(Self::KERNEL_NO_EXECUTE) || self.contains(Self::USER_NO_EXECUTE) {
+        // Only the XN bit for the mapping's own privilege counts: kernel mappings always carry UXN.
+        let xn = if self.contains(Self::AP1_USER_OR_KERNEL) {
+            Self::USER_NO_EXECUTE
+        } else {
+            Self::KERNEL_NO_EXECUTE
+        };
+        let ex = if self.contains(xn) {
             Protections::empty()
         } else {
             Protections::EXEC
         };
         rw | ex
+    }
+
+    pub fn apply_perms(&mut self, perms: Protections) {
+        self.set(Self::WRITE, perms.contains(Protections::WRITE));
+        let xn = !perms.contains(Protections::EXEC);
+        self.set(Self::KERNEL_NO_EXECUTE, xn);
+        self.set(Self::USER_NO_EXECUTE, xn);
     }
 
     /// Retrieve the [CacheType].
@@ -302,27 +358,19 @@ impl EntryFlags {
 
     /// Get the set of flags to use for an intermediate (page table) entry.
     pub fn intermediate() -> Self {
-        // we want the table to be: readable, writeable, valid,
-        // marked as a table descriptor, and be kernel-only
-        //
-        // NOTE: not setting AP1_USER_OR_KERNEL/AP2_READ_OR_RW
-        // means that AP[2:1] = 0, so the mapping is kernel only with
-        // read/write access
-        Self::PRESENT | Self::TABLE_OR_HUGE_PAGE
+        // Writable so the table-descriptor APTable bits do not restrict the subtree; the leaves
+        // decide access.
+        Self::PRESENT | Self::WRITE
     }
 
     /// Get the flags needed to indicate a huge page.
     pub fn huge() -> Self {
-        // huge pages are indicated by the absence of
-        // the TABLE_OR_HUGE_PAGE bit flag
-        EntryFlags::empty()
+        Self::HUGE
     }
 
     /// Get the flags needed to indacate a leaf (i.e. page)
     pub fn leaf() -> Self {
-        // If this bit is set at level 3, then we are
-        // looking at a page.
-        Self::TABLE_OR_HUGE_PAGE
+        Self::empty()
     }
 }
 
@@ -348,13 +396,21 @@ impl From<&MappingSettings> for EntryFlags {
         let c = EntryFlags::from(settings.cache());
 
         let mut p = EntryFlags::empty();
-        if !settings.perms().contains(Protections::WRITE) {
-            // set this flag if we only want read-only permissions
-            // in other words, do not set if we desire write permissions
-            p |= EntryFlags::AP2_READ_OR_RW;
+        if settings.perms().contains(Protections::WRITE) {
+            p |= EntryFlags::WRITE;
+            // Only object pages (always USER) are dirty-tracked. Everything else is born dirty:
+            // without FEAT_HAFDBS a clean writable entry costs a permission fault on first write,
+            // and a kernel stack cannot take one.
+            if !settings.flags().contains(MappingFlags::USER) {
+                p |= EntryFlags::DIRTY;
+            }
         }
         if !settings.perms().contains(Protections::EXEC) {
             p |= EntryFlags::KERNEL_NO_EXECUTE | EntryFlags::USER_NO_EXECUTE;
+        }
+        // Kernel text is never EL0-executable; without this a bad `eret` runs kernel code at EL0.
+        if !settings.flags().contains(MappingFlags::USER) {
+            p |= EntryFlags::USER_NO_EXECUTE;
         }
         let f = if settings.flags().contains(MappingFlags::GLOBAL) {
             // pages are global if we do not set this flag
@@ -367,11 +423,16 @@ impl From<&MappingSettings> for EntryFlags {
         } else {
             EntryFlags::empty()
         };
+        let w = if settings.flags().contains(MappingFlags::WIRED) {
+            EntryFlags::WIRED
+        } else {
+            EntryFlags::empty()
+        };
         let pr = if settings.flags().contains(MappingFlags::PROBE) {
             EntryFlags::PROBED
         } else {
             EntryFlags::empty()
         };
-        p | c | f | u | pr
+        p | c | f | u | w | pr
     }
 }

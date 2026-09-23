@@ -203,6 +203,12 @@ fn generate_native_config_toml(triple: &Triple) -> anyhow::Result<()> {
     rustflags_array.push("link-arg=--no-as-needed");
     rustflags_array.push("-C");
     rustflags_array.push("link-arg=-lunwind");
+    // The C++ in librustc_driver.so calls clang's outline-atomics helpers on aarch64; rustc
+    // drives lld directly, so nothing else links the builtins archive (see `clang_builtins_flag`).
+    if let Some(builtins) = crate::toolchain::clang_builtins_archive(triple) {
+        rustflags_array.push("-C");
+        rustflags_array.push(format!("link-arg={}", builtins.display()));
+    }
 
     // Marks this as the native std: the one a Twizzler-hosted rustc links programs against, where
     // `-ltwz_rt` can be emitted from libstd itself so a bare `rustc prog.rs` links without extra

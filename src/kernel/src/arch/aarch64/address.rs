@@ -34,10 +34,9 @@ pub const MMIO_RANGE_SIZE: u64 = 0x1000_0000_0000;
 // reserves a region of its virtual address space to allocate
 // addresses to various drivers.
 pub static mut MMIO_RANGE: RangeInclusive<u64> = RangeInclusive::new(
-    // The start range of addresses used for MMIO
-    *VirtAddr::TTBR1_EL1.start(),
-    // The end range of addresses used for MMIO
-    *VirtAddr::TTBR1_EL1.start() + MMIO_RANGE_SIZE,
+    // Directly above the kernel's physical memory map.
+    VirtAddr::PHYS_START.0 + VirtAddr::PHYS_MAP_MAX_LEN,
+    VirtAddr::PHYS_START.0 + VirtAddr::PHYS_MAP_MAX_LEN + MMIO_RANGE_SIZE,
 );
 
 impl VirtAddr {
@@ -47,7 +46,13 @@ impl VirtAddr {
     /// The start of the kernel object mapping.
     const KOBJ_START: Self = Self(0xFFFF_F000_0000_0000);
 
-    pub const PHYS_START: Self = Self(0); // TODO
+    /// The physical memory map. Limine's HHDM for aarch64 sits here too, which is what lets the
+    /// kernel's own map (built at `memory::init` for `phys_to_virt`) replace the bootloader's
+    /// without moving any pointer; `limine_entry` checks that.
+    pub const PHYS_START: Self = Self(0xFFFF_0000_0000_0000);
+
+    /// The most the physical map may cover; [`MMIO_RANGE`] starts past it.
+    const PHYS_MAP_MAX_LEN: u64 = 0x4000_0000_0000;
 
     // TTBR0_EL1 points to a page table root for addresses ranging from
     // 0x0 to 0x0000_FFFF_FFFF_FFFF. Generally this is used to cover
@@ -269,7 +274,8 @@ impl PhysAddr {
     }
 
     pub fn phys_mem_map_len() -> usize {
-        todo!()
+        let max_phys: u64 = 1 << Self::get_phys_addr_width();
+        max_phys.min(VirtAddr::PHYS_MAP_MAX_LEN) as usize
     }
 
     pub fn offset<U: Into<Offset>>(&self, offset: U) -> Result<Self, NonCanonical> {

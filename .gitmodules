@@ -18,15 +18,11 @@
 [submodule "src/ports/hwlocality"]
 	path = src/ports/hwlocality
 	url = ../../twizzler-operating-system/hwlocality.git
-	branch = twizzler
-[submodule "src/ports/rust-errno"]
-	path = src/ports/rust-errno
-	url = ../../twizzler-operating-system/rust-errno.git
-	branch = twizzler
+	branch = master
 [submodule "src/ports/hwloc"]
 	path = src/ports/hwloc
 	url = ../../twizzler-operating-system/hwloc.git
-	branch = twizzler
+	branch = master
 [submodule "src/ports/libc"]
 	path = src/ports/libc
 	url = ../../twizzler-operating-system/libc.git
@@ -46,9 +42,6 @@
 [submodule "src/ports/mio"]
 	path = src/ports/mio
 	url = ../../twizzler-operating-system/mio.git
-[submodule "src/ports/signal-hook"]
-	path = src/ports/signal-hook
-	url = ../../twizzler-operating-system/signal-hook.git
 [submodule "src/ports/kibi"]
 	path = src/ports/kibi
 	url = ../../twizzler-operating-system/kibi.git
@@ -64,11 +57,11 @@
 [submodule "src/ports/femto"]
 	path = src/ports/femto
 	url = https://github.com/cosdet/femto
-	branch = twizzler
+	branch = master
 [submodule "toolchain/src/mlibc"]
 	path = toolchain/src/mlibc
 	url = https://github.com/cosdet/mlibc-twiz.git
-	branch = twizzler
+	branch = master
 [submodule "src/ports/rustix"]
 	path = src/ports/rustix
 	url = ../../twizzler-operating-system/rustix.git

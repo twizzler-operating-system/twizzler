@@ -12,4 +12,10 @@ mod morello;
 #[cfg(machine = "morello")]
 pub use morello::*;
 
+/// Board clocks beyond the generic timer: the virt machine's RTC.
+pub fn machine_clocks() {
+    #[cfg(machine = "virt")]
+    virt::rtc::register();
+}
+
 mod common;

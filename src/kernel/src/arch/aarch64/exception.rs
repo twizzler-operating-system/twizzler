@@ -6,8 +6,9 @@
 ///
 /// We currently do not handle nested exceptions.
 use core::fmt::{Display, Formatter, Result};
+use core::sync::atomic::{AtomicU64, Ordering};
 
-use arm64::registers::{ESR_EL1, TPIDR_EL0, TPIDRRO_EL0, VBAR_EL1};
+use arm64::registers::{ESR_EL1, TPIDR_EL0, TPIDRRO_EL0, TTBR0_EL1, TTBR1_EL1, VBAR_EL1};
 use registers::{
     interfaces::{Readable, Writeable},
     registers::InMemoryRegister,
@@ -16,13 +17,14 @@ use twizzler_abi::{
     arch::syscall::SYSCALL_MAGIC,
     object::{MAX_SIZE, NULLPAGE_SIZE, ObjID},
     upcall::{
-        MemoryAccessKind, UPCALL_EXIT_CODE, UpcallData, UpcallFrame, UpcallHandlerFlags,
-        UpcallInfo, UpcallTarget,
+        ExceptionInfo, MemoryAccessKind, UPCALL_EXIT_CODE, UpcallData, UpcallFrame,
+        UpcallHandlerFlags, UpcallInfo, UpcallTarget,
     },
 };
 
+use super::memory::pagetables::{Entry, EntryFlags, Table};
 use crate::{
-    memory::{VirtAddr, context::virtmem::PageFaultFlags},
+    memory::{PhysAddr, VirtAddr, context::virtmem::PageFaultFlags},
     thread::current_thread_ref,
 };
 
@@ -177,6 +179,10 @@ impl ExceptionContext {
             target.self_address
         };
 
+        if target_addr == 0 {
+            logln!("warning -- upcall to target address 0");
+            return false;
+        }
         // If the address is not canonical, leave.
         let Ok(target_addr) = VirtAddr::new(target_addr as u64) else {
             logln!("warning -- thread aborted to non-canonical jump address for upcall");
@@ -198,8 +204,7 @@ impl ExceptionContext {
         // a supervisor stack, and we aren't currently on it, use that. Otherwise,
         // use the current stack pointer.
         let stack_pointer = if switch_to_super {
-            // (target.super_stack + target.super_stack_size) as u64
-            todo!("supervisor stack requested")
+            (target.super_stack + target.super_stack_size) as u64
         } else {
             current_stack_pointer
         };
@@ -245,12 +250,14 @@ impl ExceptionContext {
         let frame_ptr = frame_start as usize as *mut UpcallFrame;
         // convert the calling context into an upcall frame
         let mut frame: UpcallFrame = (*self).into();
+        // `restore_upcall_frame` switches back to this; left at 0 the resume ran in no context.
+        frame.prior_ctx = source_ctx;
 
         // Step 3a: we need to fill out the TLS register state
         frame.tpidr = TPIDR_EL0.get();
         frame.tpidrro = TPIDRRO_EL0.get();
 
-        // TODO: save fpu registers / sse state
+        super::thread::save_fp_state(&mut frame);
 
         // write all register state and upcall information
         unsafe {
@@ -260,12 +267,11 @@ impl ExceptionContext {
 
         // Step 4: final alignment, and then call into the context code
         // to do the final setup of registers for the upcall.
+        // 16-aligned, and no x86-style 8-byte skew: there is no pushed return address for the
+        // receiver's prologue to absorb, so entering 8 off left every 16-aligned local in the
+        // handler misaligned (a `[ThreadSync; 1]` at 8 mod 16, rejected by the kernel).
         let stack_start = frame_start - MIN_STACK_ALIGN as u64;
         let stack_start = stack_start & !(MIN_STACK_ALIGN as u64 - 1);
-        // We have to enter with a mis-aligned stack, so that the function prelude
-        // of the receiver will re-align it. In this case, we control the ABI, so
-        // we preserve this just for consistency.
-        let stack_start = stack_start - core::mem::size_of::<u64>() as u64;
 
         // write down the arguments and things needed for the upcall
         // set the jump target
@@ -650,10 +656,22 @@ fn sync_handler(ctx: &mut ExceptionContext) {
     // read of raw value for ESR
     let esr = ctx.esr;
     let esr_reg: InMemoryRegister<u64, ESR_EL1::Register> = InMemoryRegister::new(esr);
+    // SPSR.M[3:0] == 0 is EL0t. Entry registers describe a *user* entry, as on x86: a fault the
+    // kernel takes while writing an upcall frame must not replace, or later clear, them.
+    let from_user = ctx.spsr & 0xf == 0;
 
-    {
-        let current_thread = current_thread_ref().unwrap();
-        current_thread.set_entry_registers(Some(ctx as *mut ExceptionContext));
+    match current_thread_ref() {
+        Some(t) => {
+            if from_user {
+                t.set_entry_registers(Some(ctx as *mut ExceptionContext))
+            } else {
+                check_kernel_stack(ctx.sp);
+            }
+        }
+        None => panic!(
+            "exception before threading: esr {:#x} elr {:#x} far {:#x} sp {:#x}",
+            esr, ctx.elr, ctx.far, ctx.sp
+        ),
     }
 
     match esr_reg.read_as_enum(ESR_EL1::EC) {
@@ -678,35 +696,51 @@ fn sync_handler(ctx: &mut ExceptionContext) {
                 MemoryAccessKind::Read
             };
 
-            // TODO: support for PRESENT and INVALID flags
-            let flags = PageFaultFlags::empty();
+            // TODO: support for the INVALID flag
+            let mut flags = PageFaultFlags::empty();
+            if matches!(
+                esr_reg.read_as_enum(ESR_EL1::EC),
+                Some(ESR_EL1::EC::Value::DataAbortLowerEL)
+            ) {
+                flags.insert(PageFaultFlags::USER);
+            }
 
             let far_va = match VirtAddr::new(far as u64) {
-                Ok(v) => v,
-                Err(_) => panic!("non canonical address: {:x}", far),
+                Ok(v) => Some(v),
+                Err(_) if flags.contains(PageFaultFlags::USER) => {
+                    let t = current_thread_ref().unwrap();
+                    t.send_upcall(UpcallInfo::Exception(ExceptionInfo::new(esr, far)));
+                    None
+                }
+                Err(_) => panic!("non canonical address {:#x} at {:#x}", far, ctx.elr),
             };
 
-            // DFSC bits[5:0] indicate the type of fault
-            let dfsc = iss & 0b111111;
-            if dfsc & 0b111100 == 0b001000 {
-                // we have an access fault
-                let level = dfsc & 0b11;
-                todo!("Access flag fault, level {}", level);
-                // TODO: set the access flag
-            } else if dfsc & 0b001100 == 0b001100 {
-                let level = dfsc & 0b11;
-                todo!("Permission fault, level {} {:?} {:?}", level, cause, far_va);
+            if let Some(far_va) = far_va {
+                // DFSC bits[5:0] indicate the type of fault
+                let dfsc = iss & 0b111111;
+                let mut handled = false;
+                if dfsc & 0b111100 == 0b001000 {
+                    // we have an access fault
+                    let level = dfsc & 0b11;
+                    todo!("Access flag fault, level {}", level);
+                    // TODO: set the access flag
+                } else if dfsc & 0b111100 == 0b001100 {
+                    handled = write_fault && handle_dirty_fault(far_va);
+                    flags.insert(PageFaultFlags::PRESENT);
+                }
+                if !handled {
+                    crate::thread::enter_kernel();
+                    crate::interrupt::set(true);
+                    let elr = ctx.elr;
+                    if let Ok(elr_va) = VirtAddr::new(elr) {
+                        crate::memory::context::virtmem::page_fault(far_va, cause, flags, elr_va);
+                    } else {
+                        todo!("send upcall exception info");
+                    }
+                    crate::interrupt::set(false);
+                    crate::thread::exit_kernel();
+                }
             }
-            crate::thread::enter_kernel();
-            crate::interrupt::set(true);
-            let elr = ctx.elr;
-            if let Ok(elr_va) = VirtAddr::new(elr) {
-                crate::memory::context::virtmem::page_fault(far_va, cause, flags, elr_va);
-            } else {
-                todo!("send upcall exception info");
-            }
-            crate::interrupt::set(false);
-            crate::thread::exit_kernel();
         }
         Some(ESR_EL1::EC::Value::InstrAbortLowerEL) => {
             handle_inst_abort(ctx, &esr_reg);
@@ -720,15 +754,74 @@ fn sync_handler(ctx: &mut ExceptionContext) {
             }
             super::syscall::handle_syscall(ctx);
         }
+        // A user trap (`brk`, an undefined instruction, ...) is the thread's problem, as on
+        // amd64; only a kernel one is fatal.
+        _ if from_user => {
+            let t = current_thread_ref().unwrap();
+            t.send_upcall(UpcallInfo::Exception(ExceptionInfo::new(esr, ctx.far)));
+        }
         Some(ESR_EL1::EC::Value::Unknown) | _ => debug_handler(ctx),
     }
 
-    {
-        let current_thread = current_thread_ref().unwrap();
+    if from_user && let Some(current_thread) = current_thread_ref() {
         current_thread.set_entry_registers(None);
     }
 
     crate::interrupt::post_interrupt();
+}
+
+/// Without FEAT_HAFDBS the first write to a writable-clean entry (DBM set, AP[2] set) is a
+/// permission fault; mark the entry dirty as the hardware would have. False when the entry is not
+/// one of those, i.e. the fault is a real protection violation.
+/// An EL1 entry after the current thread's sp ran off its stack: the frame about to be pushed
+/// would surface as garbage in a neighbour's registers, not here.
+pub(super) fn check_kernel_stack(sp: u64) {
+    if let Some(t) = current_thread_ref()
+        && t.kernel_stack_overflowed(sp)
+    {
+        panic!(
+            "kernel stack overflow: sp {:#x} below stack {:#x} of thread {}",
+            sp,
+            t.kernel_stack.as_ptr() as u64,
+            t.id()
+        );
+    }
+}
+
+fn handle_dirty_fault(far: VirtAddr) -> bool {
+    let root = if far.is_kernel() {
+        TTBR1_EL1.get_baddr()
+    } else {
+        TTBR0_EL1.get_baddr()
+    };
+    let mut table = unsafe {
+        &mut *PhysAddr::new_unchecked(root)
+            .kernel_vaddr()
+            .as_mut_ptr::<Table>()
+    };
+    let mut level = Table::top_level();
+    loop {
+        let entry = &mut table[Table::get_index(far, level)];
+        if !entry.is_present() {
+            return false;
+        }
+        if level == Table::last_level() || entry.is_huge() {
+            let flags = entry.flags();
+            if !flags.contains(EntryFlags::WRITE) || flags.contains(EntryFlags::DIRTY) {
+                return false;
+            }
+            let raw = unsafe { AtomicU64::from_ptr(entry as *mut Entry as *mut u64) };
+            let _ = raw.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+                Some((v & !EntryFlags::AP2_READ_OR_RW.bits()) | EntryFlags::DIRTY.bits())
+            });
+            unsafe {
+                core::arch::asm!("dsb ishst", "tlbi vae1is, {}", "dsb ish", "isb", in(reg) far.raw() >> 12);
+            }
+            return true;
+        }
+        table = unsafe { &mut *entry.table_addr().kernel_vaddr().as_mut_ptr::<Table>() };
+        level = Table::next_level(level);
+    }
 }
 
 fn handle_inst_abort(

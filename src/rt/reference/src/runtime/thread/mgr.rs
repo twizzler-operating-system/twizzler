@@ -473,7 +473,9 @@ impl ReferenceRuntime {
             // A region we built on an earlier entry that the kernel has no record of -- it should
             // have handed it back above. Reinstalling it is both correct and cheaper than leaking
             // a second region for the same thread.
-            twizzler_abi::syscall::sys_thread_settls(ct.tls as u64);
+            twizzler_abi::syscall::sys_thread_settls(
+                dynlink::tls::thread_pointer_from_tcb(ct.tls) as u64
+            );
             return Ok(());
         }
 
@@ -485,7 +487,7 @@ impl ReferenceRuntime {
             .unwrap();
         // Ends the zero-TLS window, and registers the pointer with the kernel: it is saved against
         // this compartment's context on the way out, so the next entry takes the warm path.
-        twizzler_abi::syscall::sys_thread_settls(tls as u64);
+        twizzler_abi::syscall::sys_thread_settls(dynlink::tls::thread_pointer_from_tcb(tls) as u64);
         libc_init_tcb(tls);
 
         with_current_thread(|cur| {
@@ -591,8 +593,11 @@ impl ReferenceRuntime {
         };
 
         let thid: ObjID = {
-            let res: Result<_> =
-                monitor_api::monitor_rt_spawn_thread(new_args, tls as usize, stack_raw);
+            let res: Result<_> = monitor_api::monitor_rt_spawn_thread(
+                new_args,
+                dynlink::tls::thread_pointer_from_tcb(tls) as usize,
+                stack_raw,
+            );
 
             match res {
                 Ok(id) => ObjID::from(id),

@@ -271,6 +271,43 @@ pub fn handle_cli(subcommand: ToolchainCommands) -> anyhow::Result<()> {
     }
 }
 
+/// The clang builtins archive for `target`, as a trailing link arg, on the architectures whose C
+/// code needs it.
+///
+/// aarch64 clang emits calls to the outline-atomics helpers (`__aarch64_cas4_acq`, ...) and
+/// expects the runtime library to define them. The shared libc.so gets that from the clang driver
+/// that links it, but rustc drives ld.lld directly, so a static link of libc.a, or of a C port's
+/// archive into a cdylib, is left with them undefined. Rust's compiler_builtins only carries them
+/// when the target enables `outline-atomics`, which the twizzler target does not.
+pub(crate) fn clang_builtins_flag(target: &Triple) -> String {
+    clang_builtins_archive(target)
+        .map(|archive| format!(" -C link-arg={}", archive.display()))
+        .unwrap_or_default()
+}
+
+/// The absolute path of that archive, on the architectures that need it (see above).
+pub(crate) fn clang_builtins_archive(target: &Triple) -> Option<std::path::PathBuf> {
+    if target.arch != Arch::Aarch64 {
+        return None;
+    }
+    let versions = pathfinding::get_toolchain_path()
+        .and_then(|root| Ok(std::fs::read_dir(root.join("lib/clang"))?))
+        .ok()?;
+    for version in versions.flatten() {
+        let archive = version
+            .path()
+            .join("lib")
+            .join(target.to_string())
+            .join("libclang_rt.builtins.a");
+        // Absolute, like the sysroot flags: cargo links registry crates from their own package
+        // root, not the workspace.
+        if let Ok(archive) = archive.canonicalize() {
+            return Some(archive);
+        }
+    }
+    None
+}
+
 pub fn set_dynamic(target: &Triple) -> anyhow::Result<()> {
     let mut sysroot_path = get_sysroots_path(target.to_string().as_str())?;
 
@@ -290,10 +327,11 @@ pub fn set_dynamic(target: &Triple) -> anyhow::Result<()> {
         ""
     };
     let args = format!(
-        "--cfg getrandom_backend=\"custom\" -C link-args=--export-dynamic {} -C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z pre-link-arg=--pack-dyn-relocs=relr -C link-arg=--no-as-needed -C link-arg=-lunwind {}",
+        "--cfg getrandom_backend=\"custom\" -C link-args=--export-dynamic {} -C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z pre-link-arg=--pack-dyn-relocs=relr -C link-arg=--no-as-needed -C link-arg=-lunwind{} {}",
         extra_rustflags,
         sysroot_path.display(),
         sysroot_path.display(),
+        clang_builtins_flag(target),
         toolchain_stamp_flag(),
     );
     std::env::set_var("RUSTFLAGS", args);
@@ -311,11 +349,12 @@ pub fn set_static(target: &Triple) {
     std::env::set_var(
         "RUSTFLAGS",
         &format!(
-            "--cfg getrandom_backend=\"custom\" -C prefer-dynamic=n -Z staticlib-prefer-dynamic=n -C target-feature=+crt-static -C relocation-model=static -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z link-native-libraries=no -C link-arg=-L{} -C link-arg=-lunwind -C link-arg={}/libc.a {}",
+            "--cfg getrandom_backend=\"custom\" -C prefer-dynamic=n -Z staticlib-prefer-dynamic=n -C target-feature=+crt-static -C relocation-model=static -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z link-native-libraries=no -C link-arg=-L{} -C link-arg=-lunwind -C link-arg={}/libc.a{} {}",
             sysroot_path.display(),
             sysroot_path.display(),
             rustlib_path.display(),
             sysroot_path.display(),
+            clang_builtins_flag(target),
             toolchain_stamp_flag(),
         ),
     );

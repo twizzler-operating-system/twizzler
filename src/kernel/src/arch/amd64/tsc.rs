@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use twizzler_abi::syscall::{ClockFlags, ClockInfo, FemtoSeconds, TimeSpan};
 
 use crate::time::{ClockHardware, Ticks};
@@ -5,6 +7,13 @@ use crate::time::{ClockHardware, Ticks};
 // 1 ms = 1000000 ns
 // 200 milliseconds
 const SLEEP_TIME: u64 = 200 * 1_000_000;
+
+/// The rate `Tsc::new` settled on, for readers that need Hz rather than a resolution.
+static NOMINAL_HZ: AtomicU64 = AtomicU64::new(0);
+
+pub fn nominal_hz() -> u64 {
+    NOMINAL_HZ.load(Ordering::Relaxed)
+}
 
 // resolution expressed as a unit of time
 pub struct Tsc {
@@ -16,6 +25,7 @@ impl Tsc {
         // calculate the frequency at which the TSC is running
         // in other words the resolution at which ticks occur
         let tsc_freq = Tsc::get_tsc_frequency();
+        NOMINAL_HZ.store(tsc_freq, Ordering::Relaxed);
 
         log::debug!(
             "tsc frequency {} (Hz), {} fs",

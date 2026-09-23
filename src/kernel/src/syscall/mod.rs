@@ -72,6 +72,16 @@ pub trait SyscallContext {
 
 pub unsafe fn create_user_slice<'a, T>(ptr: u64, len: u64) -> Option<&'a mut [T]> {
     /* TODO: verify pointers */
+    let size = (len as usize).checked_mul(core::mem::size_of::<T>())?;
+    if ptr == 0 || ptr as usize % core::mem::align_of::<T>() != 0 || size > isize::MAX as usize {
+        logln!(
+            "rejected user slice {:#x} len {} for {}",
+            ptr,
+            len,
+            core::any::type_name::<T>()
+        );
+        return None;
+    }
     unsafe { Some(core::slice::from_raw_parts_mut(ptr as *mut T, len as usize)) }
 }
 
@@ -119,9 +129,9 @@ fn type_sys_thread_sync(ptr: u64, len: u64, timeoutptr: u64) -> Result<usize> {
     sync::sys_thread_sync(slice, timeout)
 }
 
-fn write_sysinfo(info: *mut u8, kind: u64) -> Result<()> {
+fn write_sysinfo(info: *mut u8, kind: u64, arg: u64) -> Result<()> {
     let kind: InfoKind = kind.try_into()?;
-    stat::write_sys_info_values(info, kind)
+    stat::write_sys_info_values(info, kind, arg)
 }
 
 fn type_sys_kaction(
@@ -802,9 +812,10 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
         Syscall::SysInfo => {
             let ptr = context.arg0();
             let kind = context.arg1::<u64>();
+            let arg = context.arg2::<u64>();
             let info: Option<*mut u8> = unsafe { create_user_ptr(ptr).map(|r| r as *mut _) };
             if let Some(info) = info {
-                let result = write_sysinfo(info, kind);
+                let result = write_sysinfo(info, kind, arg);
                 let (code, val) = convert_result_to_codes(result, |_| (0u64, 0u64), one_err);
                 context.set_return_values(code, val);
             } else {

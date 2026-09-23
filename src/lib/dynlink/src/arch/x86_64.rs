@@ -29,6 +29,24 @@ pub struct Tcb<T> {
     pub runtime_data: T,
 }
 
+/// The thread pointer is the control block itself.
+pub(crate) const TCB_BELOW_TP: usize = 0;
+
+/// Bytes a TLS region reserves for the control block.
+pub(crate) const fn tcb_reserve<T>() -> usize {
+    core::mem::size_of::<Tcb<T>>()
+}
+
+/// The control block a thread pointer value refers to.
+pub fn tcb_from_thread_pointer<T>(tp: *mut u8) -> *mut Tcb<T> {
+    tp.cast()
+}
+
+/// The thread pointer value for a control block.
+pub fn thread_pointer_from_tcb<T>(tcb: *mut Tcb<T>) -> *mut u8 {
+    tcb.cast()
+}
+
 /// Return the TLS variant defined by the arch-specific ABI.
 pub fn get_tls_variant() -> TlsVariant {
     TlsVariant::Variant2
@@ -50,7 +68,7 @@ impl TlsRegion {
     /// # Safety
     /// The TCB must actually contain runtime data of type T, and be initialized.
     pub unsafe fn get_thread_control_block<T>(&self) -> *mut Tcb<T> {
-        self.get_thread_pointer_value() as *mut _
+        tcb_from_thread_pointer(self.thread_pointer.as_ptr())
     }
 }
 

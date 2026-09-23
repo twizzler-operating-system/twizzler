@@ -3,7 +3,7 @@ use std::{
     io::ErrorKind,
     net::SocketAddr,
     sync::{
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Condvar, Mutex,
     },
     thread::JoinHandle,
@@ -451,6 +451,11 @@ pub(super) fn note_tcp_drop(state: State) {
 /// keys on.
 static ENGINE_OCTET: AtomicU64 = AtomicU64::new(999);
 
+/// Set once `Engine::new` has run. Probes consult this before touching `ENGINE`: dereferencing
+/// the lazy-static builds the engine, which opens a net client, so a diagnostic that reads it
+/// from a compartment that never used the network would create the very thing it reports on.
+static ENGINE_BUILT: AtomicBool = AtomicBool::new(false);
+
 /// One line shape for every emit site.
 ///
 /// The first version of this probe gated its report on `ENGINE_FAST_OK`, i.e. on a sibling of the
@@ -580,6 +585,9 @@ fn core_held_note(section: usize, d: std::time::Duration) {
 /// convoy on `core` (and must not deadlock if a future call site already holds it). A failed try
 /// leaves the last sample in place, which is the pre-existing behaviour.
 pub(crate) fn sample_rings() {
+    if !ENGINE_BUILT.load(Ordering::Relaxed) || !twizzler_net::diag_enabled("net") {
+        return;
+    }
     let Ok(core) = ENGINE.core.try_lock() else {
         return;
     };
@@ -711,7 +719,11 @@ fn sleep_inflight_ms() -> Option<u64> {
 }
 
 lazy_static::lazy_static! {
-    pub(crate) static ref ENGINE: Arc<Engine> = Arc::new(Engine::new());
+    pub(crate) static ref ENGINE: Arc<Engine> = {
+        let engine = Arc::new(Engine::new());
+        ENGINE_BUILT.store(true, Ordering::Relaxed);
+        engine
+    };
     pub(crate) static ref WAITERS: Arc<Waiters> = Arc::new(Waiters::default());
 }
 
@@ -1703,22 +1715,39 @@ impl Core {
 }
 
 fn get_twznet_device_and_interface() -> (Interface, NetClient) {
-    let mut device = NetClient::open(NetClientConfig {}).unwrap();
+    // Static address. net-srv hands out addresses in the order compartments happen to open a
+    // client, which is fine for talking to the outside world but leaves two compartments unable
+    // to name each other ahead of time -- so a test that needs a client and a server in separate
+    // compartments can pin both, and init pins sshd to the address QEMU's hostfwd targets. The
+    // octet is asked of net-srv first, so the MAC matches it and the server knows it is taken;
+    // if the server refuses (another client holds it, or a just-exited one has not been reaped
+    // yet) the address is still used here, as it always was: on-host delivery is keyed on MAC
+    // and slirp NATs whatever source address it sees.
+    let pinned = std::env::var("TWZ_NET_ADDR")
+        .ok()
+        .and_then(|a| a.parse::<std::net::IpAddr>().ok());
+    let requested_octet = match pinned {
+        Some(std::net::IpAddr::V4(v4)) if v4.octets()[..3] == [10, 0, 2] => v4.octets()[3],
+        _ => 0,
+    };
+    let mut device = match NetClient::open(NetClientConfig { requested_octet }) {
+        Ok(device) => device,
+        Err(e) if requested_octet != 0 => {
+            tracing::warn!(
+                "net-srv refused octet {} ({}); using it unregistered",
+                requested_octet,
+                e
+            );
+            NetClient::open(NetClientConfig::default()).unwrap()
+        }
+        Err(e) => panic!("failed to open net client: {}", e),
+    };
 
     // Create interface
     let mut config = Config::new(device.info.hwaddr.into());
     config.random_seed = std::random::random(..);
 
-    // Static-address override. net-srv hands out addresses in the order compartments happen to
-    // open a client, which is fine for talking to the outside world but leaves two compartments
-    // unable to name each other ahead of time -- so a test that needs a client and a server in
-    // separate compartments can pin both. The MAC still comes from net-srv, and net-srv's
-    // on-host delivery is keyed on MAC, so overriding the address here needs no cooperation from
-    // it (and slirp NATs whatever source address it sees).
-    let addr = match std::env::var("TWZ_NET_ADDR")
-        .ok()
-        .and_then(|a| a.parse::<std::net::IpAddr>().ok())
-    {
+    let addr = match pinned {
         Some(addr) => {
             tracing::info!("using static address {} from TWZ_NET_ADDR", addr);
             addr

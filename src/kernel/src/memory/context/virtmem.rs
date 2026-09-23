@@ -830,6 +830,16 @@ impl VirtContext {
 
         // ID-map the lower memory. This is needed by some systems to boot secondary CPUs. This
         // mapping is cleared by the call to prep_smp later.
+        //
+        // aarch64 needs it to reach the kernel *image*: a secondary comes up in a trampoline that
+        // keeps executing at its physical address across the store that enables the MMU, and the
+        // bootloader places the image wherever it likes (limine puts it ~13 GB up on virt). x86's
+        // trampoline lives in low memory, where 4 GB is plenty.
+        #[cfg(target_arch = "aarch64")]
+        let id_len = (crate::memory::frame::max_phys_addr() as usize)
+            .next_multiple_of(1024 * 1024 * 1024)
+            .max(0x100000000);
+        #[cfg(not(target_arch = "aarch64"))]
         let id_len = 0x100000000; // 4GB
         let cursor = MappingCursor::new(
             VirtAddr::new(

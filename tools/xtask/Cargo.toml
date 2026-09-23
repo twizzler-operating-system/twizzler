@@ -12,6 +12,7 @@ strum = { workspace = true }
 anyhow = { workspace = true }
 strum_macros = { workspace = true }
 ext4-lwext4 = { version = "*", features = ["gpl", "gpl-extents"] }
+ext4-lwext4-sys = { version = "*" }
 
 # a bug prevents us from updating to lastest cargo. newest version no longer
 # seems to apply RUSTFLAGS when specified by environment, causing the build

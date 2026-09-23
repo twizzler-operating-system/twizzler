@@ -45,46 +45,26 @@ pub fn init_tls(variant: TlsVariant, tls_template: TlsInfo) -> VirtAddr {
 }
 
 fn variant1(tls_template: TlsInfo) -> VirtAddr {
-    // TODO: reserved region may be arch specific. aarch64 reserves two
-    // words after the thread pointer (TP), before any TLS blocks
-    let reserved_bytes = core::mem::size_of::<*const u64>() * 2;
-    // the size of the TLS region in memory
-    let tls_size = tls_template.mem_size + reserved_bytes;
+    // The block follows the 16 reserved bytes at the thread pointer, padded so that it is
+    // congruent to the template address modulo its alignment: that is where lld's local-exec
+    // offsets point, assuming TP itself is aligned.
+    let align = tls_template.align.max(1);
+    let block_offset =
+        16 + ((tls_template.start_addr.raw() as usize).wrapping_sub(16) & (align - 1));
+    let layout = Layout::from_size_align(block_offset + tls_template.mem_size, align.max(16))
+        .expect("failed to unwrap TLS layout");
 
-    // generate a layout where the size is rounded up if not aligned
-    let layout =
-        Layout::from_size_align(tls_size, tls_template.align).expect("failed to unwrap TLS layout");
-
-    // allocate/initialize a region of memory for the thread-local data
-    let tls_region = unsafe {
-        // allocate a region of memory initialized to zero
+    let tcb_base = unsafe {
         let tcb_base = alloc::alloc::alloc_zeroed(layout);
-
-        // copy from the kernel's ELF TLS to the allocated region of memory
-        // the layout of this region in memory is architechture dependent.
-        //
-        // Architechtures that use TLS Variant I (e.g. ARM) have the thread pointer
-        // point to the start of the TCB and thread-local vars are defined
-        // before this in higher memory addresses. So accessing a thread
-        // local var adds some offset to the thread pointer
-
-        // we need a pointer offset of reserved_bytes. add here increments
-        // the pointer offset by sizeof u8 bytes.
-        let tls_base = tcb_base.add(reserved_bytes);
-
         core::ptr::copy_nonoverlapping(
             tls_template.start_addr.as_ptr(),
-            tls_base,
+            tcb_base.add(block_offset),
             tls_template.file_size,
         );
-
         tcb_base
     };
 
-    // the TP points to the base of the TCB which exists in lower memory.
-    let tcb_base = VirtAddr::from_ptr(tls_region);
-
-    tcb_base
+    VirtAddr::from_ptr(tcb_base)
 }
 
 const MIN_TLS_ALIGN: usize = 16;

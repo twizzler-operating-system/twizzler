@@ -23,9 +23,9 @@ pub struct GICv2 {
 impl GICv2 {
     // used by generic kernel interrupt code
     pub const MIN_VECTOR: usize = *GICD::SGI_ID_RANGE.start() as usize;
-    pub const MAX_VECTOR: usize = *GICD::SGI_ID_RANGE.end() as usize;
+    pub const MAX_VECTOR: usize = *GICD::SPI_ID_RANGE.end() as usize;
     pub const NUM_VECTORS: usize =
-        (*GICD::SGI_ID_RANGE.end() - *GICD::SGI_ID_RANGE.start() + 1) as usize;
+        (*GICD::SPI_ID_RANGE.end() - *GICD::SGI_ID_RANGE.start() + 1) as usize;
 
     pub fn new(distr_base: VirtAddr, local_base: VirtAddr) -> Self {
         Self {
@@ -58,6 +58,10 @@ impl GICv2 {
     }
 
     // Enables the interrupt with a given ID to be routed to CPUs.
+    pub fn set_edge_triggered(&self, int_id: u32, edge: bool) {
+        self.global.set_edge_triggered(int_id, edge);
+    }
+
     pub fn enable_interrupt(&self, int_id: u32) {
         self.global.enable_interrupt(int_id);
     }
@@ -89,11 +93,6 @@ impl GICv2 {
     /// Send a software generated interrupt to another core
     pub fn send_interrupt(&self, int_id: u32, dest: Destination) {
         self.global.send_interrupt(int_id, dest);
-    }
-
-    /// Check if the interrupt is still pending.
-    pub fn is_interrupt_pending(&self, int_id: u32, dest: Destination) -> bool {
-        self.global.is_interrupt_pending(int_id, dest)
     }
 
     /// Print the configuration of the GIC

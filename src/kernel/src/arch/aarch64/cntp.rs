@@ -75,18 +75,17 @@ impl ClockHardware for PhysicalTimer {
 /// for now this does not do anything interesting. It merely
 /// prints to the debug console and clears the interrupt.
 pub fn cntp_interrupt_handler() {
-    // handle the timer interrupt by advancing the scheduler ticks
-    crate::clock::oneshot_clock_hardtick();
-
-    // Disable the timer to clear the interrupt. Software must clear
-    // the interrupt before deactivating the interrupt in the
-    // interrupt controller, otherwise it will keep firing.
-    //
-    // Alternatively we can mask the interrupt by setting
-    // IMASK, or update the comparator.
+    // Disable the timer to clear the interrupt. Before the hardtick, not after: the hardtick
+    // rearms the oneshot, and clearing ENABLE afterwards silently retired every cpu's clock
+    // after its first tick.
     //
     // NOTE: disabling the timer does not stop the system
     // count from running, so reads from CNTPCT_EL0 are
     // still valid
     CNTP_CTL_EL0.modify(CNTP_CTL_EL0::ENABLE::CLEAR);
+
+    // handle the timer interrupt by advancing the scheduler ticks
+    crate::clock::oneshot_clock_hardtick();
+    // After the hardtick has re-armed the timer, as on x86: the stattick may block.
+    crate::clock::stat::tick();
 }

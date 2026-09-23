@@ -105,11 +105,24 @@ impl<'a> Iterator for PcieCapabilityIterator<'a> {
 }
 
 // TODO: allow for dest-ID and other options, and propegate all this stuff through the API.
-fn calc_msg_info(vec: InterruptVector, level: bool) -> (u64, u32) {
-    let addr = (0xfee << 20) | (0 << 12);
-    let data: u32 = vec.into();
-    let data = data | if level { 1 << 15 } else { 0 };
-    (addr, data)
+impl Device {
+    /// The MSI message (address, data) that raises `vec`.
+    fn msi_msg(&self, vec: InterruptVector, level: bool) -> Result<(u64, u32)> {
+        let data: u32 = vec.into();
+        #[cfg(target_arch = "x86_64")]
+        {
+            let addr = (0xfee << 20) | (0 << 12);
+            Ok((addr, data | if level { 1 << 15 } else { 0 }))
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            // GICv2m: the INTID written to the frame's doorbell, which the kernel reports.
+            let _ = level;
+            let info =
+                unsafe { self.get_info::<PcieDeviceInfo>(0) }.ok_or(TwzError::NOT_SUPPORTED)?;
+            Ok((info.get_data().msi_addr, data))
+        }
+    }
 }
 
 impl Device {
@@ -162,7 +175,7 @@ impl Device {
             let len = MsixCapability::table_len(msix);
             VolatilePtr::new(NonNull::from(core::slice::from_raw_parts_mut(start, len)))
         };
-        let (msg_addr, msg_data) = calc_msg_info(vec, false);
+        let (msg_addr, msg_data) = self.msi_msg(vec, false)?;
         let entry = table.index(inum);
         map_field!(entry.msg_addr_lo).write(msg_addr as u32);
         map_field!(entry.msg_addr_hi).write((msg_addr >> 32) as u32);

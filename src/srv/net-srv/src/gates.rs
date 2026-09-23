@@ -1,13 +1,9 @@
-use std::{
-    net::IpAddr,
-    str::FromStr,
-    sync::{atomic::Ordering, Mutex},
-};
+use std::{net::IpAddr, str::FromStr, sync::Mutex};
 
 use secgate::{util::HandleMgr, ResourceError, TwzError};
 use tracing::Level;
 use twizzler::{object::RawObject, Result};
-use twizzler_abi::syscall::ObjectCreate;
+use twizzler_abi::syscall::{sys_object_stat, ObjectCreate};
 use twizzler_net::{
     packet::PacketObject, ClientMsg, ClientRet, NetClientConfig, NetClientOpenInfo, NetServer,
     ServerMsg, ServerRet,
@@ -44,6 +40,19 @@ pub fn start_network() -> Result<()> {
 
     let _ = PORTS.set(PortAssigner::new());
     let _ = ADDRS.set(AddrAssigner::new());
+
+    // Nothing tells this server that a compartment died: its runtime's net client is never
+    // dropped, so `twz_net_drop_client` never comes. Sweep for dead owners on a timer as well as
+    // on every open/drop, or their addresses and ports are never recycled.
+    let _ = std::thread::Builder::new()
+        .name("net-reaper".into())
+        .spawn(|| loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if let Some(ni) = NETINFO.get() {
+                reap_dead(&mut ni.handles.lock().unwrap());
+            }
+        })
+        .unwrap();
 
     let _ = NETINFO.set(NetworkInfo {
         handles: Mutex::new(HandleMgr::new(None)),
@@ -130,18 +139,35 @@ fn twz_net_drop_client(desc: secgate::util::Descriptor) -> Result<()> {
         .unwrap();
     let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let caller = info.source_context().ok_or(TwzError::INVALID_ARGUMENT)?;
+    reap_dead(&mut handles);
     if let Some(client) = handles.remove(caller, desc) {
-        client.active.store(false, Ordering::SeqCst);
-        for port in client.ports.lock().unwrap().drain() {
-            PORTS.get().unwrap().return_port(port.0);
-        }
-        ADDRS.get().unwrap().release(client.addr);
+        client.teardown();
     }
     Ok(())
 }
 
+/// Retire every client whose compartment is gone, before `HandleMgr`'s own GC (which runs inside
+/// `insert`/`remove`) drops their entries without releasing anything. Teardown runs before the
+/// remove for the same reason. Same liveness test as `HandleMgr::gc_handles`.
+pub(crate) fn reap_dead(handles: &mut HandleMgr<std::sync::Arc<Client>>) {
+    let dead: Vec<_> = handles
+        .handles()
+        .filter(|(comp, _, _)| comp.raw() != 0 && sys_object_stat(*comp).is_err())
+        .map(|(comp, desc, client)| (comp, desc, client.clone()))
+        .collect();
+    for (comp, desc, client) in dead {
+        tracing::info!(
+            "net client of exited compartment {} reaped: addr = {:?}",
+            comp,
+            client.addr.ipv4()
+        );
+        client.teardown();
+        handles.remove(comp, desc);
+    }
+}
+
 #[secgate::entry(lib = "twizzler-net")]
-pub fn twz_net_open_client(_config: NetClientConfig) -> Result<NetClientOpenInfo> {
+pub fn twz_net_open_client(config: NetClientConfig) -> Result<NetClientOpenInfo> {
     let mut handles = NETINFO
         .get()
         .ok_or(TwzError::NOT_SUPPORTED)?
@@ -151,6 +177,7 @@ pub fn twz_net_open_client(_config: NetClientConfig) -> Result<NetClientOpenInfo
 
     let info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let caller = info.source_context().ok_or(TwzError::INVALID_ARGUMENT)?;
+    reap_dead(&mut handles);
 
     // Slot size, not frame size: a slot must hold the largest frame either side can hand over, and
     // `NetServerTxToken::consume` *panics* if it cannot (server.rs), so this bounds the MTU any
@@ -179,11 +206,19 @@ pub fn twz_net_open_client(_config: NetClientConfig) -> Result<NetClientOpenInfo
 
     // Each client gets its own address and MAC; see addr.rs for why sharing them was actively
     // harmful rather than merely untidy.
-    let addr = ADDRS
-        .get()
-        .ok_or(TwzError::NOT_SUPPORTED)?
-        .allocate()
-        .ok_or(ResourceError::OutOfResources)?;
+    let addr = if config.requested_octet != 0 {
+        ADDRS
+            .get()
+            .unwrap()
+            .reserve(config.requested_octet)
+            .ok_or(ResourceError::Busy)?
+    } else {
+        ADDRS
+            .get()
+            .unwrap()
+            .allocate()
+            .ok_or(ResourceError::OutOfResources)?
+    };
 
     let mut ncinfo = NetClientOpenInfo {
         tx_buf: tx_buf.id(),

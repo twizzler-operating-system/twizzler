@@ -315,10 +315,13 @@ pub fn lapic_interrupt(irq: u16) {
     match irq {
         LAPIC_ERR_VECTOR => panic!("LAPIC error"),
         LAPIC_TIMER_VECTOR => {
-            // Statclock first: it samples the interrupted context, before the hardtick's
-            // scheduling work muddies whose time this was.
-            super::super::stat::tick();
-            crate::clock::oneshot_clock_hardtick()
+            // Hardtick first: it re-arms the one-shot at its end and never switches. The stattick
+            // can (`schedule_stattick` reaps a thread, whose teardown takes sleeping locks), and
+            // a switch before the re-arm leaves the cpu with no timer until whatever it switched
+            // to blocks -- a user spinner never does. Seen as a 27 s stall of every other thread
+            // on one cpu, with the stattick's own context resuming only when the spinner exited.
+            crate::clock::oneshot_clock_hardtick();
+            crate::clock::stat::tick();
         }
         LAPIC_RESCHED_VECTOR => crate::processor::sched::schedule_resched(),
         _ => emerglogln!("[x86::apic] ignoring unexpected LAPIC interrupt {}", irq),

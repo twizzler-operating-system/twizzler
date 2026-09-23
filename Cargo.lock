@@ -1379,7 +1379,7 @@ version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9d839f2a20b0aee515dc581a6172f2321f96cab76c1a38a4c584a194955390e"
 dependencies = [
- "getrandom 0.2.16",
+ "getrandom 0.2.17",
  "once_cell",
  "tiny-keccak",
 ]
@@ -2301,10 +2301,12 @@ dependencies = [
 
 [[package]]
 name = "errno"
-version = "0.3.13"
+version = "0.3.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2440,10 +2442,7 @@ checksum = "784a4df722dc6267a04af36895398f59d21d07dce47232adf31ec0ff2fa45e67"
 name = "femto"
 version = "0.1.0"
 dependencies = [
- "libc",
  "termion",
- "twizzler-abi",
- "twizzler-rt-abi",
 ]
 
 [[package]]
@@ -2809,12 +2808,12 @@ dependencies = [
 
 [[package]]
 name = "getrandom"
-version = "0.2.16"
-source = "git+https://github.com/twizzler-operating-system/getrandom-twizzler.git?branch=twizzler-0.2#e4b8c54e677acbf7048d5c82c746b291a83c506c"
+version = "0.2.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if 1.0.4",
  "libc",
- "twizzler-rt-abi",
  "wasi",
 ]
 
@@ -2844,6 +2843,20 @@ dependencies = [
  "r-efi 6.0.0",
  "rand_core 0.10.1",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "getty"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "monitor-api",
+ "tracing",
+ "tracing-subscriber",
+ "twizzler-abi",
+ "twizzler-io",
+ "twizzler-rt-abi",
+ "twizzler-runtime",
 ]
 
 [[package]]
@@ -4008,7 +4021,7 @@ dependencies = [
  "arrayvec",
  "bitflags 2.9.1",
  "derive_more",
- "errno 0.3.13",
+ "errno 0.3.14",
  "hwlocality-sys",
  "libc",
  "strum 0.27.2",
@@ -4546,7 +4559,6 @@ dependencies = [
  "twizzler",
  "twizzler-abi",
  "twizzler-display",
- "twizzler-io",
  "twizzler-queue",
  "twizzler-rt-abi",
  "twizzler-runtime",
@@ -6868,7 +6880,7 @@ version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 dependencies = [
- "getrandom 0.2.16",
+ "getrandom 0.2.17",
 ]
 
 [[package]]
@@ -7084,7 +7096,7 @@ checksum = "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7"
 dependencies = [
  "cc",
  "cfg-if 1.0.4",
- "getrandom 0.2.16",
+ "getrandom 0.2.17",
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
@@ -7201,7 +7213,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fdb5bc1ae2baa591800df16c9ca78619bf65c0488b41b96ccec5d11220d8c154"
 dependencies = [
  "bitflags 2.9.1",
- "errno 0.3.13",
+ "errno 0.3.14",
  "libc",
  "linux-raw-sys 0.4.15",
  "windows-sys 0.59.0",
@@ -7212,7 +7224,7 @@ name = "rustix"
 version = "1.1.4"
 dependencies = [
  "bitflags 2.9.1",
- "errno 0.3.13",
+ "errno 0.3.14",
  "libc",
  "linux-raw-sys 0.12.1",
  "windows-sys 0.61.2",
@@ -7646,15 +7658,19 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "signal-hook"
-version = "0.3.17"
+version = "0.3.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d881a16cf4426aa584979d30bd82cb33429027e42122b169753d6ef1085ed6e2"
 dependencies = [
  "libc",
- "signal-hook-registry 1.4.4",
+ "signal-hook-registry",
 ]
 
 [[package]]
 name = "signal-hook-mio"
-version = "0.2.4"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b75a19a7a740b25bc7944bdee6172368f988763b744e3d4dfe753f6b4ece40cc"
 dependencies = [
  "libc",
  "mio",
@@ -7663,18 +7679,11 @@ dependencies = [
 
 [[package]]
 name = "signal-hook-registry"
-version = "1.4.4"
-dependencies = [
- "libc",
-]
-
-[[package]]
-name = "signal-hook-registry"
 version = "1.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
- "errno 0.3.13",
+ "errno 0.2.8",
  "libc",
 ]
 
@@ -7832,6 +7841,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sockpair_test"
+version = "0.1.0"
+dependencies = [
+ "errno 0.3.14",
+ "getrandom 0.2.17",
+ "libc",
+]
+
+[[package]]
 name = "spawn-test"
 version = "0.1.0"
 
@@ -7965,7 +7983,7 @@ dependencies = [
 name = "st"
 version = "0.1.0"
 dependencies = [
- "rand 0.10.2",
+ "twizzler-abi",
 ]
 
 [[package]]
@@ -8084,7 +8102,7 @@ dependencies = [
  "digest 0.10.7",
  "ed25519-dalek",
  "embedded-io",
- "getrandom 0.2.16",
+ "getrandom 0.2.17",
  "heapless 0.8.0",
  "hmac",
  "log",
@@ -8464,7 +8482,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
- "signal-hook-registry 1.4.8",
+ "signal-hook-registry",
  "socket2 0.5.10",
  "tokio-macros",
  "windows-sys 0.52.0",
@@ -8891,6 +8909,7 @@ dependencies = [
  "bitflags 2.9.1",
  "bitset-core",
  "cfg-if 1.0.4",
+ "getrandom 0.2.17",
  "lazy_static",
  "lru",
  "num_enum",
@@ -8951,6 +8970,9 @@ dependencies = [
 [[package]]
 name = "twizzler-runtime"
 version = "0.1.0"
+dependencies = [
+ "getrandom 0.2.17",
+]
 
 [[package]]
 name = "twizzler-security"
@@ -8958,7 +8980,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.9.1",
  "blake3",
- "getrandom 0.2.16",
+ "getrandom 0.2.17",
  "heapless 0.9.2",
  "log",
  "p256",
@@ -11041,6 +11063,7 @@ dependencies = [
  "clap",
  "cmake",
  "ext4-lwext4",
+ "ext4-lwext4-sys",
  "fs_extra",
  "futures",
  "futures-util",
@@ -11198,13 +11221,3 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
-
-[[patch.unused]]
-name = "ctrlc"
-version = "3.4.5"
-source = "git+https://github.com/twizzler-operating-system/rust-ctrlc.git?branch=twizzler#3100764849e5b36c5e9739004b257e69a9b6288a"
-
-[[patch.unused]]
-name = "filetime"
-version = "0.2.25"
-source = "git+https://github.com/twizzler-operating-system/filetime.git?branch=twizzler#c29e356e7e999cc08d68186e374fbb92349759df"

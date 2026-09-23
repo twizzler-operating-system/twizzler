@@ -203,9 +203,20 @@ where
         let info = unsafe { Arc::from_raw(arg as *const KthreadClosure<F, R>) };
         // Take this out, but don't hold the lock when we run the closure.
         let closure = { info.closure.lock().take().unwrap() };
-        assert!(!current_thread_ref().unwrap().is_critical());
+        let check = |when: &str| {
+            let cur = current_thread_ref().unwrap();
+            assert!(
+                !cur.is_critical(),
+                "kthread {} critical {} closure: count {} taken off zero at {:?}",
+                cur.id(),
+                when,
+                cur.critical_counter.load(core::sync::atomic::Ordering::SeqCst),
+                cur.critical_origin(),
+            );
+        };
+        check("before");
         let result = (closure)();
-        assert!(!current_thread_ref().unwrap().is_critical());
+        check("after");
         let mut guard = info.result.lock();
         guard.1.write(result);
         guard.0 = true;

@@ -34,6 +34,79 @@ pub fn statclock(dt: Nanoseconds) {
     schedule_stattick(dt);
 }
 
+/// Per-cpu statclock state, shared by every arch's oneshot timer. The statclock used to be a PIT
+/// interrupt delivered to the bsp alone, which re-broadcast it to every other cpu by IPI -- so
+/// profiling ticks cost n-1 IPIs each, and a bsp that stopped taking interrupts silenced every
+/// other cpu's sampling (and largely their idle wakeups) with it. Instead, each cpu keeps its own
+/// next-sample deadline and takes the sample from its own timer interrupt: [stat::clamp_oneshot]
+/// shortens any oneshot being programmed so the timer fires by the deadline, and [stat::tick]
+/// runs the callback when it has passed. Samples stay on the statclock's own cadence rather than
+/// snapping to hardtick boundaries, which is the property the deliberately-off-beat statclock
+/// frequency exists for.
+pub mod stat {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    use crate::{clock::Nanoseconds, once::Once};
+
+    static PERIOD_NS: AtomicU64 = AtomicU64::new(0);
+    static CB: Once<fn(Nanoseconds)> = Once::new();
+
+    #[thread_local]
+    static NEXT_NS: AtomicU64 = AtomicU64::new(0);
+    #[thread_local]
+    static LAST_NS: AtomicU64 = AtomicU64::new(0);
+
+    pub fn start(hz: u64, cb: fn(Nanoseconds)) {
+        CB.call_once(|| cb);
+        PERIOD_NS.store(1_000_000_000 / hz, Ordering::Release);
+    }
+
+    /// Floor on the delta [clamp_oneshot] can produce for an overdue sample: a delay of 0 would
+    /// be written to the LAPIC TICR as 0 on the non-deadline path, which *stops* the timer.
+    const MIN_DELTA_NS: Nanoseconds = 10_000;
+
+    /// Shorten a oneshot delay so this cpu's timer fires by its next stattick deadline. Never
+    /// lengthens: a caller asking for something sooner keeps it.
+    pub fn clamp_oneshot(time: Nanoseconds) -> Nanoseconds {
+        let period = PERIOD_NS.load(Ordering::Acquire);
+        if period == 0 {
+            return time;
+        }
+        let now = crate::instant::current_ns();
+        if now == 0 {
+            return time;
+        }
+        let mut next = NEXT_NS.load(Ordering::Relaxed);
+        if next == 0 {
+            // First arm on this cpu; start its cadence now.
+            next = now + period;
+            NEXT_NS.store(next, Ordering::Relaxed);
+        }
+        time.min(next.saturating_sub(now).max(MIN_DELTA_NS))
+    }
+
+    /// Run the statclock callback if this cpu's sample is due. Called from this cpu's timer
+    /// interrupt, after the hardtick has re-armed the oneshot: the callback may block.
+    pub fn tick() {
+        let period = PERIOD_NS.load(Ordering::Acquire);
+        if period == 0 {
+            return;
+        }
+        let now = crate::instant::current_ns();
+        if now == 0 || now < NEXT_NS.load(Ordering::Relaxed) {
+            return;
+        }
+        // Advance from now, not the old deadline: a cpu that ran late owes one sample, not a
+        // burst of catch-up samples that would all land on the same context.
+        NEXT_NS.store(now + period, Ordering::Relaxed);
+        let last = LAST_NS.swap(now, Ordering::Relaxed);
+        let dt = if last == 0 { period } else { now - last };
+        if let Some(cb) = CB.poll() {
+            cb(dt);
+        }
+    }
+}
+
 const NR_WINDOWS: usize = 1024;
 
 struct TimeoutOnce {

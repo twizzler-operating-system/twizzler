@@ -19,8 +19,9 @@ use twizzler::object::{Object, TypedObject};
 use twizzler_abi::{
     object::ObjID,
     syscall::{
-        EnumerateKind, KernelStats, MemoryStats, ThreadSchedStats, ThreadSctxIds, sys_info,
-        sys_kernel_stats, sys_memory_stats, sys_object_enumerate_notes, sys_object_get_note,
+        CacheKind, CpuInfo, CpuTopoLevelKind, EnumerateKind, KernelStats, MemoryStats,
+        ThreadSchedStats, ThreadSctxIds, sys_cpu_info, sys_info, sys_kernel_stats,
+        sys_memory_stats, sys_object_enumerate_notes, sys_object_get_note,
         sys_thread_read_sctx_ids, sys_thread_read_stats, sys_thread_self_id, sys_thread_stats,
     },
     thread::{ExecutionState, ThreadRepr},
@@ -558,6 +559,8 @@ struct ThreadTracker {
     /// Read once. Hotplug aside, this does not change, and it was costing a `sys_info` every
     /// second to re-learn.
     cpus: usize,
+    /// Per-cpu frequency, topology and caches, refreshed every sample.
+    cpu_info: Vec<CpuInfo>,
     /// Our own thread id, for the bold self row. Constant for the life of the process.
     self_id: ObjID,
 }
@@ -570,6 +573,9 @@ impl ThreadTracker {
             self.cpus = sys_info().cpu_count;
             self.self_id = sys_thread_self_id();
         }
+        self.cpu_info = (0..self.cpus)
+            .filter_map(|i| sys_cpu_info(i).ok())
+            .collect();
         self.sys_prev = self.sys_now;
         let sample = SysSample::take();
         self.secs = self
@@ -659,6 +665,11 @@ impl ThreadTracker {
                             pager_pages: stats.pager_pages.saturating_sub(thread.stats.pager_pages),
                             syscalls: stats.syscalls.saturating_sub(thread.stats.syscalls),
                             wakes: stats.wakes.saturating_sub(thread.stats.wakes),
+                            switches: stats.switches.saturating_sub(thread.stats.switches),
+                            migrations: stats.migrations.saturating_sub(thread.stats.migrations),
+                            cpu: stats.cpu,
+                            cache_penalty: stats.cache_penalty,
+                            llc_misses: stats.llc_misses.saturating_sub(thread.stats.llc_misses),
                         }
                     };
                     thread.stats = stats;
@@ -972,6 +983,48 @@ impl ThreadTracker {
         (kernel, pager)
     }
 
+    /// The cpu header line: nominal and current MHz per cpu, the topology shape, and caches.
+    fn cpu_line(&self) -> String {
+        let Some(first) = self.cpu_info.first() else {
+            return String::new();
+        };
+        let distinct = |kind: CpuTopoLevelKind| {
+            let mut ids: Vec<u32> = self
+                .cpu_info
+                .iter()
+                .flat_map(|c| c.levels().iter().filter(|l| l.kind == kind).map(|l| l.id))
+                .collect();
+            ids.sort();
+            ids.dedup();
+            ids.len().max(1)
+        };
+        let cores = distinct(CpuTopoLevelKind::Core);
+        let now: Vec<String> = self.cpu_info.iter().map(|c| c.cur_mhz().to_string()).collect();
+        let caches: Vec<String> = first
+            .caches()
+            .iter()
+            .map(|c| {
+                let k = match c.kind {
+                    CacheKind::Data => "d",
+                    CacheKind::Instruction => "i",
+                    _ => "",
+                };
+                format!("L{}{} {}", c.level, k, fmt_bytes(c.size as usize))
+            })
+            .collect();
+        format!(
+            "cpus    {} @ {} MHz nominal, now {} ({:?})  |  {} package, {} core, {} thread/core  |  {}",
+            self.cpu_info.len(),
+            first.nominal_khz / 1000,
+            now.join(" "),
+            first.freq_source,
+            distinct(CpuTopoLevelKind::Package),
+            cores,
+            self.cpu_info.len() / cores,
+            caches.join(", "),
+        )
+    }
+
     fn summary(&self) -> String {
         let stats = sys_thread_stats();
         let cpus = self.cpus;
@@ -1011,6 +1064,7 @@ impl ThreadTracker {
         let (kernel_line, pager_line) = self.sys_lines();
         writeln!(out, "{}", kernel_line)?;
         writeln!(out, "{}", pager_line)?;
+        writeln!(out, "{}", self.cpu_line())?;
         let id_hdr = if self.show_ids {
             format!("{:<20}  ", "ID")
         } else {
@@ -1150,9 +1204,11 @@ impl ThreadTracker {
         screen.put(&kernel_line);
         screen.at(0, 3);
         screen.put(&pager_line);
+        screen.at(0, 4);
+        screen.put(&self.cpu_line());
         screen.fg_reset();
 
-        screen.at(0, 4);
+        screen.at(0, 5);
         screen.reverse();
         screen.put(pad(
             &format!(
@@ -1178,7 +1234,7 @@ impl ThreadTracker {
         ));
         screen.pen_reset();
 
-        let body_start: u16 = 5;
+        let body_start: u16 = 6;
         let max_rows = rows.saturating_sub(body_start + 1) as usize;
         // A group costs a header row, so budget rows across groups rather than threads: an
         // overlong first group must not push every other compartment off the screen entirely.

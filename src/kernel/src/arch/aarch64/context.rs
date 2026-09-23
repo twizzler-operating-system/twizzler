@@ -5,32 +5,27 @@ use crate::{
     arch::memory::pagetables::{Entry, EntryFlags, Table},
     memory::{
         PhysAddr,
-        frame::get_frame,
+        frame::{FrameRef, PHYS_LEVEL_LAYOUTS, get_frame},
         pagetables::{
-            Consistency, DeferredUnmappingOps, MapReader, Mapper, MappingCursor, MappingSettings,
-            PhysAddrProvider, SharedPageTable,
+            Consistency, MapReader, Mapper, MappingCursor, MappingSettings, PhysAddrProvider,
         },
-        tracker::{FrameAllocFlags, alloc_frame, free_frame},
+        tracker::{FrameAllocFlags, FrameAllocator, alloc_frame, free_frame},
     },
-    mutex::Mutex,
+    obj::pagetables::ObjectPageTable,
     once::Once,
     processor::Processor,
-    spinlock::Spinlock,
+    spinlock::{SpinLockGuard, Spinlock},
 };
 
-// this does not need to be pub
-pub struct ArchContextInner {
-    // we have a single mapper that covers one part of the address space
-    mapper: Mapper,
-}
-
+/// A context's TTBR0 root. Kernel addresses are never mapped here: they live in the shared TTBR1
+/// tables behind [`kernel_mapper`], which every context loads alongside its own root.
 pub struct ArchContext {
     pub target: ArchContextTarget,
-    inner: Mutex<ArchContextInner>,
+    inner: Spinlock<Mapper>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
-// TODO: can we get the kernel tables elsewhere?
+#[repr(transparent)]
 pub struct ArchContextTarget(pub PhysAddr);
 
 impl ArchContextTarget {
@@ -38,27 +33,28 @@ impl ArchContextTarget {
     pub fn null() -> Self {
         Self(PhysAddr::new(0).unwrap())
     }
+
+    pub fn paddr(&self) -> PhysAddr {
+        self.0
+    }
+
+    pub fn raw(&self) -> u64 {
+        self.0.raw()
+    }
 }
 
-// default kernel mapper that is shared among all kernel instances of ArchContext
+/// The mapper and its root, the latter kept outside the lock so a context switch can load TTBR1
+/// without taking it.
 static KERNEL_MAPPER: Once<(Spinlock<Mapper>, PhysAddr)> = Once::new();
 
 fn kernel_mapper() -> &'static (Spinlock<Mapper>, PhysAddr) {
     KERNEL_MAPPER.call_once(|| {
-        let mut m = Mapper::new(
-            // allocate a new physical page frame to hold the
-            // data for the page table root
-            alloc_frame(FrameAllocFlags::ZEROED).start_address(),
-        );
-        // initialize half of the page table entries
+        let mut m = Mapper::new(new_table_frame().start_address());
         for idx in (Table::PAGE_TABLE_ENTRIES / 2)..Table::PAGE_TABLE_ENTRIES {
-            // write out PT entries for a top level table
-            // whose entries point to another zeroed page
             m.set_top_level_table(
                 idx,
                 Entry::new(
-                    alloc_frame(FrameAllocFlags::ZEROED).start_address(),
-                    // intermediate here means another page table
+                    new_table_frame().start_address(),
                     EntryFlags::intermediate(),
                 ),
             );
@@ -68,6 +64,13 @@ fn kernel_mapper() -> &'static (Spinlock<Mapper>, PhysAddr) {
     })
 }
 
+fn new_table_frame() -> FrameRef {
+    let frame = alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL);
+    frame.set_pt(true);
+    frame.inc_refcount();
+    frame
+}
+
 impl Default for ArchContext {
     fn default() -> Self {
         Self::new()
@@ -75,136 +78,197 @@ impl Default for ArchContext {
 }
 
 impl ArchContext {
-    /// Construct a new context for the kernel.
     pub fn new_kernel() -> Self {
-        let inner = ArchContextInner::new();
-        let target = ArchContextTarget(inner.mapper.root_address());
-        Self {
-            target,
-            inner: Mutex::new(inner),
-        }
+        Self::new()
     }
 
     pub fn new() -> Self {
-        Self::new_kernel()
+        let mapper = Mapper::new(new_table_frame().start_address());
+        Self {
+            target: ArchContextTarget(mapper.root_address()),
+            inner: Spinlock::new(mapper),
+        }
     }
 
     pub fn switch_to(&self, proc: Option<&Processor>) {
-        unsafe {
-            Self::switch_to_target(&self.target, proc);
-        }
+        unsafe { Self::switch_to_target(&self.target, proc) }
     }
 
-    #[allow(named_asm_labels)]
+    pub fn with_mapper<R>(&self, f: impl FnOnce(&mut Mapper) -> R) -> R {
+        f(&mut self.inner.lock())
+    }
+
     /// Switch to a target context.
     ///
-    /// `proc` is unused on this architecture (the amd64 backend uses it to track
-    /// per-processor active-context state for targeted TLB shootdown); accepted here
-    /// only so callers shared with amd64 (e.g. `VirtContext::switch_to`) compile.
+    /// `proc` is unused on this architecture (the amd64 backend uses it to track per-processor
+    /// active-context state for targeted TLB shootdown); accepted so callers shared with amd64
+    /// compile.
     ///
     /// # Safety
-    /// This function must be called with a target that comes from an ArchContext that lives long
-    /// enough.
+    /// `tgt` must come from an `ArchContext` that outlives the switch.
     pub unsafe fn switch_to_target(tgt: &ArchContextTarget, _proc: Option<&Processor>) {
-        // TODO: If the incoming target is already the current user table, this should be a no-op.
-        // Also, we don't need to set the kernel tables each time.
-        // write TTBR1
+        // TODO: skip the TTBR1 write and the flush when the target is already loaded.
         TTBR1_EL1.set_baddr(kernel_mapper().1.raw());
-        // write TTBR0
         TTBR0_EL1.set_baddr(tgt.0.raw());
-        core::arch::asm!(
-            // ensure that all previous instructions have completed
-            "isb",
-            // invalidate all tlb entries (locally)
-            "tlbi vmalle1",
-            // ensure tlb invalidation completes
-            "dsb nsh",
-            // ensure dsb instruction completes
-            "isb",
-        );
-    }
-
-    pub fn map(&self, cursor: MappingCursor, phys: &mut impl PhysAddrProvider) {
-        // decide if this goes into the global kernel mappings, or
-        // the local per-context mappings
-        let ops = if cursor.start().is_kernel() {
-            // upper half addresses go to TTBR1_EL1
-            let mut mapper = kernel_mapper().0.lock();
-            let consist = Consistency::new(ArchContextTarget(mapper.root_address()));
-            mapper.map(cursor, phys, consist)
-        } else {
-            // lower half addresses go to TTBR0_EL1
-            self.inner.lock().map(cursor, phys)
-        };
-        if let Err(ops) = ops {
-            ops.run_all();
+        unsafe {
+            core::arch::asm!("isb", "tlbi vmalle1", "dsb nsh", "isb");
         }
     }
 
-    pub fn change(&self, cursor: MappingCursor, settings: &MappingSettings) {
+    /// The tables `cursor` lives in: kernel addresses go to the shared TTBR1 tables, which are
+    /// visible everywhere and so invalidated everywhere.
+    fn lock_with_consist(&self, cursor: MappingCursor) -> (Consistency, SpinLockGuard<'_, Mapper>) {
         if cursor.start().is_kernel() {
-            kernel_mapper().0.lock().change(cursor, settings);
+            (Consistency::new_full_global(), kernel_mapper().0.lock())
         } else {
-            self.inner.lock().change(cursor, settings);
+            (Consistency::new(self.target), self.inner.lock())
         }
     }
 
-    pub fn unmap(&self, cursor: MappingCursor) {
-        let ops = if cursor.start().is_kernel() {
-            kernel_mapper().0.lock().unmap(cursor)
+    fn mapper_for(&self, cursor: MappingCursor) -> SpinLockGuard<'_, Mapper> {
+        if cursor.start().is_kernel() {
+            kernel_mapper().0.lock()
         } else {
-            self.inner.lock().unmap(cursor)
-        };
-        ops.run_all();
+            self.inner.lock()
+        }
     }
 
-    pub fn readmap<R>(&self, _cursor: MappingCursor, _f: impl Fn(MapReader) -> R) -> R {
-        todo!("readmap")
-    }
-
-    pub fn shared_map(&self, cursor: MappingCursor, spt: &SharedPageTable) {
-        todo!()
-    }
-}
-
-impl ArchContextInner {
-    fn new() -> Self {
-        // we need to create a new mapper object by allocating
-        // some memory for the page table.
-        let mapper = Mapper::new(alloc_frame(FrameAllocFlags::ZEROED).start_address());
-        Self { mapper }
-    }
-
-    fn map(
-        &mut self,
+    pub fn map(
+        &self,
         cursor: MappingCursor,
         phys: &mut impl PhysAddrProvider,
-    ) -> Result<(), DeferredUnmappingOps> {
-        let consist = Consistency::new(ArchContextTarget(self.mapper.root_address()));
-        self.mapper.map(cursor, phys, consist)
+        fa: &mut FrameAllocator,
+    ) {
+        let (mut consist, mut guard) = self.lock_with_consist(cursor);
+        guard.map(cursor, phys, &mut consist, fa).unwrap();
+        consist.finish_send();
+        drop(guard);
+        consist.into_deferred().run_all();
     }
 
-    fn change(&mut self, cursor: MappingCursor, settings: &MappingSettings) {
-        self.mapper.change(cursor, settings);
+    /// See the amd64 counterpart: whether a new reference to `object_tables` was taken.
+    #[must_use]
+    pub fn object_map(
+        &self,
+        cursor: MappingCursor,
+        object_tables: &mut ObjectPageTable,
+        settings: MappingSettings,
+        fa: &mut FrameAllocator,
+    ) -> bool {
+        let (mut consist, mut guard) = self.lock_with_consist(cursor);
+        let took_ref = guard
+            .object_map(cursor, object_tables, settings, &mut consist, fa)
+            .unwrap();
+        consist.finish_send();
+        drop(guard);
+        consist.into_deferred().run_all();
+        took_ref
     }
 
-    fn unmap(&mut self, cursor: MappingCursor) -> DeferredUnmappingOps {
-        self.mapper.unmap(cursor)
+    pub fn is_object_mapped(&self, cursor: MappingCursor, settings: MappingSettings) -> bool {
+        self.mapper_for(cursor).is_object_mapped(cursor, settings)
+    }
+
+    /// `None` if the mapping was already present; otherwise `Some(took_ref)` as for
+    /// [`Self::object_map`].
+    #[must_use]
+    pub fn ensure_object_mapped(
+        &self,
+        cursor: MappingCursor,
+        object_tables: &mut ObjectPageTable,
+        settings: MappingSettings,
+        fa: &mut FrameAllocator,
+    ) -> Option<bool> {
+        let (mut consist, mut guard) = self.lock_with_consist(cursor);
+        if guard.is_object_mapped(cursor, settings) {
+            return None;
+        }
+        let took_ref = guard
+            .object_map(cursor, object_tables, settings, &mut consist, fa)
+            .unwrap();
+        consist.finish_send();
+        drop(guard);
+        consist.into_deferred().run_all();
+        Some(took_ref)
+    }
+
+    pub fn change(
+        &self,
+        cursor: MappingCursor,
+        settings: &MappingSettings,
+        fa: &mut FrameAllocator,
+    ) {
+        let (mut consist, mut guard) = self.lock_with_consist(cursor);
+        guard.change(cursor, settings, &mut consist, fa).unwrap();
+        consist.finish_send();
+        drop(guard);
+        consist.into_deferred().run_all();
+    }
+
+    pub fn unmap(&self, cursor: MappingCursor, fa: &mut FrameAllocator) -> bool {
+        let (mut consist, mut guard) = self.lock_with_consist(cursor);
+        let r = guard.unmap(cursor, &mut consist, fa, &mut None).unwrap();
+        consist.finish_send();
+        drop(guard);
+        consist.into_deferred().run_all();
+        r
+    }
+
+    /// Unmap an object mapping, returning whether doing so released this context's reference to
+    /// `obj_table`. The amd64 counterpart explains the three detached cases.
+    pub fn unmap_object(
+        &self,
+        cursor: MappingCursor,
+        obj_table: Option<PhysAddr>,
+        fa: &mut FrameAllocator,
+    ) -> bool {
+        let (mut consist, mut guard) = self.lock_with_consist(cursor);
+        let mut released = None;
+        let _ = guard
+            .unmap(cursor, &mut consist, fa, &mut released)
+            .unwrap();
+        consist.finish_send();
+        drop(guard);
+        consist.into_deferred().run_all();
+        match (released, obj_table) {
+            (Some(r), Some(t)) if r == t => true,
+            (Some(_), Some(_)) => {
+                crate::memory::context::virtmem::unmap_census::record_foreign();
+                false
+            }
+            (Some(_), None) => {
+                crate::memory::context::virtmem::unmap_census::record_unverified();
+                true
+            }
+            (None, _) => false,
+        }
+    }
+
+    pub fn readmap<R>(&self, cursor: MappingCursor, f: impl Fn(MapReader) -> R) -> R {
+        f(self.mapper_for(cursor).readmap(cursor))
     }
 }
 
-impl Drop for ArchContextInner {
+impl Drop for ArchContext {
     fn drop(&mut self) {
+        let mut fa = FrameAllocator::new(
+            FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL,
+            PHYS_LEVEL_LAYOUTS[0],
+        );
         // Unmap all user memory to clear any allocated page tables.
-        self.mapper
-            .unmap(MappingCursor::new(
+        self.unmap(
+            MappingCursor::new(
                 VirtAddr::start_user_memory(),
                 VirtAddr::end_user_memory() - VirtAddr::start_user_memory(),
-            ))
-            .run_all();
+            ),
+            &mut fa,
+        );
         // Manually free the root.
-        if let Some(frame) = get_frame(self.mapper.root_address()) {
-            free_frame(frame);
+        if let Some(frame) = get_frame(self.inner.lock().root_address()) {
+            frame.set_pt(false);
+            if frame.dec_refcount() == 0 {
+                free_frame(frame);
+            }
         }
     }
 }

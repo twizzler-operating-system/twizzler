@@ -50,6 +50,7 @@ use crate::{
     },
 };
 
+pub mod cachemiss;
 pub mod entry;
 mod flags;
 pub mod kstack;
@@ -91,6 +92,7 @@ pub struct Thread {
     memory_context: Option<ContextRef>,
     pub kernel_stack: KernelStack,
     pub stats: ThreadStats,
+    pub cachemiss: cachemiss::CacheMiss,
     spawn_args: Option<ThreadSpawnArgs>,
     pub control_object: ControlObjectCacher<ThreadRepr>,
     pub upcall_target: Spinlock<Option<UpcallTarget>>,
@@ -181,7 +183,6 @@ static CURRENT_THREAD_TPOFF: AtomicUsize = AtomicUsize::new(0);
 /// Compute and cache the offset. Interrupts are off because the two halves -- the variable's
 /// address and this cpu's thread pointer -- must come from the *same* cpu, which is the very
 /// property `read_current_thread_ptr` exists to guarantee.
-#[cfg(target_arch = "x86_64")]
 #[cold]
 fn init_current_thread_tpoff() -> usize {
     let int = crate::interrupt::disable();
@@ -228,13 +229,31 @@ fn read_current_thread_ptr() -> *const ThreadRef {
         );
         p
     }
-    // No segment override to lean on: read the pointer with interrupts off so the thread cannot
-    // migrate between materializing the address and loading through it.
-    #[cfg(not(target_arch = "x86_64"))]
+    // No single-instruction form here: the base comes from `mrs` and the load is a second
+    // instruction, so an interrupt between them that migrates the thread completes the load
+    // against the previous cpu's TLS block and returns whatever thread it has since picked up.
+    // Keeping both in one asm block stops the compiler hoisting the base; masking IRQs across
+    // them closes the hardware window too. (Seen as a kthread checking, after its closure, the
+    // critical count of a thread that was running on the cpu it had just left.)
+    #[cfg(target_arch = "aarch64")]
     unsafe {
-        let int = crate::interrupt::disable();
-        let p = *CURRENT_THREAD.get();
-        crate::interrupt::set(int);
+        let mut off = CURRENT_THREAD_TPOFF.load(Ordering::Relaxed);
+        if core::intrinsics::unlikely(off == 0) {
+            off = init_current_thread_tpoff();
+        }
+        let p: *const ThreadRef;
+        core::arch::asm!(
+            "mrs {daif}, daif",
+            "msr daifset, #2",
+            "mrs {p}, tpidr_el1",
+            "ldr {p}, [{p}, {off}]",
+            "msr daif, {daif}",
+            // `out`, not `lateout`: `p` is written before `off` is read.
+            p = out(reg) p,
+            daif = out(reg) _,
+            off = in(reg) off,
+            options(nostack, readonly, preserves_flags),
+        );
         p
     }
 }
@@ -277,6 +296,13 @@ pub unsafe fn set_current_thread(thread: &Thread) {
             locktrack::diag::THREAD_CURRENT_ON_TWO_CPUS.count_only();
         }
     }
+    unsafe { publish_current_thread(thread, ptr) };
+}
+
+/// The part of [`set_current_thread`] that does not read the previous current thread. After
+/// `__do_switch` that thread is the one this cpu switched away from, and if it was exiting the
+/// reaper may already have freed it -- its box went the moment its switch lock dropped.
+pub unsafe fn publish_current_thread(thread: &Thread, ptr: *mut *const ThreadRef) {
     thread.set_active_running(true);
     unsafe {
         let r = thread.self_reference.get().as_ref().unwrap_unchecked();
@@ -326,6 +352,7 @@ impl Thread {
             sync_sleep_gen: AtomicU64::new(0),
             donated_priority: AtomicU32::new(u32::MAX),
             stats: ThreadStats::new(crate::processor::sched::current_stat_ticks()),
+            cachemiss: cachemiss::CacheMiss::default(),
             memory_context: ctx,
             spawn_args,
             control_object: ControlObjectCacher::new(ThreadRepr::new(repr_flags)),
@@ -483,19 +510,7 @@ impl Thread {
     /// immediately after `mov [rsi], rsp`, behind an `sfence`, so observing 0 means the saved rsp
     /// and every push before it are visible and the stack is dead.
     pub fn has_left_kernel_stack(&self) -> bool {
-        #[cfg(target_arch = "x86_64")]
-        {
-            self.switch_lock.load(Ordering::SeqCst) == 0
-        }
-        // aarch64's `arch_switch_to` never touches `switch_lock`, so it reads 0 the whole time a
-        // thread is running and would answer "yes" always. Saying "no" instead costs cross-cpu
-        // reaping there -- `Processor::cleanup_exited` on the owning cpu still runs, which is the
-        // behaviour that predates the reaper thread, leak and all. Restoring it means giving that
-        // switch a release point of its own, not relaxing this.
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            false
-        }
+        self.switch_lock.load(Ordering::SeqCst) == 0
     }
 
     pub fn objid(&self) -> ObjID {
@@ -550,8 +565,15 @@ impl Thread {
         // its switch_lock. This cpu now owns it and no other cpu still calls it current, so this is
         // the first point at which publishing is safe -- `switch_to` deliberately does not.
         // (A thread that has never run does not come through here at all; it publishes itself from
-        // `new_thread_entry`.)
-        unsafe { set_current_thread(current) };
+        // `new_thread_entry`.) Not `set_current_thread`: that reads the outgoing thread. The
+        // pointer compare (no deref) excludes a thread already published on this cpu -- an idle
+        // thread's first switch-in goes through `switch_to`'s never-run path.
+        let already_here =
+            unsafe { core::ptr::eq(read_current_thread_ptr(), *current.self_reference.get()) };
+        if !already_here && current.is_active_running() {
+            locktrack::diag::THREAD_CURRENT_ON_TWO_CPUS.count_only();
+        }
+        unsafe { publish_current_thread(current, CURRENT_THREAD.get()) };
     }
 
     #[track_caller]
@@ -853,11 +875,15 @@ impl Thread {
             //crate::panic::backtrace(true, None);
             //loop {}
             if let Ok(regs) = self.read_registers() {
+                #[cfg(target_arch = "x86_64")]
+                let cx = regs.frame.rcx;
+                #[cfg(not(target_arch = "x86_64"))]
+                let cx = 0;
                 Self::dump_fault_context(
-                    regs.frame.rip,
-                    regs.frame.rsp,
-                    regs.frame.rbp,
-                    regs.frame.rcx,
+                    regs.frame.ip() as u64,
+                    regs.frame.sp() as u64,
+                    regs.frame.bp() as u64,
+                    cx,
                 );
             }
         }
@@ -1145,6 +1171,15 @@ pub static THREAD_DROPS: core::sync::atomic::AtomicUsize = core::sync::atomic::A
 impl Drop for Thread {
     fn drop(&mut self) {
         THREAD_DROPS.fetch_add(1, Ordering::Relaxed);
+        // A thread freed with its switch lock held is still on its kernel stack somewhere.
+        if self.switch_lock.load(Ordering::SeqCst) != 0 {
+            emerglogln!(
+                "thread {} dropped while still switching (state {:?}, exiting {})",
+                self.id(),
+                self.get_state(),
+                self.is_exiting(),
+            );
+        }
         // Only delete the repr if userspace never got its id. `sys_spawn` returns the id with no
         // reference held on it, so deleting here races the spawner's map: the thread can run, exit
         // and be reaped before the spawner ever sees the object, and its map then fails with

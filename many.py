@@ -88,10 +88,21 @@ PROFILES = ("release", "debug")
 ALL_PROFILES = ("release", "debug", "full-debug")
 SMP_COUNTS = (1, 2, 3, 4, 5)
 
-# many.py never passes --arch, so x86_64 is the only target in play.
-TRIPLE = "x86_64-unknown-twizzler"
-BOOT_IMAGE_DIR = REPO_ROOT / "target" / "kernel" / "x86_64-unknown-none"
-DEV_DATA_IMAGE = REPO_ROOT / "target" / "disk-{}.img".format(TRIPLE)
+# The target, from --arch/--machine. Passed straight through to make-image and xtask test; only
+# the size estimate derives paths from it.
+TARGET = {"arch": "x86-64", "machine": "unknown"}
+
+
+def target_args() -> List[str]:
+    return ["--arch", TARGET["arch"], "--machine", TARGET["machine"]]
+
+
+def boot_image_dir() -> Path:
+    return REPO_ROOT / "target" / "kernel" / f"{TARGET['arch'].replace('-', '_')}-unknown-none"
+
+
+def dev_data_image() -> Path:
+    return REPO_ROOT / "target" / f"disk-{TARGET['arch'].replace('-', '_')}-unknown-twizzler.img"
 
 # xtask's heartbeat cap is wall-clock, not progress-based, so emulated runs need a bigger budget
 # than the 20 tries (15s each) it defaults to.
@@ -222,7 +233,8 @@ _ACCEL_TOKENS = {
     "qemu-tcg": False,
 }
 # Both spellings: `smp4` matches how a config prints, a bare `4` is what you type.
-_SMP_TOKENS = {**{f"smp{n}": n for n in SMP_COUNTS}, **{str(n): n for n in SMP_COUNTS}}
+# Any cpu count may be named explicitly; SMP_COUNTS is only what an unqualified spec expands to.
+_SMP_TOKENS = {**{f"smp{n}": n for n in range(1, 65)}, **{str(n): n for n in SMP_COUNTS}}
 
 
 def _take(tokens: List[str], vocab: Dict[str, object]) -> Tuple[Optional[object], List[str]]:
@@ -279,10 +291,7 @@ def select_configurations(specs: List[str]) -> List[Config]:
     for spec in specs:
         for config in parse_config_spec(spec):
             seen[config] = None
-    order = {c: i for i, c in enumerate(
-        Config(p, a, s) for p in ALL_PROFILES for a in (True, False) for s in SMP_COUNTS
-    )}
-    return sorted(seen, key=lambda c: order[c])
+    return sorted(seen, key=lambda c: (ALL_PROFILES.index(c.profile), not c.kvm, c.smp))
 
 
 def config_vocabulary() -> str:
@@ -489,11 +498,12 @@ def disk_usage_note(work: Path, lanes: int, profiles: Tuple[str, ...]) -> str:
     for profile in profiles:
         # Images are named by build id, so there is no single path to size against; the largest
         # one lying about in the profile's directory is close enough for a warning.
-        for src in (BOOT_IMAGE_DIR / profile).glob("disk-*.img"):
+        for src in (boot_image_dir() / profile).glob("disk-*.img"):
             per_pair = max(per_pair, src.stat().st_blocks * 512)
     # The dev image only stands in for the size a freshly built master will be; sweeps write their
     # own now and it may not exist at all.
-    data = DEV_DATA_IMAGE.stat().st_blocks * 512 if DEV_DATA_IMAGE.exists() else 4 << 30
+    dev = dev_data_image()
+    data = dev.stat().st_blocks * 512 if dev.exists() else 4 << 30
     need = (per_pair + data) * len(profiles)
     free = shutil.disk_usage(work.parent if work.parent.exists() else REPO_ROOT).free
     return f"~{need / 2**30:.0f}GB of masters ({lanes} lanes share them) against {free / 2**30:.0f}GB free"
@@ -536,7 +546,7 @@ def build_command_for(profile: str, work: Path, tag: str,
     return [
         "cargo", "xtask", "make-image", "--profile", profile,
         "--disk-image", str(master_data_image(work, tag, profile)),
-    ] + mode
+    ] + target_args() + mode
 
 
 # What the fingerprint covers. Everything the kernel and the tools are built from, and nothing
@@ -709,6 +719,7 @@ def command_for(config: Config, lane: Lane, boot_image: Path, data_image: Path, 
         "default",
         "--profile",
         config.profile,
+    ] + target_args() + [
         "--enable-kvm" if config.kvm else "--disable-kvm",
         # Straight into this sweep's directory, rather than transiting the shared target/test-logs
         # where a sweep that dies mid-run would strand it.
@@ -1075,12 +1086,19 @@ def build_parser() -> argparse.ArgumentParser:
                              "written to the sweep's directory either way.")
     parser.add_argument("--dry-run", action="store_true",
                         help="List the runs that would happen, then exit.")
+    parser.add_argument("--arch", choices=("x86-64", "aarch64"), default="x86-64",
+                        help="Target architecture, as for xtask (default: x86-64). A non-x86 "
+                             "target runs under TCG, so its configs must say tcg/nokvm.")
+    parser.add_argument("--machine", default="unknown",
+                        help="Target machine, as for xtask (default: unknown; virt for aarch64).")
     return parser
 
 
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    TARGET["arch"] = args.arch
+    TARGET["machine"] = args.machine
 
     if args.jobs < 1:
         parser.error("--jobs must be at least 1")
@@ -1097,6 +1115,8 @@ def main() -> int:
     if not jobs:
         print("nothing to run")
         return 0
+    if args.arch != "x86-64" and any(c.kvm for _, c in jobs):
+        parser.error(f"--arch {args.arch} runs under TCG only; name tcg/nokvm configs")
 
     if args.tag is None:
         args.tag = default_tag()

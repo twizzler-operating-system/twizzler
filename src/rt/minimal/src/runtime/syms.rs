@@ -154,9 +154,9 @@ check_ffi_type!(twz_rt_runtime_entry, _, _, _);
 // alloc.h
 
 use twizzler_rt_abi::bindings::{
-    ZERO_MEMORY, alloc_flags, endpoint, fd_flags, fd_set, io_ctx, object_cmd, object_create,
-    object_source, object_tie, objid_result, open_kind, open_kind_OpenKind_Path, release_flags,
-    twz_error,
+    alloc_flags, endpoint, fd_flags, fd_set, io_ctx, object_cmd, object_create, object_source,
+    object_tie, objid_result, open_kind, open_kind_OpenKind_Path, release_flags, twz_error,
+    ZERO_MEMORY,
 };
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn twz_rt_malloc(
@@ -986,6 +986,20 @@ pub unsafe extern "Rust" fn __getrandom_v03_custom(
     } else {
         // getrandom's Error::UNEXPECTED.
         Err(core::num::NonZeroI32::new((1 << 16) + 2).unwrap())
+    }
+}
+
+// getrandom 0.2 has no backend cfg; its `custom` feature (enabled by the runtime wrapper crate
+// for every twizzler target) routes to this symbol instead. Same body as the 0.3 hook above,
+// returning the raw error code rather than a `Result`.
+#[unsafe(no_mangle)]
+pub unsafe extern "Rust" fn __getrandom_custom(dest: *mut u8, len: usize) -> u32 {
+    let buf = unsafe { core::slice::from_raw_parts_mut(dest.cast(), len) };
+    if OUR_RUNTIME.get_random(buf, twizzler_abi::syscall::GetRandomFlags::empty()) == len {
+        0
+    } else {
+        // getrandom's Error::UNEXPECTED.
+        (1 << 16) + 2
     }
 }
 #[unsafe(no_mangle)]

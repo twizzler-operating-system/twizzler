@@ -55,6 +55,11 @@ pub struct UpcallFrame {
 
     // security context
     pub prior_ctx: crate::object::ObjID,
+
+    // FP/SIMD state: the kernel never touches it, so it is live in the registers at delivery.
+    pub fpcr: u64,
+    pub fpsr: u64,
+    pub v: [u128; 32],
 }
 
 impl UpcallFrame {
@@ -82,6 +87,48 @@ impl UpcallFrame {
         entry: usize,
         arg: usize,
     ) -> Self {
-        todo!()
+        Self {
+            x0: arg as u64,
+            x1: 0,
+            x2: 0,
+            x3: 0,
+            x4: 0,
+            x5: 0,
+            x6: 0,
+            x7: 0,
+            x8: 0,
+            x9: 0,
+            x10: 0,
+            x11: 0,
+            x12: 0,
+            x13: 0,
+            x14: 0,
+            x15: 0,
+            x16: 0,
+            x17: 0,
+            x18: 0,
+            x19: 0,
+            x20: 0,
+            x21: 0,
+            x22: 0,
+            x23: 0,
+            x24: 0,
+            x25: 0,
+            x26: 0,
+            x27: 0,
+            x28: 0,
+            x29: 0,
+            fp: 0,
+            sp: ((stack_base + stack_size) & !0xf) as u64,
+            pc: entry as u64,
+            // EL0t, IRQs on, D/A/F masked: what the kernel itself uses to enter EL0.
+            spsr: 0x340,
+            tpidr: tp as u64,
+            tpidrro: 0,
+            prior_ctx: ctx,
+            fpcr: 0,
+            fpsr: 0,
+            v: [0; 32],
+        }
     }
 }

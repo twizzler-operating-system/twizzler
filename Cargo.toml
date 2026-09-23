@@ -65,6 +65,7 @@ members = [
     "src/test/memlat",
     "src/test/spawn-test",
     "src/test/kqueue_test",
+    "src/test/sockpair-test",
     "src/test/devfs_test",
     "src/test/net_test",
     "src/test/net_test_peer",
@@ -86,6 +87,7 @@ members = [
     "src/test/stdnet_test",
     "src/lib/twizzler-io",
     "src/bin/shell",
+    "src/bin/getty",
     "src/lib/twizzler-net",
     "src/bin/ssh",
     "src/bin/sshd",
@@ -159,6 +161,7 @@ initrd = [
     "crate:ctl",
     #"crate:gfxtest",
     "crate:shell",
+    "crate:getty",
     "crate:spawn-test",
     "crate:logboi-test",
     "crate:signal-test",
@@ -174,6 +177,7 @@ initrd = [
     #"crate:sec",
     #"crate:ptest",
     "crate:kqueue_test",
+    "crate:sockpair_test",
     "crate:rmdirtest",
     #"crate:sqlite_test",
     #"crate:persistent-hashmap-test",
@@ -400,10 +404,10 @@ twizzler-abi = { path = "src/lib/twizzler-abi" }
 
 [patch.crates-io]
 #ring = { git = "https://github.com/twizzler-operating-system/ring-twizzler.git", branch = "twizzler" }
-# Note: we can have multiple versions. This key ("getrandom02") is ignored in favor of the "package" field.
-getrandom02 = { git = "https://github.com/twizzler-operating-system/getrandom-twizzler.git", branch = "twizzler-0.2", package = "getrandom" }
-# getrandom 0.3 and 0.4 need no fork: xtask sets `--cfg getrandom_backend="custom"` for every
-# twizzler target and both runtimes export `__getrandom_v03_custom`. 0.2 predates that hook.
+# getrandom needs no fork at any version: 0.3 and 0.4 take `--cfg getrandom_backend="custom"`,
+# which xtask sets for every twizzler target, and 0.2 takes its `custom` feature, which the
+# runtime wrapper crates enable. Both runtimes export the hooks (`__getrandom_v03_custom`,
+# `__getrandom_custom`).
 
 #polling = { git = "https://github.com/twizzler-operating-system/polling.git", branch = "twizzler" }
 polling = { path = "src/ports/polling" }
@@ -451,18 +455,13 @@ rustix = { path = "src/ports/rustix" }
 twizzler-futures = { path = "src/lib/twizzler-futures" }
 twizzler-abi = { path = "src/lib/twizzler-abi" }
 twizzler-rt-abi = { path = "src/abi/rt-abi" }
-filetime = { git = "https://github.com/twizzler-operating-system/filetime.git", branch = "twizzler" }
 iana-time-zone = { git = "https://github.com/twizzler-operating-system/iana-time-zone.git", branch = "twizzler" }
 hostname = { git = "https://github.com/twizzler-operating-system/hostname.git", branch = "twizzler" }
-ctrlc = { git = "https://github.com/twizzler-operating-system/rust-ctrlc.git", branch = "twizzler" }
 mio = { path = "src/ports/mio" }
-signal-hook = { path = "src/ports/signal-hook" }
-signal-hook-mio = { path = "src/ports/signal-hook/signal-hook-mio" }
 tar = { git = "https://github.com/twizzler-operating-system/tar-rs.git", branch = "twizzler" }
 #sqlite3-parser = { git = "https://github.com/TheTadLands/lemon-rs.git", branch = "portv014" }
 hwlocality = { path = "src/ports/hwlocality" }
 hwlocality-sys = { path = "src/ports/hwlocality/hwlocality-sys" }
-errno = { path = "src/ports/rust-errno" }
 libc = { path = "src/ports/libc" }
 ferroc = { path = "src/ports/ferroc" }
 virtio-drivers = { path = "src/ports/virtio-drivers" }

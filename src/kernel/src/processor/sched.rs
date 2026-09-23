@@ -35,7 +35,7 @@
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
-    sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering},
     u64,
 };
 
@@ -50,6 +50,12 @@ use twizzler_abi::{
 pub const MAX_TIMESLICE_TICKS: u32 = 100;
 pub const MIN_TIMESLICE_TICKS: u32 = 2;
 pub const DEFAULT_TIMESLICE_TICKS: u32 = 32;
+/// How long a thread runs before an equal-priority wake may take the cpu from it, and the
+/// tick a cpu arms to enforce it. Measured in time from switch-in: a spinner reinserted by every
+/// wake never accumulated a paid tick on a non-bsp cpu (8 ms ticks), so a 1 ms sleeper there
+/// always waited for the armed tick while the bsp preempted at once.
+const WAKE_GRAN_TICKS: u64 = 1;
+const WAKE_GRAN_NS: u64 = 1_000_000;
 
 use super::{
     mp::{current_processor, get_processor},
@@ -59,9 +65,14 @@ use crate::{
     clock::{Nanoseconds, get_current_ticks},
     interrupt,
     once::Once,
-    processor::{Processor, mp::MAX_CPU_ID},
+    processor::{Processor, mp::MAX_CPU_ID, topology::CacheDesc},
     spinlock::Spinlock,
-    thread::{Thread, ThreadRef, current_thread_ref, priority::Priority, set_current_thread},
+    thread::{
+        Thread, ThreadRef, current_thread_ref,
+        priority::{Priority, PriorityClass},
+        set_current_thread,
+        time::Affinity,
+    },
     trace::{
         mgr::{TRACE_MGR, TraceEvent, is_thread_ktrace_thread},
         new_trace_entry_thread,
@@ -69,13 +80,22 @@ use crate::{
     utils::quick_random,
 };
 
-#[derive(Clone, Debug, Copy)]
+/// What a node of the topology tree groups. `Core` is always the leaf and holds a core's SMT
+/// threads; `Cache` is a grouping that exists only because a cache is shared at it.
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub enum CPUTopoType {
     System,
+    Package,
+    Die,
+    Module,
+    Cluster,
     Cache,
-    Thread,
+    Core,
     Other,
 }
+
+// A userspace `CpuMask` converts to a `CpuSet` word for word.
+const _: () = assert!(twizzler_abi::syscall::CPU_MASK_WORDS == MAX_CPU_ID / 64);
 
 #[derive(Clone, Copy, Debug)]
 pub struct CpuSet {
@@ -116,17 +136,46 @@ impl CpuSet {
     pub fn is_empty(&self) -> bool {
         !self.set.bit_any()
     }
+
+    pub fn from_words(set: [u64; MAX_CPU_ID / 64]) -> Self {
+        Self { set }
+    }
+
+    pub fn words(&self) -> &[u64; MAX_CPU_ID / 64] {
+        &self.set
+    }
+
+    pub fn count(&self) -> usize {
+        self.set.iter().map(|w| w.count_ones() as usize).sum()
+    }
+
+    /// The lowest cpu in the set.
+    pub fn first(&self) -> Option<u32> {
+        self.set
+            .iter()
+            .enumerate()
+            .find(|(_, w)| **w != 0)
+            .map(|(i, w)| i as u32 * 64 + w.trailing_zeros())
+    }
 }
+
+/// Numbers nodes and cache instances as they are built, so userspace can tell "same node" and
+/// "same cache" apart across cpus without seeing the tree.
+static NEXT_NODE_ID: AtomicU32 = AtomicU32::new(0);
+static NEXT_CACHE_ID: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Debug)]
 pub struct CPUTopoNode {
     level_type: CPUTopoType,
+    id: u32,
     count: usize,
     cpuset: CpuSet,
     first: u32,
     last: u32,
     children: Vec<CPUTopoNode>,
     parent: AtomicPtr<CPUTopoNode>,
+    /// Caches shared by exactly this node's cpus, with their instance ids.
+    caches: Vec<(u32, CacheDesc)>,
 }
 
 impl CPUTopoNode {
@@ -138,8 +187,35 @@ impl CPUTopoNode {
             children: alloc::vec![],
             parent: AtomicPtr::new(core::ptr::null_mut()),
             level_type: ty,
+            id: NEXT_NODE_ID.fetch_add(1, Ordering::Relaxed),
             count: 0,
+            caches: alloc::vec![],
         }
+    }
+
+    pub fn kind(&self) -> CPUTopoType {
+        self.level_type
+    }
+
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
+    pub fn children(&self) -> &[CPUTopoNode] {
+        &self.children
+    }
+
+    pub fn caches(&self) -> &[(u32, CacheDesc)] {
+        &self.caches
+    }
+
+    pub fn add_cache(&mut self, cache: CacheDesc) {
+        self.caches
+            .push((NEXT_CACHE_ID.fetch_add(1, Ordering::Relaxed), cache));
     }
 
     pub fn child(&self, child: usize) -> Option<&CPUTopoNode> {
@@ -216,42 +292,76 @@ struct SearchCPUResult {
 /// policy change: an idle cpu's jittered load is exactly 0 (`(0 * 256).saturating_sub(j)`, and a
 /// busy cpu's is at least 129), the comparison is strict `<`, so the first zero visited wins the
 /// complete walk too.
+///
+/// `exclude` is a subtree already searched by the caller's previous, narrower call, so an
+/// outward walk visits each cpu once; `avoid` is a cpu never to answer with. `now` collects the
+/// least loaded cpu that would run the thread *at once* -- idle, or running something it
+/// outranks -- which is the only kind of hit that should stop an outward walk: `filtered`
+/// admits an equal-priority busy cpu, where the thread would only be queued, and a walk that
+/// stopped at its own core on that basis kept a ping-pong pair on one cpu with the idle cpus
+/// stealing the partner back 300k times a run.
 fn find_cpus_from_topo(
     node: &CPUTopoNode,
     pri: Option<&Priority>,
+    allowed: &Affinity,
+    exclude: Option<&CPUTopoNode>,
+    avoid: Option<u32>,
+    now: &mut Option<SearchCPUResult>,
     filtered: &mut Option<SearchCPUResult>,
     global: &mut Option<SearchCPUResult>,
 ) -> bool {
     if !node.children.is_empty() {
-        for n in 0..node.children.len() {
-            if find_cpus_from_topo(node.child(n).unwrap(), pri, filtered, global) {
+        for child in &node.children {
+            if exclude.is_some_and(|ex| core::ptr::eq(child, ex)) {
+                continue;
+            }
+            if find_cpus_from_topo(child, pri, allowed, exclude, avoid, now, filtered, global) {
                 return true;
             }
         }
         return false;
     }
     for c in node.first..=node.last {
-        if !node.cpuset.contains(c) {
+        if !node.cpuset.contains(c) || !allowed.allows(c) || avoid == Some(c) {
             continue;
         }
         let processor = get_processor(c);
         let load = processor.current_load();
         /* jitter. This is similar to how freebsd does things */
-        let jload = (load * 256).saturating_sub((quick_random() % 128) as u64);
+        let mut jload = (load * 256).saturating_sub((quick_random() % 128) as u64);
+        // An idle hyperthread of a busy core shares that core's pipeline: worth less than an
+        // idle core (0) and more than any busy cpu (at least 129), and not a perfect hit.
+        let sibling_busy = load == 0
+            && !crate::flat_placement()
+            && node.count > 1
+            && (node.first..=node.last)
+                .any(|s| s != c && node.cpuset.contains(s) && !get_processor(s).is_idle());
+        if sibling_busy {
+            jload = 128;
+        }
         if global.as_ref().is_none_or(|g| jload < g.load) {
             *global = Some(SearchCPUResult {
                 load: jload,
                 cpuid: c,
             });
         }
-        if pri.is_none_or(|pri| &processor.current_priority() <= pri) {
+        let current = processor.current_priority();
+        if pri.is_none_or(|pri| &current <= pri) {
             if filtered.as_ref().is_none_or(|f| jload < f.load) {
                 *filtered = Some(SearchCPUResult {
                     load: jload,
                     cpuid: c,
                 });
             }
-            if load == 0 {
+            if (load == 0 || pri.is_some_and(|pri| pri > &current))
+                && now.as_ref().is_none_or(|n| jload < n.load)
+            {
+                *now = Some(SearchCPUResult {
+                    load: jload,
+                    cpuid: c,
+                });
+            }
+            if load == 0 && !sibling_busy {
                 return true;
             }
         }
@@ -321,19 +431,18 @@ fn choose_cpu_balance(node: &CPUTopoNode, allowed_set: &CpuSet) -> Option<Balanc
     None
 }
 
-fn reset_thread_time(thread: &ThreadRef, processor: &Processor) {
+/// Stamped when a thread leaves a cpu (reinsertion, or the switch-out of a thread that
+/// blocked) and at creation; `RunQueue::insert` compares it. Stamping at switch-in made a
+/// thread that ran out its slice "past its deadline" at the reinsertion, so it was filed in the
+/// realtime queue and took the cpu straight back from whoever was queued (schedtest: 6
+/// spinners on 4 cpus, a queued thread starved for the whole second).
+fn set_deadline(thread: &Thread, processor: &Processor) {
     thread.sched.set_deadline(
         get_current_ticks() + processor.rq.deadline(thread.effective_priority().class),
     );
-    thread.sched.reset_timeslice();
 }
 
-fn schedule_thread_on_cpu(
-    thread: ThreadRef,
-    processor: &Processor,
-    is_current: bool,
-    is_new: bool,
-) {
+fn schedule_thread_on_cpu(thread: ThreadRef, processor: &Processor, is_new: bool, is_wake: bool) {
     if thread.is_exiting() {
         return;
     }
@@ -358,21 +467,27 @@ fn schedule_thread_on_cpu(
     // Resolved once for both uses below: each call is an Arc clone/drop pair.
     let cur = current_thread_ref();
     let is_reinsertion = cur.as_ref().is_some_and(|cur| cur.id() == thread.id());
-    // Strict `>`, and the priority boundary is *not* the lever. `>=` was tried on top of the
-    // reinsertion fix -- matching what `needs_reschedule` does at a tick -- and it moved ~240 wakes
-    // from `lost-pri` into `marked` without moving their latency: `lost-pri` shed 47 stalls over
-    // 1 ms, `marked` gained 33, and info pickup (396-469 -> 451-461 us), `lookup_object_and_wait`
-    // (836-875 -> 815-839 us) and `pagepar` (63 -> 64 ms) were all flat. Marking preempt does not
-    // make a stalled wake fast; the earlier "marked 20 us vs lost 270 us" split was selection, not
-    // causation. Reverted as the smaller change with no measured benefit.
-    let kind = if is_current || is_reinsertion {
+    if is_reinsertion {
+        set_deadline(&thread, processor);
+    }
+    // A thread the insert below files in the realtime queue -- past its deadline, i.e. it has
+    // waited its fair share -- preempts a timeshare thread the way a higher priority does.
+    let boosted = !is_reinsertion && processor.rq.files_realtime(&thread);
+    // A timeshare *wake* (not a migration or reinsertion) goes to the front of the calendar and
+    // rotates at equal priority: at once if the running thread has had its `WAKE_GRAN_TICKS`,
+    // else at that tick, which the wake path arms (`needs_reschedule`).
+    let timeshare_wake = is_wake
+        && !is_reinsertion
+        && !boosted
+        && woken_priority.class == PriorityClass::User;
+    let kind = if is_reinsertion {
         0
     } else if is_remote {
         wakestats::WAKE_REMOTE
     } else {
         match cur.as_ref() {
             Some(cur) if cur.is_idle_thread() => wakestats::WAKE_LOCAL_IDLE,
-            Some(cur) if woken_priority > cur.effective_priority() => {
+            Some(cur) if boosted || woken_priority > cur.effective_priority() => {
                 // A thread holding a mutex is in a critical section that some waiter -- possibly
                 // the one being woken -- is queued behind, so stopping it there trades a short
                 // hold for a scheduling round trip plus a wake for everyone waiting. Deferred only
@@ -381,6 +496,16 @@ fn schedule_thread_on_cpu(
                 if cur.get_mutex_count() > 0
                     && woken_priority.class <= cur.effective_priority().class
                 {
+                    wakestats::holder_spared();
+                    wakestats::WAKE_LOCAL_LOST
+                } else {
+                    wakestats::WAKE_LOCAL_MARKED
+                }
+            }
+            Some(cur) if timeshare_wake && woken_priority == cur.effective_priority() => {
+                if cur.sched.ran_ns(crate::instant::current_ns()) < WAKE_GRAN_NS {
+                    wakestats::WAKE_LOCAL_LOST
+                } else if cur.get_mutex_count() > 0 {
                     wakestats::holder_spared();
                     wakestats::WAKE_LOCAL_LOST
                 } else {
@@ -419,8 +544,12 @@ fn schedule_thread_on_cpu(
     }
 
     thread.sched.moving_to_queue(processor.id);
-    reset_thread_time(&thread, processor);
-    processor.rq.insert(thread, is_current);
+    thread.sched.reset_timeslice();
+    processor.rq.insert(thread, timeshare_wake);
+    // The bsp ticks every ms regardless; a remote target arms from `schedule_resched`.
+    if timeshare_wake && kind != wakestats::WAKE_LOCAL_MARKED && !is_remote && !processor.is_bsp() {
+        crate::clock::schedule_oneshot_tick(WAKE_GRAN_TICKS);
+    }
 
     if is_remote {
         wakestats::remote(should_signal);
@@ -446,13 +575,14 @@ fn schedule_thread_on_cpu(
     // (`Request::signal`, `requeue_all`), where switching is forbidden. The flag is consumed at the
     // next interrupt return, which `schedule_maybe_preempt` now defers if we are still critical.
     //
-    // `is_current` excluded: that is `schedule` reinserting the thread it is already running, not a
-    // wake, and marking preempt for it would ask the scheduler to preempt in favour of itself.
+    // A reinsertion is excluded above: that is `schedule` requeueing the thread it is already
+    // running, not a wake, and marking preempt for it would ask the scheduler to preempt in
+    // favour of itself.
     match kind {
         // Waking anything while this cpu is *idling* must preempt, and there is no priority
         // question to ask: the idle thread has no work and nothing to protect.
         // `schedule_resched` -- the ipi handler -- already says exactly this (`if is_idle
-        // || needs_reschedule(false)`), but no local wake reached it, so an idling cpu sat
+        // || needs_reschedule()`), but no local wake reached it, so an idling cpu sat
         // until the next tick with a runnable thread beside it. 367-370 wakes a boot at
         // smp1, measured at ~400 us mean with a 144-146 ms outlier every run:
         // the worst latencies measured anywhere, and the only class where the delay
@@ -471,12 +601,24 @@ fn schedule_thread_on_cpu(
 }
 
 fn take_a_thread_from_cpu(processor: &Processor, new_cpu_rq: u32) -> Option<ThreadRef> {
-    if let Some(th) = processor.rq.take(new_cpu_rq != processor.id) {
-        th.sched.moving_to_queue(new_cpu_rq);
-        Some(th)
-    } else {
-        None
+    let th = processor.rq.take(new_cpu_rq != processor.id)?;
+    // The queue hands out its head without regard to affinity (a pinned thread only keeps the
+    // queue's `movable` count from reaching zero). One that may not run on the target goes back
+    // through placement instead of over.
+    let th = admit_on(th, new_cpu_rq)?;
+    th.sched.moving_to_queue(new_cpu_rq);
+    Some(th)
+}
+
+/// `th` was taken off a queue for `cpu`. If its affinity excludes `cpu`, queue it somewhere it
+/// may run and report nothing taken.
+fn admit_on(th: ThreadRef, cpu: u32) -> Option<ThreadRef> {
+    if th.sched.affinity.allows(cpu) {
+        return Some(th);
     }
+    let cpuid = select_cpu(&th, Some(cpu));
+    schedule_thread_on_cpu(th, get_processor(cpuid), false, false);
+    None
 }
 
 const STEAL_LOAD_THRESH: u64 = 2;
@@ -490,7 +632,7 @@ fn try_steal() -> Option<ThreadRef> {
     allowed_set.remove(us.id);
     if let Some(cpuid) = choose_cpu_steal_via_topo(our_topo_node, &mut allowed_set) {
         if !us.rq.is_empty() {
-            return us.rq.take(false);
+            return us.rq.take(false).and_then(|th| admit_on(th, us.id));
         }
         let processor = get_processor(cpuid);
         let otherload = processor.current_load();
@@ -539,12 +681,32 @@ fn balance(topo: &CPUTopoNode) {
     }
     let _guard = BalanceGuard;
     log::trace!("starting rebalance at {}", get_current_ticks());
-
-    let mut allowed_set = topo.cpuset;
-    const MAX_STEPS: usize = 20;
     let mut steps = 0;
-    while steps < MAX_STEPS {
-        if let Some(result) = choose_cpu_balance(get_cpu_topology(), &allowed_set) {
+    balance_node(topo, &mut steps);
+}
+
+const MAX_STEPS: usize = 20;
+
+/// Children first, so load evens out inside each cache domain before anything crosses one; a
+/// move between this node's cpus then only answers an imbalance its domains could not fix
+/// among themselves.
+fn balance_node(node: &CPUTopoNode, steps: &mut usize) {
+    if !crate::flat_placement() {
+        for child in &node.children {
+            if child.count > 1 {
+                balance_node(child, steps);
+            }
+        }
+    }
+    if node.count < 2 {
+        return;
+    }
+    let mut allowed_set = node.cpuset;
+    while *steps < MAX_STEPS {
+        let Some(result) = choose_cpu_balance(node, &allowed_set) else {
+            break;
+        };
+        {
             let donor = get_processor(result.donor);
             let recipient = get_processor(result.recipient);
             if donor.current_load() == 0 {
@@ -559,8 +721,11 @@ fn balance(topo: &CPUTopoNode) {
                 recipient.current_load(),
             );
 
-            donor.set_rebalance();
             if donor.rq.current_load() > 0 {
+                // Only a donor with something queued asks its running thread to move too. With
+                // nothing queued the load is that one thread, and marking it sent every lone busy
+                // thread hopping to an idle cpu on each pass, for no load gained.
+                donor.set_rebalance();
                 allowed_set.remove(result.recipient);
                 let thread = take_a_thread_from_cpu(donor, recipient.id);
                 if let Some(thread) = thread {
@@ -571,50 +736,109 @@ fn balance(topo: &CPUTopoNode) {
                         recipient.id
                     );
                     schedule_thread_on_cpu(thread, recipient, false, false);
-                    steps += 10;
+                    *steps += 10;
                 }
             } else if donor.current_load() == 1 {
                 allowed_set.remove(result.donor);
             }
         }
-        steps += 1;
+        *steps += 1;
     }
 }
 
 fn select_cpu(thread: &ThreadRef, try_avoid: Option<u32>) -> u32 {
-    /* TODO: restrict via cpu sets as step 0, and in global searches */
     /* TODO: take SMT into acount */
+    let affinity = &thread.sched.affinity;
+    let stats = &current_processor().stats;
+    /* 0: a thread allowed exactly one cpu has nothing to choose. */
+    if let Some(cpu) = thread.sched.pinned_to() {
+        stats.pick_pinned.fetch_add(1, Ordering::Relaxed);
+        return cpu;
+    }
     let pri = thread.effective_priority();
-    let last_cpuid = thread
+    let last = thread
         .sched
         .preferred_cpu()
-        .map(|(x, _p)| x as i32)
-        .unwrap_or(-1);
-    /* 1: if the thread can run on the last CPU it ran on, and that CPU is idle, then do that. */
-    if last_cpuid >= 0 && try_avoid.is_none_or(|ta| ta != last_cpuid as u32) {
-        let processor = get_processor(last_cpuid as u32);
-        if processor.rq.current_load() == 0 {
-            return last_cpuid as u32;
-        }
-        if pri > processor.current_priority() {
-            return last_cpuid as u32;
+        .map(|(cpu, _pinned)| cpu)
+        .filter(|cpu| affinity.allows(*cpu) && try_avoid.is_none_or(|ta| ta != *cpu));
+    let flat = crate::flat_placement();
+    let warm = flat || thread.sched.is_warm();
+    /* 1: the last cpu, while the thread's data is still in its caches and it can run there at
+     * once. Idle, not "nothing queued": a cpu running one thread has an empty queue too, and
+     * sending every wake back there piled five spinners on one cpu beside three idle ones. */
+    if let Some(last) = last.filter(|_| warm) {
+        let processor = get_processor(last);
+        if processor.is_idle() || pri > processor.current_priority() {
+            stats.pick_last_warm.fetch_add(1, Ordering::Relaxed);
+            return last;
         }
     }
 
-    /* 2: the least loaded that will run this thread immediately, falling back to the least
-     * loaded overall -- one walk for both, see find_cpus_from_topo. */
+    /* 2: outward from the last cpu's core, each level of the tree one more shared cache away:
+     * the first level holding a cpu that will run the thread at once wins, and a tie in load
+     * goes to the cpu seen first, which is the nearer one. Cold, or never run, the whole
+     * tree. */
+    let topo = get_cpu_topology();
+    let mut now = None;
     let mut filtered = None;
     let mut global = None;
-    find_cpus_from_topo(get_cpu_topology(), Some(&pri), &mut filtered, &mut global);
-    if let Some(res) = filtered {
-        if try_avoid.is_none_or(|ta| ta != res.cpuid) {
+    let mut node = Some(
+        last.filter(|_| warm && !flat)
+            .and_then(|last| topo.find_cpu(last))
+            .unwrap_or(topo),
+    );
+    let mut searched = None;
+    while let Some(n) = node {
+        find_cpus_from_topo(
+            n,
+            Some(&pri),
+            affinity,
+            searched,
+            try_avoid,
+            &mut now,
+            &mut filtered,
+            &mut global,
+        );
+        if let Some(res) = &now {
+            if searched.is_none() {
+                stats.pick_near.fetch_add(1, Ordering::Relaxed);
+            } else {
+                stats.pick_far.fetch_add(1, Ordering::Relaxed);
+            }
+            if last.is_some_and(|l| l != res.cpuid) {
+                stats.pick_migrate.fetch_add(1, Ordering::Relaxed);
+            }
             return res.cpuid;
         }
+        searched = Some(n);
+        node = n.parent();
+    }
+    /* 3: nothing runs it at once anywhere: the least loaded cpu it would at least queue on at
+     * its own priority, else the least loaded of all. */
+    if let Some(res) = filtered.or(global) {
+        // Nothing will run it at once. Cold or not, the last cpu keeps it if it is no busier
+        // than the pick: whatever survives in its caches is free, a migration is not.
+        if let Some(last) = last.filter(|_| !flat) {
+            if get_processor(last).current_load() <= res.load / 256 {
+                stats.pick_last_cold.fetch_add(1, Ordering::Relaxed);
+                return last;
+            }
+            stats.pick_migrate.fetch_add(1, Ordering::Relaxed);
+        }
+        stats.pick_lowest.fetch_add(1, Ordering::Relaxed);
+        return res.cpuid;
     }
 
-    global
-        .expect("global CPU search should always produce results")
-        .cpuid
+    // `SetAffinity` refuses a mask naming no cpu that is up, so this is a mask installed before
+    // the tree was built. Anywhere it names, else anywhere at all.
+    let mut fallback = None;
+    crate::processor::mp::with_each_active_processor(|p| {
+        if fallback.is_none() && affinity.allows(p.id) {
+            fallback = Some(p.id);
+        }
+    });
+    stats.pick_fallback.fetch_add(1, Ordering::Relaxed);
+    fallback.unwrap_or_else(|| current_processor().id)
 }
 
 intrusive_adapter!(pub AllThreadsAdapter = ThreadRef: Thread { all_threads_link: intrusive_collections::rbtree::AtomicLink });
@@ -793,7 +1017,12 @@ pub fn schedule_new_thread(thread: Thread) -> ThreadRef {
         Box::into_raw(Box::new(thread.clone()));
     let cpuid = select_cpu(&thread, None);
     let processor = get_processor(cpuid);
-    schedule_thread_on_cpu(thread.clone(), processor, false, true);
+    // A thread that has never run has no wait to be owed for. Without a stamp its zero
+    // deadline reads as expired and every spawn jumps the calendar, which ran the child ahead
+    // of its spawner's bookkeeping often enough to turn signal-test's "reader sees itself as
+    // objid 0x0" race from 0/300 runs into 8/80.
+    set_deadline(&thread, processor);
+    schedule_thread_on_cpu(thread.clone(), processor, true, false);
     thread
 }
 
@@ -895,7 +1124,7 @@ pub fn schedule_thread(thread: ThreadRef) {
         processor.rq.current_load(),
         thread.id()
     );
-    schedule_thread_on_cpu(thread, processor, false, false);
+    schedule_thread_on_cpu(thread, processor, false, true);
 }
 
 pub fn create_idle_thread() {
@@ -957,6 +1186,9 @@ fn trace_switch(from: &ThreadRef, to: &ThreadRef, sflags: SchedFlags) {
 
 fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
     let cp = current_processor();
+    let now_ns = crate::instant::current_ns();
+    // The outgoing thread owns this cpu's llc misses up to here.
+    crate::thread::cachemiss::charge_switch_out(old, now_ns);
     // Close out the wake stamp: this is the one place a thread becomes the running thread, so the
     // interval from `schedule_thread_on_cpu` to here is exactly wake-to-run. Taken rather than
     // read, so a thread that is switched to again without an intervening wake is not counted
@@ -970,18 +1202,28 @@ fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
         );
     }
     let oldcpu = thread.sched.moving_to_active(cp.id);
+    thread.sched.stamp_switch_in(now_ns);
     if old.id() != thread.id() {
         trace_switch(&old, &thread, flags);
     }
     cp.stats.switches.fetch_add(1, Ordering::Relaxed);
+    thread.stats.switches.fetch_add(1, Ordering::Relaxed);
 
     if let Some(oldcpu) = oldcpu {
         if oldcpu != cp.id {
+            thread.stats.migrations.fetch_add(1, Ordering::Relaxed);
             log::trace!("migrated {} {} -> {}", thread.id(), oldcpu, cp.id);
             trace_migrate(&thread, oldcpu as u64, cp.id as u64);
         }
     }
 
+    if !old.is_idle_thread() {
+        set_deadline(old, cp);
+        old.sched.left_tick.store(
+            crate::instant::Instant::now().raw_ticks().max(1),
+            Ordering::Relaxed,
+        );
+    }
     if !thread.is_idle_thread() {
         cp.current_priority
             .store(thread.effective_priority().raw(), Ordering::Release);
@@ -1041,6 +1283,18 @@ fn rq_has_higher<const N: usize>(thread: &ThreadRef, rq: &RunQueue<N>, eq: bool)
 fn do_schedule(flags: SchedFlags) {
     let cur = current_thread_ref().unwrap();
     let processor = current_processor();
+    // Why `cur` is leaving, charged only if a switch actually happens below.
+    let reason = if cur.is_exiting() {
+        &processor.stats.switch_exit
+    } else if cur.is_idle_thread() {
+        &processor.stats.switch_from_idle
+    } else if !flags.contains(SchedFlags::REINSERT) {
+        &processor.stats.switch_block
+    } else if flags.contains(SchedFlags::PREEMPT) {
+        &processor.stats.switch_preempt
+    } else {
+        &processor.stats.switch_yield
+    };
 
     if cur.is_exiting() {
         processor.push_exited(cur.clone());
@@ -1056,19 +1310,14 @@ fn do_schedule(flags: SchedFlags) {
         // n.b. if we are yielding, we allow for equal-priority threads to count as "higher
         // priority" so that other threads can run if available. If all threads are truly
         // lower priority, yielding has less of an effect on timeshare threads.
+        let disallowed_here = !cur.sched.affinity.allows(processor.id);
         if flags.contains(SchedFlags::PREEMPT)
             || processor.must_rebalance()
+            || disallowed_here
             || rq_has_higher(cur, &processor.rq, flags.contains(SchedFlags::YIELD))
         {
-            let cpuid = if processor.must_rebalance() {
-                select_cpu(
-                    &cur,
-                    if processor.must_rebalance() {
-                        Some(processor.id)
-                    } else {
-                        None
-                    },
-                )
+            let cpuid = if processor.must_rebalance() || disallowed_here {
+                select_cpu(&cur, Some(processor.id))
             } else {
                 processor.id
             };
@@ -1076,27 +1325,34 @@ fn do_schedule(flags: SchedFlags) {
             schedule_thread_on_cpu(cur.clone(), processor, false, false);
         } else {
             // This is a current thread to reinsert, but only count it as such if it is not
-            // yielding so that other threads will run first.
-            if flags.contains(SchedFlags::YIELD) {
+            // yielding so that other threads will run first. A yield with nothing queued would
+            // only insert and take itself straight back, so it takes the shortcut.
+            if flags.contains(SchedFlags::YIELD) && !processor.rq.is_empty() {
                 schedule_thread_on_cpu(cur.clone(), processor, false, false);
             } else {
                 // shortcut -- we are intending to just run this thread again.
-                reset_thread_time(cur, processor);
+                processor.stats.resched_noop.fetch_add(1, Ordering::Relaxed);
+                cur.sched.reset_timeslice();
                 processor.exit_idle();
                 return;
             }
         }
     }
 
-    let next = processor.rq.take(false);
-    if let Some(next) = next {
+    while let Some(next) = processor.rq.take(false) {
+        // Queued here before its affinity excluded this cpu: send it on and pick again.
+        let Some(next) = admit_on(next, processor.id) else {
+            continue;
+        };
         if &next == cur {
             // We took ourselves back off the queue, so we never reach switch_to (the only other
             // caller of moving_to_active). Clear current_processor_queue here, or we stay marked
             // as queued while actually running.
             cur.sched.moving_to_active(processor.id);
+            processor.stats.resched_noop.fetch_add(1, Ordering::Relaxed);
             return;
         }
+        reason.fetch_add(1, Ordering::Relaxed);
         switch_to(next, cur, flags);
         return;
     }
@@ -1105,6 +1361,7 @@ fn do_schedule(flags: SchedFlags) {
     if let Some(stolen) = try_steal() {
         let cp = current_processor();
         cp.stats.steals.fetch_add(1, Ordering::SeqCst);
+        reason.fetch_add(1, Ordering::Relaxed);
         switch_to(stolen, cur, flags);
         return;
     }
@@ -1120,6 +1377,11 @@ fn do_schedule(flags: SchedFlags) {
             flags
         );
     }
+    reason.fetch_add(1, Ordering::Relaxed);
+    processor
+        .stats
+        .switch_to_idle
+        .fetch_add(1, Ordering::Relaxed);
     switch_to(processor.idle_thread.wait().clone(), cur, flags);
 }
 
@@ -1219,12 +1481,29 @@ pub fn needs_reschedule(ticking: bool) -> bool {
     if cur.must_suspend() {
         return true;
     }
+    // Its affinity changed under it; `do_schedule`'s reinsert path moves it.
+    if !cur.sched.affinity.allows(processor.id) {
+        return true;
+    }
     if processor.rq.is_empty() {
         return false;
     }
-    let rq_pri = processor.rq.current_priority();
     let cur_pri = cur.effective_priority();
-    rq_pri > cur_pri || (ticking && rq_pri >= cur_pri)
+    // The realtime queue -- realtime threads and timeshare ones past their deadline -- runs
+    // ahead of every timeshare thread, at once.
+    if processor.rq.has_realtime() && cur_pri.class < PriorityClass::Realtime {
+        return true;
+    }
+    // Equal priority rotates for a queued wake once the running thread has had `WAKE_GRAN_TICKS`,
+    // and otherwise only on slice expiry (`schedule_hardtick`). Rotating at every tick switched
+    // two busy threads on the bsp every ms; rotating on expiry alone made a spin-waiting pair on
+    // one cpu wait a slice per hand-off, which a spinner has to avoid by yielding.
+    let rq_pri = processor.rq.current_priority();
+    rq_pri > cur_pri
+        || (ticking
+            && rq_pri == cur_pri
+            && processor.rq.wake_pending()
+            && cur.sched.ran_ns(crate::instant::current_ns()) >= WAKE_GRAN_NS)
 }
 
 #[thread_local]
@@ -1601,13 +1880,20 @@ pub fn schedule_hardtick() -> Option<u64> {
     let cp = current_processor();
     // Relaxed on purpose: a free-running counter with no other memory ordered against it.
     cp.stats.hardticks.fetch_add(1, Ordering::Relaxed);
-    let resched = needs_reschedule(true);
     let cur = current_thread_ref()?;
     let (current_tick, diff) = cp.rq.hardtick();
     let cur_pri = cur.effective_priority();
     let ts_expire = cur.sched.pay_ticks(diff, cp.rq.timeslice(cur_pri.class));
+    // After paying, so the granularity `needs_reschedule` reads counts this tick.
+    let resched = needs_reschedule(true);
     let rq_pri = cp.rq.current_priority();
-    if resched || ts_expire {
+    // An expired slice with nothing queued has no one to rotate to.
+    if resched || (ts_expire && !cp.rq.is_empty()) {
+        if resched {
+            cp.stats.preempt_pri.fetch_add(1, Ordering::Relaxed);
+        } else {
+            cp.stats.preempt_slice.fetch_add(1, Ordering::Relaxed);
+        }
         log::trace!(
             "preempt {}: {} {} (supplying {} ms, {}), {} {}",
             cur.id(),
@@ -1620,12 +1906,15 @@ pub fn schedule_hardtick() -> Option<u64> {
         );
         schedule_mark_preempt();
     }
+    if cp.rq.wake_pending() {
+        return Some(WAKE_GRAN_TICKS);
+    }
     Some(cp.rq.timeslice(rq_pri.max(cur_pri).class))
 }
 
 pub fn schedule_resched() {
-    current_processor()
-        .stats
+    let cp = current_processor();
+    cp.stats
         .wakeups
         .fetch_add(1, Ordering::Relaxed);
     let cur = current_thread_ref();
@@ -1638,8 +1927,10 @@ pub fn schedule_resched() {
     // set when it cannot act on it, for exactly this reason, so the mark is taken at the first
     // moment the thread is not critical. This is the request side of that same fix.
     let cannot_tell = cur.is_some_and(|t| t.is_critical());
-    if is_idle || cannot_tell || needs_reschedule(false) {
+    if is_idle || cannot_tell || needs_reschedule(true) {
         schedule_mark_preempt();
+    } else if cp.rq.wake_pending() && !cp.is_bsp() {
+        crate::clock::schedule_oneshot_tick(WAKE_GRAN_TICKS);
     }
 }
 
@@ -1665,11 +1956,6 @@ pub fn schedule_stattick(dt: Nanoseconds) {
     }
     let cur = current_thread_ref();
     if let Some(cur) = cur {
-        if !cur.is_critical() && cur.is_in_user() && cur.get_mutex_count() == 0 {
-            cp.cleanup_exited();
-            // TODO: need to call this much more rarely, and not from within a scheduler tick.
-            //TRACE_MGR.process_async_and_maybe_flush();
-        }
         if cur.is_idle_thread() {
             cp.stats.idle.fetch_add(1, Ordering::Relaxed);
         } else {
@@ -1690,8 +1976,16 @@ pub fn schedule_stattick(dt: Nanoseconds) {
                 now.saturating_sub(last).saturating_sub(1),
                 Ordering::Relaxed,
             );
+
+            // Charge and re-rate the running thread. Its penalty may have moved, and this cpu's
+            // advertised priority is what remote wakes compare against.
+            crate::thread::cachemiss::charge_tick(&cur);
+            cur.cachemiss.sample();
+            cp.current_priority
+                .store(cur.effective_priority().raw(), Ordering::Release);
         }
     }
 
     cp.rq.clock();
+    cp.freq.tick();
 }

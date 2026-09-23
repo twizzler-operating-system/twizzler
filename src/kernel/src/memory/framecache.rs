@@ -446,10 +446,7 @@ fn init_tls_cache_tpoff() -> usize {
 /// this cpu's for as long as interrupts stay off. Same shape as `tracker::tls_fa` and
 /// `thread::read_current_thread_ptr`, and copied from them rather than re-derived.
 ///
-/// On aarch64 there is no segment override to lean on and this settles for materialising the
-/// address inside the region, carrying the same residual risk those two do. If aarch64 becomes a
-/// target for this, move `Cache` onto `Processor` behind a spinlock -- there a hoisted address is
-/// merely the wrong cpu's cache, which is benign, because frames are fungible.
+/// On aarch64 the base is `tpidr_el1`, read the same way.
 ///
 /// # Safety
 /// Caller must hold interrupts disabled for the whole borrow.
@@ -470,9 +467,19 @@ unsafe fn cache() -> &'static mut Cache {
         );
         &mut *(base.wrapping_add(off) as *mut Cache)
     }
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(target_arch = "aarch64")]
     unsafe {
-        &mut *core::ptr::addr_of_mut!(TLS_CACHE)
+        let mut off = TLS_CACHE_TPOFF.load(Ordering::Relaxed);
+        if core::intrinsics::unlikely(off == 0) {
+            off = init_tls_cache_tpoff();
+        }
+        let base: usize;
+        core::arch::asm!(
+            "mrs {b}, tpidr_el1",
+            b = lateout(reg) base,
+            options(nostack, preserves_flags),
+        );
+        &mut *(base.wrapping_add(off) as *mut Cache)
     }
 }
 

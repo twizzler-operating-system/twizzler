@@ -20,17 +20,11 @@ impl Table {
     /// at each level.
     pub const PAGE_TABLE_ENTRIES: usize = 512;
 
-    /// The level of the last level page table.
-    ///
-    /// This depends on the translation granule size for aarch64.
-    /// A 4 KiB translation size results in 4 level page tables (0-3)
-    const MAX_LEVEL: usize = 3;
-
-    /// The top level of the first page table in address translation.
-    ///
-    /// For 4 KiB pages, this means we start at stage 0/level 0 in the translation
-    /// process. We assume that we are using 48-bits of address space.
-    const TOP_LEVEL: usize = 0;
+    /// Levels are numbered the way the generic page-table code counts them, from the leaf
+    /// tables up: 0 is the 4 KiB page table (ARM's level 3) and 3 is the root (ARM's level 0),
+    /// so `level - 1` descends and `PHYS_LEVEL_LAYOUTS[level]` is that level's page size.
+    const LAST_LEVEL: usize = 0;
+    const TOP_LEVEL: usize = 3;
 
     /// The mask for indices encoded into a virtual address
     const INDEX_MASK: usize = 0x1FF;
@@ -52,20 +46,8 @@ impl Table {
 
     /// Does this system support mapping a huge page at this level?
     pub fn can_map_at_level(level: usize) -> bool {
-        // huge pages, meaning larger than 4KiB (2MiB, 1GiB)
-        // Seems like ARM does have huge pages, at certan levels
-        match level {
-            // check if TCR_EL0.DS is 1 (52-bit addr space)
-            // if so then we can support 512 GiB at level 0
-
-            // 1 GiB
-            1 => true,
-            // 2 MiB
-            2 => true,
-            // semantically does not make sense, see note from other, etc.
-            3 => true, // but technically allowed to map here
-            _ => false,
-        }
+        // 4 KiB pages, 2 MiB and 1 GiB blocks.
+        level <= 2
     }
 
     /// Set the current count of used entries.
@@ -91,35 +73,29 @@ impl Table {
     }
 
     /// Is this a leaf (a huge page or page aligned) at a given level
-    pub fn is_leaf(_addr: VirtAddr, _level: usize) -> bool {
-        todo!("is_leaf")
+    pub fn is_leaf(addr: VirtAddr, level: usize) -> bool {
+        level == Self::LAST_LEVEL || addr.is_aligned_to(Self::level_to_page_size(level))
     }
 
     /// Get the index for the next table for an address.
     pub fn get_index(addr: VirtAddr, level: usize) -> usize {
-        // for a 4kib translation granule, a virtual address
-        // is cut up int 5 pieces. This means that each
-        // index is 9 address bits, with the first 12 bits
-        // being a part of the block offset/physical address
-        usize::from(addr) >> (9 * (Self::MAX_LEVEL - level) + 12) & Self::INDEX_MASK
+        // 4 KiB granule: 9 index bits per level above the 12-bit page offset.
+        usize::from(addr) >> (9 * level + 12) & Self::INDEX_MASK
     }
 
     /// Get the page size of a given level.
     pub fn level_to_page_size(level: usize) -> usize {
-        // frame size * num entries ** (3-level)
-        1 << (12 + 9 * (Self::MAX_LEVEL - level))
+        1 << (12 + 9 * level)
     }
 
     /// Get the level of the last page table.
     pub fn last_level() -> usize {
-        Self::MAX_LEVEL
+        Self::LAST_LEVEL
     }
 
     /// Get the value of the next level given the current level.
     pub fn next_level(level: usize) -> usize {
-        // the levels of page tables on aarch64 begin with 0
-        // and then increment from there
-        level + 1
+        level - 1
     }
 }
 

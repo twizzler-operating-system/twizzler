@@ -12,11 +12,13 @@ use crate::{
     thread::{Thread, ThreadRef, priority::Priority},
 };
 
+pub mod freq;
 pub mod ipi;
 pub mod mp;
 mod rq;
 pub mod sched;
 mod timeshare;
+pub mod topology;
 
 #[derive(Debug, Default)]
 pub struct ProcessorStats {
@@ -65,6 +67,32 @@ pub struct ProcessorStats {
     /// so a contended validation boot reading zero means the elision path never ran, not that it
     /// is cheap.
     pub tlb_pv_elided: AtomicU64,
+    /// Context switches by why the outgoing thread left the cpu. `switch_preempt` is every
+    /// involuntary switch, including preempt marks acted on at syscall exit; `switch_block` a
+    /// thread that slept or suspended; `switch_from_idle` the idle thread handing over.
+    pub switch_exit: AtomicU64,
+    pub switch_block: AtomicU64,
+    pub switch_yield: AtomicU64,
+    pub switch_preempt: AtomicU64,
+    pub switch_from_idle: AtomicU64,
+    /// Switches whose incoming thread was the idle thread: this cpu went idle.
+    pub switch_to_idle: AtomicU64,
+    /// Reschedules that found nothing better and ran the same thread again.
+    pub resched_noop: AtomicU64,
+    /// Hardtick preempt marks by cause: a spent slice with a peer queued, or a queued thread
+    /// that outranks (or, woken, matches) the running one.
+    pub preempt_slice: AtomicU64,
+    pub preempt_pri: AtomicU64,
+    /// `select_cpu` outcomes for threads placed from this cpu, one per pick; `pick_migrate` is
+    /// additionally counted when the pick was not the thread's last cpu.
+    pub pick_pinned: AtomicU64,
+    pub pick_last_warm: AtomicU64,
+    pub pick_near: AtomicU64,
+    pub pick_far: AtomicU64,
+    pub pick_last_cold: AtomicU64,
+    pub pick_lowest: AtomicU64,
+    pub pick_fallback: AtomicU64,
+    pub pick_migrate: AtomicU64,
 }
 
 pub struct Processor {
@@ -72,7 +100,7 @@ pub struct Processor {
     rq: RunQueue<NR_QUEUES>,
     current_priority: AtomicU32,
     running: AtomicBool,
-    topology_path: Once<Vec<(usize, bool)>>,
+    topology_path: Once<topology::TopoPath>,
     pub id: u32,
     bsp_id: u32,
     pub idle_thread: Once<ThreadRef>,
@@ -97,6 +125,8 @@ pub struct Processor {
     /// nonce for every object create -- through one global sleeping mutex, holding it across the
     /// whole ChaCha20 generation.
     pub rng: Spinlock<crate::random::PerCpuRng>,
+    /// This cpu's running frequency, fed from its statclock tick. See [`freq::FreqSampler`].
+    pub freq: freq::FreqSampler,
 }
 
 impl Processor {
@@ -107,6 +137,7 @@ impl Processor {
             syscall_counts: crate::syscall::SyscallCounts::new(),
             fault_stats: Spinlock::new(crate::memory::context::virtmem::fault::FaultTracking::new()),
             rng: Spinlock::new(crate::random::PerCpuRng::new()),
+            freq: freq::FreqSampler::new(),
             running: AtomicBool::new(false),
             is_idle: AtomicBool::new(false),
             must_rebalance: AtomicBool::new(false),
@@ -176,7 +207,7 @@ impl Processor {
         self.must_rebalance.load(Ordering::Acquire)
     }
 
-    fn set_topology(&self, topo_path: Vec<(usize, bool)>) {
+    fn set_topology(&self, topo_path: topology::TopoPath) {
         self.topology_path.call_once(|| topo_path);
     }
 
@@ -218,6 +249,7 @@ impl Processor {
             ex.len()
         };
         EXITED_BACKLOG.fetch_add(1, Ordering::Relaxed);
+        crate::thread::reaper::notify();
         // Per-cpu, because "reaping everywhere is slow" and "reaping stopped on one cpu" produce
         // the same global byte count and want different fixes. A cpu that halts without reaching
         // the reap call again shows a watermark that never comes down; a pacing shortfall shows
@@ -226,7 +258,17 @@ impl Processor {
     }
 
     pub fn cleanup_exited(&self) {
-        let item = self.exited.lock().pop();
+        let item = {
+            let mut ex = self.exited.lock();
+            // Same guard as `drain_exited`. Normally this is the caller's own list, ordered behind
+            // the exiting thread's switch, but a `current_processor()` read before a migration
+            // names another cpu, whose newest entry may still be saving its registers.
+            let live = ex.iter().filter(|t| !t.has_left_kernel_stack()).count();
+            LIVE_STACK_SKIPS.fetch_add(live, Ordering::Relaxed);
+            ex.iter()
+                .rposition(|t| t.has_left_kernel_stack())
+                .map(|i| ex.swap_remove(i))
+        };
         if let Some(item) = item {
             EXITED_BACKLOG.fetch_sub(1, Ordering::Relaxed);
             REAPED.fetch_add(1, Ordering::Relaxed);

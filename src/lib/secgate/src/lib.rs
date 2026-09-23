@@ -367,8 +367,8 @@ pub unsafe fn dynamic_gate_call<A: Tuple + Crossing + Copy, R: Crossing + Copy>(
                         //#mod_name::#trampoline_name_without_prefix(info as *const _, args as *const _, ret as *mut _);
                         #[cfg(target_arch = "x86_64")]
                         core::arch::asm!("call {target}", target = in(reg) target.address, in("rdi") info as *const _, in("rsi") args as *const _, in("rdx") ret as *mut _, clobber_abi("C"));
-                        #[cfg(not(target_arch = "x86_64"))]
-                        todo!()
+                        #[cfg(target_arch = "aarch64")]
+                        core::arch::asm!("blr {target}", target = in(reg) target.address, in("x0") info as *const _, in("x1") args as *const _, in("x2") ret as *mut _, clobber_abi("C"));
                     }
                 ret.into_inner()
             })

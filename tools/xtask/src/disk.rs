@@ -1,7 +1,9 @@
 use std::{
+    ffi::CString,
     fs::{File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 
 use anyhow::Context as _;
@@ -10,6 +12,61 @@ use ext4_lwext4::{mkfs, OpenFlags};
 use crate::{build::TwizzlerCompilation, triple::Triple, DiskCmd, DiskImageOptions};
 
 const DISK_IMAGE_SIZE: u64 = 1024 * 1024 * 1024 * 100; // 100 GB
+
+/// Stamp `mtime` on the image entry `dest`. `ext4-lwext4` wraps no setter and keeps its mount
+/// point private, so this calls lwext4 directly. The crate names mounts `/mp<n>/` from a
+/// process-wide counter, and xtask has one image mounted at a time, so the mount point that does
+/// not answer ENOENT is the live one.
+fn set_image_mtime(dest: &str, mtime: SystemTime) -> anyhow::Result<()> {
+    const ENOENT: i32 = 2;
+    let secs = mtime
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        .min(u32::MAX as u64) as u32;
+    let rel = dest.trim_start_matches('/');
+    for n in 0..64 {
+        let path = CString::new(format!("/mp{n}/{rel}"))?;
+        match unsafe { ext4_lwext4_sys::ext4_mtime_set(path.as_ptr(), secs) } {
+            0 => return Ok(()),
+            ENOENT => continue,
+            e => anyhow::bail!("setting mtime of {} in the disk image: errno {}", dest, e),
+        }
+    }
+    anyhow::bail!("no mounted lwext4 mount point holds {}", dest)
+}
+
+/// Create directory `path` if absent, tolerating an existing one, and give a directory that has
+/// no mtime yet the current time as its creation time. lwext4 zeroes the time at creation and
+/// never updates it afterwards (its parent-time updates are compiled out), so a directory only
+/// ever has what is put on it here; one that already has a time keeps it across rebuilds.
+fn make_dir(ext4: &ext4_lwext4::Ext4Fs, path: &str) -> anyhow::Result<()> {
+    if !ext4.exists(path) {
+        ext4.mkdir(path, 0o755)
+            .with_context(|| format!("creating directory {} in the disk image", path))?;
+    }
+    if ext4.metadata(path)?.mtime == 0 {
+        set_image_mtime(path, SystemTime::now())?;
+    }
+    Ok(())
+}
+
+/// Copy host file `src` to `dest` in the image, replacing any existing entry, and carry its mtime
+/// across: lwext4 zeroes every timestamp on a fresh inode and never touches them again, so
+/// without this every shipped file stats as 1970 on the target.
+fn install_file(ext4: &ext4_lwext4::Ext4Fs, src: &Path, dest: &str) -> anyhow::Result<()> {
+    if ext4.exists(dest) {
+        ext4.remove(dest)?;
+    }
+    let mut dest_file = ext4
+        .open(dest, OpenFlags::READ | OpenFlags::WRITE | OpenFlags::CREATE)
+        .with_context(|| format!("creating {} in the disk image", dest))?;
+    let mut src_file = File::open(src).with_context(|| format!("reading {}", src.display()))?;
+    std::io::copy(&mut src_file, &mut dest_file)?;
+    dest_file.flush()?;
+    drop(dest_file);
+    set_image_mtime(dest, src_file.metadata()?.modified()?)
+}
 
 /// Where `copy_twizzler_build` stages the `#[test]` binaries. The guest reaches these as
 /// `/pkg/twizzler/test`, via the `/pkg -> /ext/sysroot/pkg` symlink `init` sets up; keep this in
@@ -86,11 +143,12 @@ pub fn copy_sysroot(triple: &Triple, path: &Path, force: bool) -> anyhow::Result
 
     let device = ext4_lwext4::FileBlockDevice::open(path)?;
     let ext4 = ext4_lwext4::Ext4Fs::mount(device, false)?;
+    make_dir(&ext4, "/")?;
 
     let mut completed_files = 0;
     let mut completed_bytes = 0;
 
-    ext4.mkdir("/sysroot", 0755).unwrap();
+    make_dir(&ext4, "/sysroot")?;
 
     walkdir::WalkDir::new(&sysroot)
         .into_iter()
@@ -114,29 +172,18 @@ pub fn copy_sysroot(triple: &Triple, path: &Path, force: bool) -> anyhow::Result
                 for comp in image_path.parent().unwrap().components() {
                     dest.push(comp);
 
-                    ext4.mkdir(dest.to_str().unwrap(), 0o755).unwrap();
+                    make_dir(&ext4, dest.to_str().unwrap())?;
                 }
                 dest.push(image_path.file_name().unwrap());
 
-                if ext4.exists(dest.to_str().unwrap()) {
-                    ext4.remove(dest.to_str().unwrap()).unwrap();
-                }
-
-                let mut dest_file = ext4
-                    .open(
-                        dest.to_str().unwrap(),
-                        OpenFlags::READ | OpenFlags::WRITE | OpenFlags::CREATE,
-                    )
-                    .unwrap();
-                let mut src_file = File::open(entry.path())?;
-
-                std::io::copy(&mut src_file, &mut dest_file).unwrap();
+                install_file(&ext4, entry.path(), dest.to_str().unwrap())?;
             } else if entry.file_type().is_dir() {
                 let mut dest = Path::new("/sysroot").to_path_buf();
                 for comp in image_path.components() {
                     dest.push(comp);
-                    ext4.mkdir(dest.to_str().unwrap(), 0o755).unwrap();
+                    make_dir(&ext4, dest.to_str().unwrap())?;
                 }
+                set_image_mtime(dest.to_str().unwrap(), metadata.modified()?)?;
             } else if entry.file_type().is_symlink() {
                 let target = std::fs::read_link(entry.path()).unwrap();
                 let mut link = Path::new("/sysroot").to_path_buf();
@@ -151,7 +198,7 @@ pub fn copy_sysroot(triple: &Triple, path: &Path, force: bool) -> anyhow::Result
             completed_bytes += metadata.len();
             completed_files += 1;
 
-            Ok::<_, std::io::Error>(())
+            Ok::<_, anyhow::Error>(())
         })?;
 
     // Both are provided by the initrd at *runtime*, so the copies staged into the sysroot at
@@ -160,20 +207,10 @@ pub fn copy_sysroot(triple: &Triple, path: &Path, force: bool) -> anyhow::Result
     // puts the freshly built libtwz_rt.so back, which is the only copy that should ever be linked.
     ext4.remove("/sysroot/lib/libtwz_rt.so").unwrap();
     ext4.remove("/sysroot/lib/libc.so").unwrap();
-    ext4.mkdir("/sysroot/pkg", 0o755).unwrap();
-    ext4.mkdir("/sysroot/etc", 0o755).unwrap();
+    make_dir(&ext4, "/sysroot/pkg")?;
+    make_dir(&ext4, "/sysroot/etc")?;
 
-    let _ = ext4.remove("/sysroot/etc/services");
-    let mut file = ext4
-        .open(
-            "/sysroot/etc/services",
-            OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE | OpenFlags::READ,
-        )
-        .unwrap();
-
-    let host_file = File::open("/etc/services")?;
-    std::io::copy(&mut &host_file, &mut file).unwrap();
-    file.flush().unwrap();
+    install_file(&ext4, Path::new("/etc/services"), "/sysroot/etc/services")?;
 
     let _ = ext4.remove("/sysroot/etc/resolv.conf");
     let mut file = ext4
@@ -184,6 +221,9 @@ pub fn copy_sysroot(triple: &Triple, path: &Path, force: bool) -> anyhow::Result
         .unwrap();
     write!(file, "nameserver 8.8.8.8\n").unwrap();
     file.flush().unwrap();
+    drop(file);
+    // Generated here, so the build is the only time it has.
+    set_image_mtime("/sysroot/etc/resolv.conf", SystemTime::now())?;
 
     ext4.symlink("/pkg/ncurses/share/terminfo", "/sysroot/etc/terminfo")
         .unwrap();
@@ -269,6 +309,9 @@ pub fn copy_twizzler_build(
     let ext4 = ext4_lwext4::Ext4Fs::mount(device, false)?;
 
     println!("Copying Twizzler build to disk image for {}", triple,);
+    // mkfs leaves these two at zero as well; `copy_sysroot` may have returned before its mount.
+    make_dir(&ext4, "/")?;
+    make_dir(&ext4, "/lost+found")?;
     for cd in build
         .borrow_user_compilation()
         .as_ref()
@@ -284,11 +327,11 @@ pub fn copy_twizzler_build(
                 .iter(),
         )
     {
-        ext4.mkdir("/sysroot", 0o755).unwrap();
-        ext4.mkdir("/sysroot/pkg", 0o755).unwrap();
-        ext4.mkdir("/sysroot/pkg/twizzler", 0o755).unwrap();
-        ext4.mkdir("/sysroot/pkg/twizzler/bin", 0o755).unwrap();
-        ext4.mkdir("/sysroot/pkg/twizzler/lib", 0o755).unwrap();
+        make_dir(&ext4, "/sysroot")?;
+        make_dir(&ext4, "/sysroot/pkg")?;
+        make_dir(&ext4, "/sysroot/pkg/twizzler")?;
+        make_dir(&ext4, "/sysroot/pkg/twizzler/bin")?;
+        make_dir(&ext4, "/sysroot/pkg/twizzler/lib")?;
         let mut dest = Path::new("/sysroot/pkg/twizzler").to_path_buf();
 
         if cd.path.extension().is_some_and(|x| x == "so") {
@@ -299,19 +342,7 @@ pub fn copy_twizzler_build(
 
         dest.push(cd.path.file_name().unwrap());
 
-        if ext4.exists(dest.to_str().unwrap()) {
-            ext4.remove(dest.to_str().unwrap()).unwrap();
-        }
-
-        let mut dest_file = ext4
-            .open(
-                dest.to_str().unwrap(),
-                OpenFlags::READ | OpenFlags::WRITE | OpenFlags::CREATE,
-            )
-            .unwrap();
-        let mut src_file = File::open(&cd.path)?;
-
-        std::io::copy(&mut src_file, &mut dest_file).unwrap();
+        install_file(&ext4, &cd.path, dest.to_str().unwrap())?;
 
         // Also install the runtime under its conventional name, so an on-target
         // `rustc`/`ld.lld` resolves -ltwz_rt from -L/sysroot/lib like any other library. Every
@@ -320,18 +351,7 @@ pub fn copy_twizzler_build(
         // Copied from the build output rather than left as the sysroot's staged copy: that one
         // is written at toolchain-install time and goes stale as soon as the runtime is rebuilt.
         if cd.path.file_name().is_some_and(|n| n == "libtwz_rt.so") {
-            let rt_dest = "/sysroot/lib/libtwz_rt.so";
-            if ext4.exists(rt_dest) {
-                ext4.remove(rt_dest).unwrap();
-            }
-            let mut rt_file = ext4
-                .open(
-                    rt_dest,
-                    OpenFlags::READ | OpenFlags::WRITE | OpenFlags::CREATE,
-                )
-                .unwrap();
-            let mut rt_src = File::open(&cd.path)?;
-            std::io::copy(&mut rt_src, &mut rt_file).unwrap();
+            install_file(&ext4, &cd.path, "/sysroot/lib/libtwz_rt.so")?;
         }
     }
 
@@ -345,19 +365,7 @@ pub fn copy_twizzler_build(
     let libc_src = crate::toolchain::get_sysroots_root()?
         .join(triple.to_string())
         .join("lib/libc.so");
-    let libc_dest = "/sysroot/lib/libc.so";
-    if ext4.exists(libc_dest) {
-        ext4.remove(libc_dest).unwrap();
-    }
-    let mut libc_dest_file = ext4
-        .open(
-            libc_dest,
-            OpenFlags::READ | OpenFlags::WRITE | OpenFlags::CREATE,
-        )
-        .unwrap();
-    let mut libc_src_file = File::open(&libc_src)?;
-    std::io::copy(&mut libc_src_file, &mut libc_dest_file).unwrap();
-    drop(libc_dest_file);
+    install_file(&ext4, &libc_src, "/sysroot/lib/libc.so")?;
 
     // uuhelper's aliases are made here, at image build time, rather than by init on every boot.
     // They describe the contents of the image, so they belong to whatever writes the image: as
@@ -394,22 +402,11 @@ pub fn copy_twizzler_build(
             "/sysroot/pkg/twizzler",
             TEST_DIR_ON_DISK,
         ] {
-            ext4.mkdir(dir, 0o755).unwrap();
+            make_dir(&ext4, dir)?;
         }
         for test in test_comp.tests.iter() {
             let dest = Path::new(TEST_DIR_ON_DISK).join(test.path.file_name().unwrap());
-            let dest = dest.to_str().unwrap();
-
-            if ext4.exists(dest) {
-                ext4.remove(dest).unwrap();
-            }
-
-            let mut dest_file = ext4
-                .open(dest, OpenFlags::READ | OpenFlags::WRITE | OpenFlags::CREATE)
-                .unwrap();
-            let mut src_file = File::open(&test.path)?;
-
-            std::io::copy(&mut src_file, &mut dest_file).unwrap();
+            install_file(&ext4, &test.path, dest.to_str().unwrap())?;
         }
     }
 
@@ -422,22 +419,10 @@ pub fn copy_twizzler_build(
             for part in parent.split('/').filter(|p| !p.is_empty()) {
                 acc.push('/');
                 acc.push_str(part);
-                let _ = ext4.mkdir(&acc, 0o755);
+                let _ = make_dir(&ext4, &acc);
             }
         }
-        if ext4.exists(&dest) {
-            ext4.remove(&dest).unwrap();
-        }
-        let mut dest_file = ext4
-            .open(
-                &dest,
-                OpenFlags::READ | OpenFlags::WRITE | OpenFlags::CREATE,
-            )
-            .with_context(|| format!("creating {} on the data disk", dest))?;
-        let mut src_file =
-            File::open(&src).with_context(|| format!("reading {}", src.display()))?;
-        std::io::copy(&mut src_file, &mut dest_file)?;
-        dest_file.flush()?;
+        install_file(&ext4, &src, &dest)?;
     }
 
     Ok(())

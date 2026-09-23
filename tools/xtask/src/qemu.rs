@@ -381,7 +381,10 @@ impl QemuCommand {
                 .arg(&format!("tcp::{},server,nowait", gdb_port));
         }
 
-        self.cmd.arg("-vga").arg("virtio");
+        // qemu-system-aarch64 has no virtio-vga, and that target runs -nographic anyway.
+        if self.arch == Arch::X86_64 {
+            self.cmd.arg("-vga").arg("virtio");
+        }
 
         // add additional options for qemu
         self.cmd.args(&options.qemu_options);
@@ -421,7 +424,10 @@ impl QemuCommand {
                     self.cmd.arg("-enable-kvm");
                     self.cmd
                         .arg("-cpu")
-                        .arg("host,+x2apic,+tsc-deadline,+invtsc,+tsc,+rdtscp");
+                        // pmu=on exposes cpuid leaf 0xA and the counter MSRs; the kernel's llc-miss
+                        // counter (`pmc.rs`) is inert without it. Nothing else in the guest
+                        // touches the PMU.
+                        .arg("host,+x2apic,+tsc-deadline,+invtsc,+tsc,+rdtscp,pmu=on");
                     if cpu_pm {
                         self.cmd.arg("-overcommit").arg("cpu-pm=on");
                     }

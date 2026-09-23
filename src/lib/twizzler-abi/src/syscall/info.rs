@@ -2,7 +2,7 @@ use core::num::NonZeroUsize;
 
 use twizzler_rt_abi::error::TwzError;
 
-use super::Syscall;
+use super::{convert_codes_to_result, twzerr, Syscall};
 use crate::{arch::syscall::raw_syscall, syscall::TimeSpan};
 
 #[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq)]
@@ -16,6 +16,9 @@ pub enum InfoKind {
     SyscallStats = 5,
     ObjectStats = 6,
     KernelStats = 9,
+    /// One cpu's topology, caches and frequency; the third syscall argument selects which. See
+    /// [sys_cpu_info].
+    CpuInfo = 10,
 }
 
 impl TryFrom<u64> for InfoKind {
@@ -31,6 +34,7 @@ impl TryFrom<u64> for InfoKind {
             5 => Ok(InfoKind::SyscallStats),
             6 => Ok(InfoKind::ObjectStats),
             9 => Ok(InfoKind::KernelStats),
+            10 => Ok(InfoKind::CpuInfo),
             _ => Err(TwzError::INVALID_ARGUMENT),
         }
     }
@@ -296,6 +300,37 @@ pub struct KernelStats {
     /// [SysInfo::steal_ns] so a sampler polling rates does not have to read `SysInfo` too --
     /// everything else there is static.
     pub steal_ns: u64,
+    /// Context switches by why the outgoing thread left its cpu, summed over cpus. They add up
+    /// to `ctx_switches`. `switch_preempt` is every involuntary switch (a hardtick mark or a
+    /// wake acted on, including at syscall exit), `switch_block` a thread that slept or
+    /// suspended, `switch_from_idle` the idle thread handing a cpu to work.
+    pub switch_exit: u64,
+    pub switch_block: u64,
+    pub switch_yield: u64,
+    pub switch_preempt: u64,
+    pub switch_from_idle: u64,
+    /// Switches that left a cpu idle, a subset of `ctx_switches`.
+    pub switch_to_idle: u64,
+    /// Reschedules that ran the same thread again: a yield or preempt with nothing better queued.
+    pub resched_noop: u64,
+    /// Hardtick preempt marks by cause: the running thread's slice ran out with a peer queued,
+    /// or a queued thread outranks it (a woken equal counts once it has had a tick).
+    pub preempt_slice: u64,
+    pub preempt_pri: u64,
+    /// Where `select_cpu` sent threads, one count per pick: the thread's single allowed cpu;
+    /// its last cpu, still warm and able to run it now; the nearest cache level with a cpu that
+    /// runs it now (`near` is the last cpu's own node, `far` a wider level); its last cpu
+    /// although cold, being no busier than the alternative; the least loaded cpu, to wait; or
+    /// the affinity fallback before the topology existed. `pick_migrate` is additionally
+    /// counted when the pick was not the thread's last cpu.
+    pub pick_pinned: u64,
+    pub pick_last_warm: u64,
+    pub pick_near: u64,
+    pub pick_far: u64,
+    pub pick_last_cold: u64,
+    pub pick_lowest: u64,
+    pub pick_fallback: u64,
+    pub pick_migrate: u64,
 }
 
 pub fn sys_kernel_stats() -> KernelStats {
@@ -419,4 +454,161 @@ pub fn sys_info() -> SysInfo {
         );
         sysinfo.assume_init()
     }
+}
+
+/// How [CpuInfo::cur_khz] was obtained.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+#[repr(u32)]
+pub enum FreqSource {
+    /// Nothing known; `cur_khz` and `nominal_khz` are 0.
+    #[default]
+    Unknown = 0,
+    /// The cpu exposes no usable cycle counters, so `cur_khz` repeats `nominal_khz`.
+    Nominal = 1,
+    /// x86 APERF/MPERF.
+    AperfMperf = 2,
+    /// x86 fixed-function unhalted core and reference cycle counters.
+    FixedCounters = 3,
+    /// aarch64 Activity Monitors: core cycles against constant-rate cycles.
+    Amu = 4,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum CacheKind {
+    #[default]
+    Unknown = 0,
+    Data = 1,
+    Instruction = 2,
+    Unified = 3,
+}
+
+/// What a level of the cpu topology tree groups. Root-most first in [CpuInfo::levels].
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+#[repr(u32)]
+pub enum CpuTopoLevelKind {
+    #[default]
+    Other = 0,
+    /// The whole machine.
+    System = 1,
+    Package = 2,
+    Die = 3,
+    Module = 4,
+    /// A cluster of cores (aarch64 MPIDR affinity level above the core).
+    Cluster = 5,
+    /// A grouping that exists only because a cache is shared at it.
+    Cache = 6,
+    /// A core: the leaf, holding its SMT threads.
+    Core = 7,
+}
+
+bitflags::bitflags! {
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+    pub struct CpuCacheFlags: u16 {
+        const INCLUSIVE = 1;
+        const FULLY_ASSOCIATIVE = 2;
+    }
+}
+
+pub const CPU_INFO_MAX_CACHES: usize = 8;
+pub const CPU_INFO_MAX_LEVELS: usize = 8;
+
+/// One cache reachable from a cpu.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+#[repr(C)]
+pub struct CpuCacheInfo {
+    /// 1 is closest to the core.
+    pub level: u8,
+    pub kind: CacheKind,
+    pub flags: CpuCacheFlags,
+    /// Bytes per line.
+    pub line_size: u32,
+    /// Ways of associativity.
+    pub ways: u32,
+    pub sets: u32,
+    /// Capacity in bytes.
+    pub size: u64,
+    /// Names this cache instance system-wide: cpus reporting the same `id` share the cache.
+    pub id: u32,
+    /// The [CpuTopoLevelInfo::id] of the node this cache is shared at.
+    pub node: u32,
+    /// Cpus sharing this cache.
+    pub nr_sharing: u32,
+    pub _pad: u32,
+}
+
+/// One node on a cpu's path through the topology tree.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+#[repr(C)]
+pub struct CpuTopoLevelInfo {
+    pub kind: CpuTopoLevelKind,
+    /// Names the node system-wide: cpus reporting the same `id` at a level sit under one node.
+    pub id: u32,
+    /// Cpus under this node.
+    pub nr_cpus: u32,
+    pub _pad: u32,
+}
+
+/// Everything the kernel knows about one cpu. See [sys_cpu_info].
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+#[repr(C)]
+pub struct CpuInfo {
+    pub version: u32,
+    pub flags: u32,
+    /// The dense index this was queried by, `0..cpu_count`.
+    pub index: u32,
+    /// The kernel's cpu id (x86: APIC id; aarch64: MPIDR affinity). Not dense; this is the id
+    /// [super::ThreadSchedStats::cpu] reports and a [super::CpuMask] names.
+    pub id: u32,
+    /// Rated frequency, 0 when unknown.
+    pub nominal_khz: u64,
+    /// Frequency over the most recent sampling window, per [CpuInfo::freq_source].
+    pub cur_khz: u64,
+    pub freq_source: FreqSource,
+    pub nr_levels: u32,
+    /// Monotonic time of the sample behind `cur_khz`; 0 when it is not a sample.
+    pub freq_sample_ns: u64,
+    pub nr_caches: u32,
+    pub _pad: u32,
+    /// Root-most first; the last entry is this cpu's core.
+    pub levels: [CpuTopoLevelInfo; CPU_INFO_MAX_LEVELS],
+    /// Level 1 first.
+    pub caches: [CpuCacheInfo; CPU_INFO_MAX_CACHES],
+}
+
+impl CpuInfo {
+    pub fn levels(&self) -> &[CpuTopoLevelInfo] {
+        &self.levels[..(self.nr_levels as usize).min(CPU_INFO_MAX_LEVELS)]
+    }
+
+    pub fn caches(&self) -> &[CpuCacheInfo] {
+        &self.caches[..(self.nr_caches as usize).min(CPU_INFO_MAX_CACHES)]
+    }
+
+    pub fn cur_mhz(&self) -> u64 {
+        self.cur_khz / 1000
+    }
+}
+
+/// Describe the `index`th cpu, `0..sys_info().cpu_count()`. Fails with `INVALID_ARGUMENT` past
+/// the end.
+pub fn sys_cpu_info(index: usize) -> Result<CpuInfo, TwzError> {
+    let mut info = core::mem::MaybeUninit::<CpuInfo>::zeroed();
+    let (code, val) = unsafe {
+        raw_syscall(
+            Syscall::SysInfo,
+            &[
+                &mut info as *mut core::mem::MaybeUninit<CpuInfo> as u64,
+                InfoKind::CpuInfo as u64,
+                index as u64,
+            ],
+        )
+    };
+    convert_codes_to_result(
+        code,
+        val,
+        |c, _| c != 0,
+        |_, _| unsafe { info.assume_init() },
+        twzerr,
+    )
 }

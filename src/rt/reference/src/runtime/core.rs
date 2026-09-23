@@ -404,7 +404,7 @@ impl ReferenceRuntime {
         // against `THREAD_MGR` (see `thread::mgr::impl_spawn`). Only `get_next_tls_info` needs the
         // manager, so it is released here rather than at the end of the function.
         drop(tg);
-        twizzler_abi::syscall::sys_thread_settls(tls as u64);
+        twizzler_abi::syscall::sys_thread_settls(dynlink::tls::thread_pointer_from_tcb(tls) as u64);
         twizzler_abi::upcall::set_self_upcall_ptr(crate::arch::twz_rt_upcall_entry_c).unwrap();
         libc_init_tcb(tls);
         self.init_core_thread(tls, tls_alloc_base, tls_layout);

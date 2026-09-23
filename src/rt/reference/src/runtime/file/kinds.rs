@@ -22,8 +22,8 @@ use crate::runtime::file::{
     get_fd_slots, get_naming_handle,
     kinds::{
         compartment::CompartmentFile, dir::DirFile, kconsole::KernelConsoleFile, null::NullFile,
-        pty::PtyHandleKind, raw_file::RawFile, socket::SocketKind, symlink::SymLinkFile,
-        urandom::URandomFile, zero::ZeroFile,
+        pty::PtyHandleKind, raw_file::RawFile, socket::SocketKind, socketpair::SocketPairEnd,
+        symlink::SymLinkFile, urandom::URandomFile, zero::ZeroFile,
     },
     pty_signal_handler, CreateOptions, FdImpl, OperationOptions,
 };
@@ -35,6 +35,7 @@ pub mod null;
 pub mod pty;
 pub mod raw_file;
 pub mod socket;
+pub mod socketpair;
 pub mod symlink;
 pub mod urandom;
 pub mod zero;
@@ -313,6 +314,23 @@ pub fn open(
         }
         OpenKind::KernelConsole => Some(Arc::new(KernelConsoleFile::new())),
         OpenKind::Kqueue => Some(Arc::new(super::KqueueFile::new())),
+        // No binding creates the pair and returns one end; a bare descriptor (the same shape
+        // accept's listener binding takes) names an end and returns its peer.
+        OpenKind::SocketPair => match binding_ref::<RawFd>(binding, binding_len) {
+            Err(_) => Some(Arc::new(SocketPairEnd::create()?)),
+            Ok(&end_fd) => {
+                let slots = get_fd_slots().read().unwrap();
+                let Some(fd) = slots.get(end_fd as usize) else {
+                    return Err(TwzError::INVALID_ARGUMENT);
+                };
+                let file = fd.file.clone();
+                drop(slots);
+                let Some(end) = file.as_socketpair() else {
+                    return Err(TwzError::INVALID_ARGUMENT);
+                };
+                Some(Arc::new(end.peer()?))
+            }
+        },
         // An fd bound straight to an object id, with no name. The caller wants the length the
         // mapping does not carry (`MEXT_SIZED`, which `RawFile` resolves), so this ends the same
         // way `open_path` does for `NsNodeKind::Object`.

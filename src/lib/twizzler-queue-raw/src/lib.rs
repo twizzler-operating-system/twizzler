@@ -982,9 +982,11 @@ mod tests {
     use crate::multi_receive;
     use crate::{QueueEntry, QueueError, RawQueue, RawQueueHdr, ReceiveFlags, SubmissionFlags};
 
+    // Stands in for `sys_thread_sync`. Yield, not spin: on one cpu a spinner only progresses
+    // when the kernel rotates to the other thread, and it does that per timeslice, not per tick.
     fn wait(x: &AtomicU64, v: u64) {
         while x.load(Ordering::SeqCst) == v {
-            core::hint::spin_loop();
+            std::thread::yield_now();
         }
     }
 

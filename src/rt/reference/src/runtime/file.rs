@@ -135,6 +135,10 @@ pub trait Fd {
         None
     }
 
+    fn as_socketpair(&self) -> Option<&kinds::socketpair::SocketPairEnd> {
+        None
+    }
+
     fn close(&self) -> Result<()> {
         self.shutdown(Shutdown::Both)
     }
@@ -1447,11 +1451,10 @@ impl ReferenceRuntime {
     }
 
     pub fn close(&self, fd: RawFd) -> Option<()> {
-        let Some(file_desc) = get_fd_slots()
-            .write()
-            .unwrap()
-            .remove(fd.try_into().unwrap())
-        else {
+        // A negative descriptor is a caller error, not a slot; unwrapping it here would panic
+        // with the slot table's write lock held.
+        let idx = usize::try_from(fd).ok()?;
+        let Some(file_desc) = get_fd_slots().write().unwrap().remove(idx) else {
             return Some(());
         };
 

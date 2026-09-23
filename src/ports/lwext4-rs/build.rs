@@ -60,7 +60,7 @@ fn main() {
     proc.stdout(stderr())
         .arg("src/lwext4.h")
         .arg("-o")
-        .arg("src/lwext4.rs")
+        .arg(format!("{}/lwext4.rs", outdir))
         .arg("--")
         .arg(format!("-I{}/cmake-build/include", outdir))
         .arg("-Ilwext4/include")

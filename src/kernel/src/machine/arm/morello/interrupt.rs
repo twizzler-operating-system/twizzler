@@ -68,3 +68,8 @@ lazy_static! {
         )
     };
 }
+
+/// No MSI frame is described for this board yet.
+pub fn msi_frame() -> Option<(u64, u32, u32)> {
+    None
+}

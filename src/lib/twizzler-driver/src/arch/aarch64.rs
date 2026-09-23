@@ -6,10 +6,9 @@ pub(crate) fn sync<T: DeviceSync>(
     _offset: usize,
     _len: usize,
 ) {
-    todo!("sync")
+    // The PCIe hosts we run on are cache-coherent; order the CPU's writes before the doorbell.
+    unsafe { core::arch::asm!("dsb sy") };
 }
-
-// TODO: DMA page size.
 
 /// Size of a page for this DMA system.
 pub const DMA_PAGE_SIZE: usize = 0x1000;

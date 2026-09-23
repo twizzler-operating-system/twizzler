@@ -9,6 +9,18 @@ use twizzler_abi::upcall::MemoryAccessKind;
 
 use crate::memory::{PhysAddr, VirtAddr};
 
+/// The cpu clock from the device tree's `clock-frequency`, when the platform states one (QEMU's
+/// virt does not).
+pub fn nominal_hz() -> Option<u64> {
+    let cpu = crate::machine::info::devicetree().cpus().next()?;
+    let value = cpu.property("clock-frequency")?.value;
+    match value.len() {
+        4 => Some(u32::from_be_bytes(value.try_into().ok()?) as u64),
+        8 => Some(u64::from_be_bytes(value.try_into().ok()?)),
+        _ => None,
+    }
+}
+
 /// Possible boot protocols used to start a CPU.
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub enum BootMethod {
@@ -42,7 +54,10 @@ impl FromStr for BootMethod {
 }
 
 /// The arguments needed to start a CPU.
+///
+/// `repr(C)`: `psci_secondary_entry` reads these fields from assembly, by offset.
 #[derive(Debug, Default, Copy, Clone)]
+#[repr(C)]
 pub struct BootArgs {
     /// System-wide ID of this CPU core
     cpu: u32,
@@ -60,6 +75,9 @@ pub struct BootArgs {
     sctlr: u64,
     spsr: u64,
     cpacr: u64,
+    /// This struct's own *virtual* address. PSCI hands the entry stub the physical one, which is
+    /// outside the kernel's identity map, so the stub swaps in this before `eret`.
+    self_va: u64,
 }
 
 /// Start up a CPU.

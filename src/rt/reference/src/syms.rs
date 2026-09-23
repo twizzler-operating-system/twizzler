@@ -1337,6 +1337,20 @@ pub unsafe extern "Rust" fn __getrandom_v03_custom(
     }
 }
 
+// getrandom 0.2 has no backend cfg; its `custom` feature (enabled by the runtime wrapper crate
+// for every twizzler target) routes to this symbol instead. Same body as the 0.3 hook above,
+// returning the raw error code rather than a `Result`.
+#[no_mangle]
+pub unsafe extern "Rust" fn __getrandom_custom(dest: *mut u8, len: usize) -> u32 {
+    let buf = unsafe { core::slice::from_raw_parts_mut(dest.cast(), len) };
+    if OUR_RUNTIME.get_random(buf, twizzler_abi::syscall::GetRandomFlags::empty()) == len {
+        0
+    } else {
+        // getrandom's Error::UNEXPECTED.
+        (1 << 16) + 2
+    }
+}
+
 // additional definitions for C.
 //
 // `malloc`/`free` warn-stubs used to live here too. They returned NULL / did nothing, and which

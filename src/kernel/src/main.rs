@@ -38,6 +38,7 @@ mod operations;
 mod pager;
 mod panic;
 mod perfmark;
+mod pmc;
 mod processor;
 mod queue;
 mod random;
@@ -120,6 +121,16 @@ static NO_PCID: AtomicBool = AtomicBool::new(false);
 /// TLB coherence problems: with this set, address space switches flush as they always did.
 pub fn no_pcid() -> bool {
     NO_PCID.load(Ordering::SeqCst)
+}
+
+static FLAT_PLACEMENT: AtomicBool = AtomicBool::new(false);
+
+/// `--flat-placement`: the scheduler places threads as it did before it knew the cache
+/// hierarchy -- last cpu, else the first idle cpu in tree order, whole-machine balancing, SMT
+/// siblings counted as idle cores. A runtime knob so the two policies can be A/B'd from one
+/// binary.
+pub fn flat_placement() -> bool {
+    FLAT_PLACEMENT.load(Ordering::Relaxed)
 }
 
 /// The reaper thread, on unless `--reap=legacy`.
@@ -305,6 +316,9 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
         if opt == "--no-pcid" {
             NO_PCID.store(true, Ordering::SeqCst);
         }
+        if opt == "--flat-placement" {
+            FLAT_PLACEMENT.store(true, Ordering::SeqCst);
+        }
         if opt == "--nobgsync" {
             BG_SYNC_DROP.store(true, Ordering::SeqCst);
         }
@@ -369,6 +383,7 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
     arch::init_interrupts();
     #[cfg(target_arch = "x86_64")]
     arch::init_secondary();
+    pmc::init_cpu();
     ::log::set_max_level(LevelFilter::Off);
     initrd::init(boot_info.get_modules());
     ::log::set_max_level(klog_level);

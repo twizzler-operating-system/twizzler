@@ -29,7 +29,8 @@ pub const BUFFER_NSLOTS: usize = 8;
 pub type Result<T> = std::result::Result<T, TwzError>;
 
 pub use store::{
-    cache_stats, memo_config, DevFs, GetFlags, NameSession, NameStore, NsNode, NsNodeKind,
+    cache_stats, memo_config, namespace_stat_object, DevFs, GetFlags, NameSession, NameStore,
+    NsNode, NsNodeKind,
 };
 use twizzler_rt_abi::error::TwzError;
 

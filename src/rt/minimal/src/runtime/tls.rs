@@ -19,41 +19,28 @@ pub(crate) fn new_thread_tls() -> Option<(usize, *mut u8, usize, usize)> {
 pub(crate) fn tls_variant1() -> Option<(usize, *mut u8, usize, usize)> {
     unsafe {
         TLS_INFO.as_ref().map(|tls_template| {
-            // TODO: reserved region may be arch specific. aarch64 reserves two
-            // words after the thread pointer (TP), before any TLS blocks
-            let reserved_bytes = core::mem::size_of::<*const u64>() * 2;
-            // the size of the TLS region in memory
-            let tls_size = tls_template.memsz + reserved_bytes;
-
-            // generate a layout where the size is rounded up if not aligned
+            // The block follows the 16 reserved bytes at the thread pointer, padded so that it
+            // is congruent to the template address modulo its alignment: that is where lld's
+            // local-exec offsets point, assuming TP itself is aligned.
+            let align = tls_template.align.max(1);
+            let block_offset =
+                16 + ((tls_template.template_start as usize).wrapping_sub(16) & (align - 1));
             let layout = crate::internal_unwrap(
-                Layout::from_size_align(tls_size, tls_template.align).ok(),
+                Layout::from_size_align(block_offset + tls_template.memsz, align.max(16)).ok(),
                 "failed to unwrap TLS layout",
             );
 
-            // allocate a region of memory for the thread-local data initialized to zero
             let tcb_base = super::OUR_RUNTIME.default_allocator().alloc_zeroed(layout);
             if tcb_base.is_null() {
                 crate::print_err("failed to allocate TLS");
                 super::OUR_RUNTIME.abort();
             }
-
-            // Architechtures that use TLS Variant I (e.g. ARM) have the thread pointer
-            // point to the start of the TCB and thread-local vars are defined
-            // before this in higher memory addresses. So accessing a thread
-            // local var adds some offset to the thread pointer
-            //
-            // we need a pointer offset of reserved_bytes. add here increments
-            // the pointer offset by sizeof u8 bytes.
-            let tls_base = tcb_base.add(reserved_bytes);
-            // copy from the ELF TLS segment to the allocated region of memory
             core::ptr::copy_nonoverlapping(
                 tls_template.template_start,
-                tls_base,
+                tcb_base.add(block_offset),
                 tls_template.filsz,
             );
 
-            // the TP points to the base of the TCB which exists in lower memory.
             (tcb_base as usize, tcb_base, layout.size(), layout.align())
         })
     }

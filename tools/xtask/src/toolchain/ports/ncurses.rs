@@ -64,6 +64,8 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         .arg(crate::toolchain::guess_host_triple().unwrap())
         .arg("--prefix=/pkg/ncurses")
         .arg("--enable-shared")
+        // Cross builds: `install -s` would run the host's strip on target binaries.
+        .arg("--disable-stripping")
         .arg("--program-prefix=")
         .arg("--with-install-prefix");
     cmd.env("DESTDIR", &install_dir);

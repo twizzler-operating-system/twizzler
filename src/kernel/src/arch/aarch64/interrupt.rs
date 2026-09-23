@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicU32, Ordering};
+
 /// Handling of external interrupt sources (e.g, IRQ).
 ///
 /// External interrupt sources, or simply interrupts in
@@ -26,7 +28,12 @@ use crate::{
 // but this is fine for now.
 pub const GENERIC_IPI_VECTOR: u32 = 0; // Used for IPI
 pub const TLB_SHOOTDOWN_VECTOR: u32 = 1; // used for TLB consistency
-pub const RESV_VECTORS: &[usize] = &[GENERIC_IPI_VECTOR as usize, TLB_SHOOTDOWN_VECTOR as usize];
+pub const RESCHED_IPI_VECTOR: u32 = 2;
+pub const RESV_VECTORS: &[usize] = &[
+    GENERIC_IPI_VECTOR as usize,
+    TLB_SHOOTDOWN_VECTOR as usize,
+    RESCHED_IPI_VECTOR as usize,
+];
 // pub const TIMER_VECTOR: u32 = 3;
 
 // IC controller specfific
@@ -104,7 +111,10 @@ exception_handler!(interrupt_request_handler_el0, irq_exception_handler, false);
 /// Exception handler manages IRQs and calls the appropriate
 /// handler for a given IRQ number. This handler manages state
 /// in the interrupt controller.
-pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
+pub(super) fn irq_exception_handler(ctx: &mut ExceptionContext) {
+    if ctx.spsr & 0xf != 0 {
+        super::exception::check_kernel_stack(ctx.sp);
+    }
     // Get pending IRQ number from GIC CPU Interface
     // and possibly return the core number that interrupted us.
     // Doing so acknowledges the pending interrupt.
@@ -122,7 +132,8 @@ pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
         GENERIC_IPI_VECTOR => {
             generic_ipi_handler();
         }
-        _ => panic!("unknown irq number! {}", irq_number),
+        RESCHED_IPI_VECTOR => crate::processor::sched::schedule_resched(),
+        _ => crate::interrupt::external_interrupt_entry(irq_number),
     }
     // signal the GIC that we have serviced the IRQ
     interrupt_controller().finish_active_interrupt(irq_number, sender_core);
@@ -135,12 +146,9 @@ pub(super) fn irq_exception_handler(_ctx: &mut ExceptionContext) {
 //  interrupt controller APIs
 //----------------------------
 pub fn send_ipi(dest: Destination, vector: u32) {
-    // tell the interrupt controller to send and interrupt
+    // No wait: GICD_CPENDSGIR is banked per *receiver*, so the sender cannot observe delivery,
+    // and spinning on its own bank with interrupts masked wedged on any SGI sent to it.
     interrupt_controller().send_interrupt(vector, dest);
-    // wait while interrupt has not been recieved
-    while interrupt_controller().is_interrupt_pending(vector, dest) {
-        core::hint::spin_loop();
-    }
 }
 
 // like register, used by generic code
@@ -148,14 +156,28 @@ pub fn allocate_interrupt_vector(
     _pri: InterruptPriority,
     _opts: InterruptAllocateOptions,
 ) -> Option<DynamicInterrupt> {
-    // TODO: Actually track interrupts, and allocate based on priority and flags.
-    todo!()
+    // MSI only: one SPI from the GICv2m frame's range, never returned (as on x86).
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let (_, base, count) = crate::machine::interrupt::msi_frame()?;
+    let i = NEXT.fetch_add(1, Ordering::SeqCst);
+    if i >= count {
+        return None;
+    }
+    let spi = base + i;
+    set_interrupt(
+        spi,
+        false,
+        TriggerMode::Edge,
+        PinPolarity::ActiveHigh,
+        Destination::Bsp,
+    );
+    Some(DynamicInterrupt::new(spi as usize))
 }
 
 // code for IPI signal to send
 // needed by generic IPI code
 pub enum InterProcessorInterrupt {
-    Reschedule = 2, /* TODO */
+    Reschedule = RESCHED_IPI_VECTOR as isize,
 }
 
 impl Drop for DynamicInterrupt {
@@ -188,10 +210,11 @@ pub fn init_interrupts() {
 pub fn set_interrupt(
     num: u32,
     _masked: bool,
-    _trigger: TriggerMode,
+    trigger: TriggerMode,
     _polarity: PinPolarity,
     destination: Destination,
 ) {
+    interrupt_controller().set_edge_triggered(num, matches!(trigger, TriggerMode::Edge));
     match destination {
         Destination::Bsp => {
             interrupt_controller().route_interrupt(num, current_processor().bsp_id())

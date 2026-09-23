@@ -76,29 +76,24 @@ impl<const N: usize> TimeshareQueue<N> {
         self.count == 0
     }
 
-    pub fn insert(&mut self, th: ThreadRef, current: bool) {
+    pub fn insert(&mut self, th: ThreadRef) {
         let pri = th.stable_effective_priority();
-        let q = if current {
-            self.take_idx
-        } else {
-            let prio_idx_offset: usize =
-                (MAX_PRIORITY - pri.value) as usize / (MAX_PRIORITY as usize / N);
-            let q = (self.insert_idx + prio_idx_offset) % N;
-            if q == self.take_idx && self.take_idx != self.insert_idx {
-                q.checked_sub(1).unwrap_or(N - 1)
-            } else {
-                q
-            }
-        };
-        log::trace!(
-            "insert thread {},{}: {} {} {}",
-            th.id(),
-            current,
-            q,
-            self.take_idx,
-            self.insert_idx
-        );
+        let prio_idx_offset: usize =
+            (MAX_PRIORITY - pri.value) as usize / (MAX_PRIORITY as usize / N);
+        let mut q = (self.insert_idx + prio_idx_offset) % N;
+        if q == self.take_idx && self.take_idx != self.insert_idx {
+            q = q.checked_sub(1).unwrap_or(N - 1);
+        }
         self.queues[q].push_back(th);
+        self.priorities[pri.value as usize / (MAX_PRIORITY as usize / N)] += 1;
+        self.count += 1;
+    }
+
+    /// Ahead of everything queued: the next `take` returns `th` unless a later front insert
+    /// lands first. For a woken thread, so a hand-off is not filed behind the preempted.
+    pub fn insert_front(&mut self, th: ThreadRef) {
+        let pri = th.stable_effective_priority();
+        self.queues[self.take_idx].push_front(th);
         self.priorities[pri.value as usize / (MAX_PRIORITY as usize / N)] += 1;
         self.count += 1;
     }

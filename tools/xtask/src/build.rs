@@ -195,7 +195,7 @@ fn build_third_party<'a>(
 
     let triple = Triple::new(
         build_config.arch,
-        build_config.machine,
+        crate::triple::Machine::Unknown,
         crate::triple::Host::Twizzler,
         None,
     );
@@ -307,19 +307,26 @@ fn build_twizzler<'a>(
     if let Some(profile) = build_config.profile.requested() {
         options.build_config.requested_profile = InternedString::new(profile);
     }
-    // TODO: the debug hook is currently only supported on x86_64.
     options.spec = Packages::Packages(
         packages
             .iter()
             .map(|p| p.name().to_string())
-            .filter(|p| match p.as_str() {
-                "debug" => build_config.arch == Arch::X86_64,
-                _ => true,
-            })
+            .filter(|p| package_builds_on(p, build_config.arch))
             .collect(),
     );
     options.build_config.force_rebuild = other_options.needs_full_rebuild;
     Ok(Some(cargo::ops::compile(workspace, &options)?))
+}
+
+/// Whether `name` is built for `arch` at all. The initrd packer consults this too, so it does not
+/// ask for a binary the build skipped.
+///
+/// TODO: the debug hook speaks gdbstub's x86_64 register layout only.
+pub fn package_builds_on(name: &str, arch: Arch) -> bool {
+    match name {
+        "debug" => arch == Arch::X86_64,
+        _ => true,
+    }
 }
 
 fn build_runtime<'a>(
@@ -370,7 +377,7 @@ fn maybe_build_tests_dynamic<'a>(
     crate::print_status_line("collection: userspace::tests", Some(build_config));
     let triple = Triple::new(
         build_config.arch,
-        build_config.machine,
+        crate::triple::Machine::Unknown,
         crate::triple::Host::Twizzler,
         None,
     );

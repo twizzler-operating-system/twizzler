@@ -1,3 +1,4 @@
+pub(crate) mod pcie;
 mod time;
 
 #[cfg(target_arch = "aarch64")]

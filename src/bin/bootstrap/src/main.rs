@@ -1,20 +1,20 @@
 use std::{
-    ffi::{c_char, CString},
+    ffi::{CString, c_char},
     process::exit,
 };
 
 use dynlink::{
+    DynlinkError, DynlinkErrorKind,
     compartment::{CompartmentId, MONITOR_COMPARTMENT_ID},
-    context::{runtime::RuntimeInitInfo, NewCompartmentFlags},
+    context::{NewCompartmentFlags, runtime::RuntimeInitInfo},
     engines::{Backing, ContextEngine, LoadCtx},
     library::{AllowedGates, UnloadedLibrary},
     symbol::LookupFlags,
-    DynlinkError, DynlinkErrorKind,
 };
-use tracing::{debug, info, warn, Level};
+use tracing::{Level, debug, info, warn};
 use tracing_subscriber::FmtSubscriber;
 use twizzler_abi::{
-    object::{ObjID, MAX_SIZE},
+    object::{MAX_SIZE, ObjID},
     syscall::sys_enumerate_slots,
 };
 use twizzler_rt_abi::{
@@ -55,10 +55,10 @@ impl ContextEngine for Engine {
 
             if data_handle.start() as usize != text_handle.start() as usize + MAX_SIZE {
                 tracing::error!(
-                        "internal runtime error: failed to map text and data adjacent and in-order ({:p} {:p})",
-                        text_handle.start(),
-                        data_handle.start()
-                    );
+                    "internal runtime error: failed to map text and data adjacent and in-order ({:p} {:p})",
+                    text_handle.start(),
+                    data_handle.start()
+                );
                 return Err(DynlinkErrorKind::NewBackingFail.into());
             }
             Ok((

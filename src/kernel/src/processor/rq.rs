@@ -63,6 +63,8 @@ pub struct RunQueue<const N: usize> {
     load: AtomicU32,
     timeshare_load: AtomicU32,
     movable: AtomicU32,
+    /// Threads queued by a wake (`ThreadSched::woken`) and not yet taken. See `needs_reschedule`.
+    pending_wakes: AtomicU32,
     last_clock: AtomicU64,
     last_tick: AtomicU64,
 }
@@ -226,6 +228,7 @@ impl<const N: usize> RunQueue<N> {
             last_clock: AtomicU64::new(0),
             last_tick: AtomicU64::new(0),
             movable: AtomicU32::new(0),
+            pending_wakes: AtomicU32::new(0),
         }
     }
 
@@ -241,9 +244,39 @@ impl<const N: usize> RunQueue<N> {
         logln!("     idle: {:?}", &*self.idle.lock());
     }
 
-    pub fn insert(&self, th: ThreadRef, current: bool) -> bool {
+    /// Whether `insert` would file `th` in the realtime queue: a realtime thread, or a user
+    /// thread past its deadline (see `deadline`). One predicate for the insert and for the
+    /// wake path's preempt decision, so the two cannot disagree.
+    pub fn files_realtime(&self, th: &Thread) -> bool {
+        let pri = th.effective_priority();
+        match pri.class {
+            PriorityClass::Realtime => true,
+            PriorityClass::User => th.sched.get_deadline() <= get_current_ticks(),
+            _ => false,
+        }
+    }
+
+    pub fn has_realtime(&self) -> bool {
+        self.flags.load(Ordering::Acquire) & RQ_HAS_RT != 0
+    }
+
+    pub fn wake_pending(&self) -> bool {
+        self.pending_wakes.load(Ordering::Acquire) != 0
+    }
+
+    fn untrack_wake(&self, th: &Thread) {
+        if th.sched.take_woken() {
+            let _ = self
+                .pending_wakes
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+        }
+    }
+
+    /// `wake`: a timeshare thread made runnable (not reinserted or migrated) goes to the front
+    /// of the calendar and is counted in `pending_wakes`.
+    pub fn insert(&self, th: ThreadRef, wake: bool) -> bool {
         assert!(!th.is_idle_thread());
-        if th.sched.pinned_to().is_none() {
+        if th.sched.note_queued_movable() {
             self.movable.fetch_add(1, Ordering::SeqCst);
         }
         self.load.fetch_add(1, Ordering::SeqCst);
@@ -260,8 +293,7 @@ impl<const N: usize> RunQueue<N> {
                 true
             }
             PriorityClass::User => {
-                let is_thread_deadline = th.sched.get_deadline() <= get_current_ticks();
-                if is_thread_deadline {
+                if self.files_realtime(&th) {
                     log::trace!(
                         "thread {} expired deadline ({} {})",
                         th.id(),
@@ -272,7 +304,14 @@ impl<const N: usize> RunQueue<N> {
                     self.flags.fetch_or(RQ_HAS_RT, Ordering::SeqCst);
                 } else {
                     self.timeshare_load.fetch_add(1, Ordering::Release);
-                    self.timeshare.lock().insert(th, current);
+                    let mut timeshare = self.timeshare.lock();
+                    if wake {
+                        th.sched.set_woken();
+                        self.pending_wakes.fetch_add(1, Ordering::AcqRel);
+                        timeshare.insert_front(th);
+                    } else {
+                        timeshare.insert(th);
+                    }
                     self.flags.fetch_or(RQ_HAS_TS, Ordering::SeqCst);
                 }
                 true
@@ -314,7 +353,7 @@ impl<const N: usize> RunQueue<N> {
         if realtime.is_empty() {
             self.flags.fetch_and(!RQ_HAS_RT, Ordering::Release);
         }
-        if th.sched.pinned_to().is_none() {
+        if th.sched.queued_movable() {
             let old = self.movable.fetch_sub(1, Ordering::SeqCst);
             assert!(old > 0);
         }
@@ -363,7 +402,7 @@ impl<const N: usize> RunQueue<N> {
         if timeshare.is_empty() {
             self.flags.fetch_and(!RQ_HAS_TS, Ordering::Release);
         }
-        if th.sched.pinned_to().is_none() {
+        if th.sched.queued_movable() {
             let old = self.movable.fetch_sub(1, Ordering::SeqCst);
             assert!(old > 0);
         }
@@ -384,7 +423,7 @@ impl<const N: usize> RunQueue<N> {
         if idle.is_empty() {
             self.flags.fetch_and(!RQ_HAS_IL, Ordering::Release);
         }
-        if th.sched.pinned_to().is_none() {
+        if th.sched.queued_movable() {
             let old = self.movable.fetch_sub(1, Ordering::SeqCst);
             assert!(old > 0);
         }
@@ -446,15 +485,22 @@ impl<const N: usize> RunQueue<N> {
             }
         };
         let removed = removed?;
-        if removed.sched.pinned_to().is_none() {
+        if removed.sched.queued_movable() {
             let old = self.movable.fetch_sub(1, Ordering::SeqCst);
             assert!(old > 0);
         }
         self.load.fetch_sub(1, Ordering::Release);
+        self.untrack_wake(&removed);
         Some((removed, from))
     }
 
     pub fn take(&self, stealing: bool) -> Option<ThreadRef> {
+        let th = self.take_inner(stealing)?;
+        self.untrack_wake(&th);
+        Some(th)
+    }
+
+    fn take_inner(&self, stealing: bool) -> Option<ThreadRef> {
         if self.is_empty() || (stealing && self.movable.load(Ordering::Acquire) == 0) {
             return None;
         }
@@ -492,8 +538,12 @@ impl<const N: usize> RunQueue<N> {
         }
     }
 
+    /// How long a thread taking the cpu now may be off it before an insert boosts it to the
+    /// realtime queue: a slice for every thread queued ahead of it, and at least one -- a
+    /// thread that ran alone would otherwise be given `now`, and be boosted on its very first
+    /// reinsertion.
     pub fn deadline(&self, class: PriorityClass) -> u64 {
-        self.timeslice(class) * self.current_load()
+        self.timeslice(class) * self.current_load().max(1)
     }
 
     pub fn last_tick(&self) -> u64 {

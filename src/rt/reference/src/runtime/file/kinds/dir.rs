@@ -1,15 +1,23 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    OnceLock,
+};
 
 use libc::S_IFDIR;
 use secgate::TwzError;
 use twizzler_abi::object::ObjID;
-use twizzler_rt_abi::Result;
+use twizzler_rt_abi::{
+    object::{MapFlags, ObjectHandle, MEXT_MTIME},
+    Result,
+};
 
-use crate::runtime::file::Fd;
+use crate::{runtime::file::Fd, OUR_RUNTIME};
 
 pub struct DirFile {
     obj_id: ObjID,
     pos: AtomicU64,
+    /// The namespace object, mapped read-only on the first stat and kept for the rest.
+    handle: OnceLock<Option<ObjectHandle>>,
 }
 
 impl DirFile {
@@ -17,7 +25,24 @@ impl DirFile {
         Ok(Self {
             obj_id,
             pos: AtomicU64::new(0),
+            handle: OnceLock::new(),
         })
+    }
+
+    /// Directory mtime in seconds. Native namespaces stamp `MEXT_MTIME` on every entry change;
+    /// external ones get it synthesized by the pager from the store inode. Floored to 1 like
+    /// regular files, so an unmapped or unstamped directory still stats as existing.
+    fn mtime_secs(&self) -> u64 {
+        self.handle
+            .get_or_init(|| {
+                naming_core::namespace_stat_object(self.obj_id)
+                    .and_then(|id| OUR_RUNTIME.map_object(id, MapFlags::READ).ok())
+            })
+            .as_ref()
+            .and_then(|h| h.find_meta_ext(MEXT_MTIME))
+            .map(|me| me.value.load(Ordering::SeqCst))
+            .unwrap_or(0)
+            .max(1)
     }
 }
 
@@ -84,7 +109,7 @@ impl Fd for DirFile {
             id: self.obj_id.raw(),
             created: std::time::Duration::ZERO,
             accessed: std::time::Duration::ZERO,
-            modified: std::time::Duration::ZERO,
+            modified: std::time::Duration::from_secs(self.mtime_secs()),
             unix_mode: 0o755 | S_IFDIR,
             nlink: 1,
         })

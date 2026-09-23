@@ -148,6 +148,14 @@ pub fn backtrace(symbolize: bool, entry_point: Option<backtracer_core::EntryPoin
         true // keep going to the next frame
     };
 
+    // backtracer_core's aarch64 freestanding unwinder is `todo!()`, so calling it turns every
+    // kernel panic into a double panic that loses the original message.
+    #[cfg(target_arch = "aarch64")]
+    {
+        let _ = (entry_point, trace_callback);
+        emerglogln!("(backtrace unavailable: backtracer has no aarch64 implementation)");
+    }
+    #[cfg(not(target_arch = "aarch64"))]
     if let Some(entry_point) = entry_point {
         backtracer_core::trace_from(entry_point, trace_callback);
     } else {

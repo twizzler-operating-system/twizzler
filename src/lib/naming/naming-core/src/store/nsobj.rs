@@ -1,11 +1,12 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    sync::{Arc, RwLock, Weak},
+    sync::{atomic::Ordering, Arc, RwLock, Weak},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use twizzler::{
     collections::vec::{VecObject, VecObjectAlloc},
-    object::{ObjID, Object, ObjectBuilder},
+    object::{MetaExt, ObjID, Object, ObjectBuilder, RawObject, MEXT_MTIME},
 };
 use twizzler_abi::{
     object::Protections,
@@ -226,6 +227,24 @@ fn ns_publish(shared: &Arc<NsShared>) {
         .insert((shared.id, shared.persist), Arc::downgrade(shared));
 }
 
+/// Record now as the namespace's `MEXT_MTIME`, the directory mtime a stat of it reports. Called
+/// under `with_obj` after an entry lands or leaves. Floored to 1: `find_meta_ext` reads a zero
+/// value as an empty slot.
+fn stamp_mtime(obj: &VecObject<NsNode, VecObjectAlloc>) {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        .max(1);
+    let handle = obj.object().handle();
+    match handle.find_meta_ext(MEXT_MTIME) {
+        Some(me) => me.value.store(now, Ordering::SeqCst),
+        None => {
+            let _ = unsafe { handle.set_meta_ext(MetaExt::new(MEXT_MTIME, now)) };
+        }
+    }
+}
+
 /// Position of `name`, through the index, building it if this is its first use.
 fn find_idx(
     obj: &VecObject<NsNode, VecObjectAlloc>,
@@ -345,6 +364,7 @@ impl Namespace for NamespaceObject {
             if let Some(index) = index {
                 index.insert(name, at);
             }
+            stamp_mtime(obj);
             Ok(())
         });
         // No memo invalidation, deliberately. The path memo caches *only successful* lookups (see
@@ -376,6 +396,7 @@ impl Namespace for NamespaceObject {
             if let Some(index) = index {
                 index.insert(name, at);
             }
+            stamp_mtime(obj);
             Ok(())
         });
         super::invalidate_memo();
@@ -389,6 +410,7 @@ impl Namespace for NamespaceObject {
             if let Some(index) = index {
                 index_removed(index, name, idx);
             }
+            stamp_mtime(obj);
             Ok(entry)
         });
         super::invalidate_memo();

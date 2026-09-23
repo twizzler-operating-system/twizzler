@@ -1,26 +1,17 @@
 //! Reaping exited threads.
 //!
 //! A thread cannot drop its own last reference -- it is still running on the kernel stack that drop
-//! hands back to the free list -- so the drop is deferred to another context. Both pre-existing
-//! contexts are constrained, and for good reasons:
-//!
-//! - `schedule_stattick` reaps at most one thread per tick, and only when the interrupted thread
-//!   `is_in_user()`, is not critical and holds no mutex. That is a safe-point test, not a throttle:
-//!   `Thread::drop` -> `IdCounter::release` takes a *sleeping* mutex.
-//! - the idle loop reaps one per hundred passes. Blocking on that mutex from an idle thread is the
-//!   wedge `schedule` documents at length -- an idle thread descheduled holding a mutex is a lock
-//!   owner nothing can schedule.
-//!
-//! Both restrictions are anti-correlated with thread churn. A spawn/join workload is in the kernel
-//! or blocked for nearly all of its time, so the ticks that would reap keep landing somewhere that
-//! skips, and an idle cpu never satisfies `is_in_user()` at all. Measured: ~11% of spawns left
-//! unreaped, each pinning its `Thread` allocation and a 2 MiB kernel stack, ~130 MiB per 660
-//! spawn+joins and never returned.
+//! hands back to the free list -- so the drop is deferred to another context. The idle loop reaps
+//! one per hundred passes, and blocking on a teardown lock from an idle thread is the wedge
+//! `schedule` documents at length -- an idle thread descheduled holding a mutex is a lock owner
+//! nothing can schedule. (`schedule_stattick` used to reap too, from the timer interrupt: a
+//! teardown that blocked there switched away with the timer not yet re-armed.)
 //!
 //! This thread has neither constraint. It is an ordinary kernel thread, so it may block, and it
 //! drains without a per-pass bound. It runs at BACKGROUND so an idle machine does not pay for it,
-//! and donates REALTIME to itself while the backlog is over [`BACKLOG_HIGH`] or memory is low --
-//! which is what gets it scheduled promptly on a machine that is busy producing the backlog.
+//! and runs at REALTIME while the backlog is over [`BACKLOG_HIGH`] or memory is low. A BACKGROUND
+//! thread never gets a cpu that user threads keep busy, so the boost cannot wait for the reaper to
+//! notice: [`notify`] donates it from the exit path that crosses the threshold.
 
 use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::Ordering;
@@ -44,6 +35,7 @@ struct Reaper {
 }
 
 static REAPER: Once<Reaper> = Once::new();
+static THREAD: Once<ThreadRef> = Once::new();
 
 pub fn start() {
     REAPER.call_once(|| Reaper {
@@ -54,18 +46,24 @@ pub fn start() {
     // Printed so a boot log proves the arm it claims to be: an A/B whose treated arm silently
     // failed to start the thread reads exactly like a treatment that did nothing.
     logln!("[reap] reaper thread started (id {})", th.id());
+    THREAD.call_once(|| th);
 }
 
-/// Wake the reaper if there is anything for it to do.
+/// Wake the reaper if there is anything for it to do, boosting it once the backlog is high.
 ///
-/// Cheap enough to call on every idle-loop pass: one relaxed load, and a signal only when the
-/// backlog is non-empty. The idle loop is the right wake source precisely because it covers the
-/// case the stattick safe-point test cannot -- a cpu with nothing in user mode to interrupt.
+/// Cheap enough for every idle-loop pass and every exit: one relaxed load, and a signal only
+/// when the backlog is non-empty.
 pub fn notify() {
-    if EXITED_BACKLOG.load(Ordering::Relaxed) == 0 {
+    let backlog = EXITED_BACKLOG.load(Ordering::Relaxed);
+    if backlog == 0 {
         return;
     }
     if let Some(r) = REAPER.poll() {
+        if backlog >= BACKLOG_HIGH {
+            if let Some(th) = THREAD.poll() {
+                th.donate_priority(Priority::REALTIME);
+            }
+        }
         r.cv.signal();
     }
 }

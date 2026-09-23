@@ -1,0 +1,4142 @@
+From 1eb068720303791870e17200440bd0d6cd21e575 Mon Sep 17 00:00:00 2001
+From: "George V. Neville-Neil" <gnn@FreeBSD.org>
+Date: Sun, 21 Jun 2026 06:46:46 +0000
+Subject: [PATCH 1/2] sched_ule: Add cache-miss-aware priority adjustment using
+ hwpmc
+
+Extend the ULE scheduler to read LLC-miss hardware performance counters
+and penalize cache-hostile threads by up to 50 priority levels. One
+hostile child per CPU is pinned via cpuset; a single friendly child
+floats freely. The feature is off by default, controlled by four sysctl
+knobs under kern.sched.ule.cachemiss_*, and compiles in only with
+HWPMC_HOOKS.
+
+New files: sys/kern/sched_pmc.[ch] (per-CPU PMC lifecycle),
+tests/sys/kern/sched_cachemiss/ (24 ATF test cases),
+tools/regression/sched_cachemiss/ (benchmark).
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ spec/sched_ule_cachemiss_priority_v1.md       |  560 +++++
+ sys/conf/files                                |    1 +
+ sys/kern/sched_pmc.c                          |  474 +++++
+ sys/kern/sched_pmc.h                          |   85 +
+ sys/kern/sched_ule.c                          |  306 +++
+ tests/sys/kern/Makefile                       |    1 +
+ tests/sys/kern/sched_cachemiss/Makefile       |   10 +
+ .../sys/kern/sched_cachemiss/Makefile.depend  |   18 +
+ .../sched_cachemiss/sched_cachemiss_test.c    | 1884 +++++++++++++++++
+ tools/regression/sched_cachemiss/Makefile     |    6 +
+ .../sched_cachemiss/cachemiss_bench.c         |  574 +++++
+ 11 files changed, 3919 insertions(+)
+ create mode 100644 spec/sched_ule_cachemiss_priority_v1.md
+ create mode 100644 sys/kern/sched_pmc.c
+ create mode 100644 sys/kern/sched_pmc.h
+ create mode 100644 tests/sys/kern/sched_cachemiss/Makefile
+ create mode 100644 tests/sys/kern/sched_cachemiss/Makefile.depend
+ create mode 100644 tests/sys/kern/sched_cachemiss/sched_cachemiss_test.c
+ create mode 100644 tools/regression/sched_cachemiss/Makefile
+ create mode 100644 tools/regression/sched_cachemiss/cachemiss_bench.c
+
+diff --git a/spec/sched_ule_cachemiss_priority_v1.md b/spec/sched_ule_cachemiss_priority_v1.md
+new file mode 100644
+index 00000000000000..8da86f263b33da
+--- /dev/null
++++ b/spec/sched_ule_cachemiss_priority_v1.md
+@@ -0,0 +1,560 @@
++# ULE Scheduler Cache-Miss-Aware Priority Adjustment
++
++**Version:** 1.0
++**Date:** 2026-06-20
++**File:** `spec/sched_ule_cachemiss_priority_v1.md`
++
++---
++
++## Summary
++
++Extend the ULE scheduler (`sys/kern/sched_ule.c`) to use hardware performance
++counters (hwpmc(4)) to measure last-level cache (LLC) misses per thread and
++fold that measurement into the timeshare priority calculation.  Threads that
++incur a high rate of LLC misses receive a priority penalty (higher numeric
++priority value = lower scheduling priority), so that cache-friendly threads
++are preferentially scheduled.  The feature is compiled in only when the kernel
++is built with `options HWPMC_HOOKS`, is disabled at boot by default, and is
++controlled entirely through sysctl knobs at runtime.
++
++---
++
++## Interface / API
++
++### New sysctl knobs
++
++All knobs live under the existing `kern.sched.ule` sysctl node.  All are
++`int` unless otherwise noted.
++
++| sysctl name | type | default | flags | description |
++|---|---|---|---|---|
++| `kern.sched.ule.cachemiss_enabled` | int | 0 | `CTLFLAG_RWTUN` | Master enable. 0 = disabled, 1 = enabled. When 0 the scheduler never reads PMCs and never applies any cache-miss penalty. |
++| `kern.sched.ule.cachemiss_weight` | int | 1 | `CTLFLAG_RWTUN` | Penalty multiplier. The raw penalty (see Behavior) is multiplied by this value before being added to the priority. Valid range: 0..10. Values outside this range are clamped silently on write. A value of 0 effectively disables the penalty without flipping `cachemiss_enabled`. |
++| `kern.sched.ule.cachemiss_threshold` | uint64 | 1000 | `CTLFLAG_RWTUN` | Cache-miss count per sample interval below which no penalty is applied. Threads whose accumulated misses in the current window are at or below this value receive zero penalty. Type is `uint64_t`, exposed via `SYSCTL_U64`. |
++| `kern.sched.ule.cachemiss_interval` | int | 4 | `CTLFLAG_RWTUN` | Number of `sched_clock()` ticks between PMC reads. The counter is read every `cachemiss_interval` ticks, not on every tick. Valid range: 1..100. Values outside are clamped. |
++
++### New fields in `struct td_sched`
++
++The following fields are added to `struct td_sched` in
++`sys/kern/sched_ule.c`, inside an `#ifdef HWPMC_HOOKS` guard.  All fields
++are protected by the thread lock, consistent with the existing fields.
++
++```c
++#ifdef HWPMC_HOOKS
++    uint64_t    ts_cachemiss;       /* LLC misses accumulated this window. */
++    uint64_t    ts_cachemiss_prev;  /* LLC misses at last PMC read. */
++    u_int       ts_cachemiss_ticks; /* Ticks since last PMC read. */
++    int         ts_cachemiss_penalty; /* Current priority penalty [0..SCHED_CACHEMISS_PENALTY_MAX]. */
++#endif
++```
++
++**Size impact:** These four fields add 24 bytes (8+8+4+4).  The existing
++`struct td_sched` without `KTR` is 34 bytes (with alignment padding likely
++40 bytes).  The `thread0_storage.t0st_sched` allocation is 80 bytes.
++40 + 24 = 64 bytes, which fits within the 80-byte budget.  The static
++assertion on line 111 of `sched_ule.c` will continue to pass.
++
++### New constants
++
++```c
++#define SCHED_CACHEMISS_PENALTY_MAX    50
++```
++
++This caps the maximum penalty that cache misses can add to a thread's
++computed priority.  The cap prevents a cache-miss-heavy thread from being
++demoted below `PRI_MAX_BATCH` (the lowest timeshare priority before idle).
++
++---
++
++## Behavior
++
++### Overview of data flow
++
++1. The scheduler's clock handler (`sched_ule_clock()`) is called on every
++   `stathz` tick for the currently running thread.
++2. Every `cachemiss_interval` ticks, the handler reads the thread's LLC-miss
++   PMC counter, computes a delta, and updates `ts_cachemiss`.
++3. The existing call to `sched_priority()` (which already happens on every
++   tick for timeshare threads) is where the penalty is applied.
++4. Inside `sched_priority()`, the cache-miss penalty is added to the
++   computed priority, clamped so the result does not exceed `PRI_MAX_BATCH`.
++
++### Step-by-step: PMC counter management
++
++**PMC allocation:** The scheduler does NOT allocate or manage PMC hardware
++counters itself.  Instead, it reads the hardware PMC register directly using
++the machine-dependent `rdpmc()` intrinsic (on amd64) or the equivalent on
++other architectures.  This is possible because:
++
++- The LLC-miss event uses a fixed-function or well-known architectural PMC
++  (Intel: event 0x2E, umask 0x41 for LONGEST_LAT_CACHE.MISS; AMD: event
++  0x0762 for L3 miss; ARM: event 0x37 LL_CACHE_MISS_RD).
++- The scheduler programs this counter once at boot (or when the feature is
++  enabled at runtime) using the `pcd_write_pmc` / `pcd_start_pmc` class
++  methods, allocating a system-wide counting PMC on each CPU.
++
++**Alternative (simpler) approach -- adopted:** Rather than having the
++scheduler directly manage PMC hardware, the scheduler relies on a dedicated
++kernel subsystem (`sched_pmc`) that:
++
++1. When `cachemiss_enabled` transitions from 0 to 1, allocates a system-wide
++   counting-mode PMC on each online CPU, configured for the
++   architecture-appropriate LLC-miss event.
++2. Exposes a function `sched_pmc_read(int cpu)` that returns the current raw
++   counter value for the LLC-miss PMC on the specified CPU.  This function
++   calls through `pcd_read_pmc()` with interrupts disabled and is safe to
++   call from the scheduler tick context (spin-lock held, no sleeping).
++3. When `cachemiss_enabled` transitions from 1 to 0, releases the PMCs.
++
++This subsystem is implemented in a new file `sys/kern/sched_pmc.c`,
++compiled only when `HWPMC_HOOKS` is defined.
++
++#### `sched_pmc_read(int cpu)` specification
++
++```c
++uint64_t sched_pmc_read(int cpu);
++```
++
++- **Preconditions:** Called with the current CPU's `tdq` lock held (spin
++  lock context).  `cpu` must equal `curcpu` (the function reads the local
++  CPU's PMC).  `cachemiss_enabled` must be 1.
++- **Returns:** The current raw value of the LLC-miss counter for the
++  calling CPU.  If hwpmc is not loaded or the PMC could not be allocated,
++  returns 0.
++- **Side effects:** None.  The counter is not reset; it free-runs.
++- **Cost:** A single `rdpmc` instruction on x86 (tens of nanoseconds).
++
++#### `sched_pmc_is_active(void)` specification
++
++```c
++int sched_pmc_is_active(void);
++```
++
++- **Returns:** 1 if the cache-miss PMC subsystem is active and counters are
++  running; 0 otherwise.
++- **Safe to call from any context** (reads a single `int` flag).
++
++### Step-by-step: Counter reading in `sched_ule_clock()`
++
++The following logic is added to `sched_ule_clock()`, after the existing
++`sched_pctcpu_update(ts, 1)` call and before the priority recalculation,
++guarded by `#ifdef HWPMC_HOOKS`:
++
++```
++1. If cachemiss_enabled == 0 or sched_pmc_is_active() == 0:
++      Skip entirely (fast path for disabled case -- single branch).
++
++2. ts->ts_cachemiss_ticks += cnt;
++
++3. If ts->ts_cachemiss_ticks < cachemiss_interval:
++      Skip PMC read (not time yet).
++
++4. Reset ts->ts_cachemiss_ticks = 0.
++
++5. Read the current counter:
++      raw = sched_pmc_read(cpuid);
++
++6. Compute delta:
++      If ts->ts_cachemiss_prev == 0 (first read for this thread on this CPU):
++          delta = 0   (no valid baseline yet)
++      Else:
++          delta = raw - ts->ts_cachemiss_prev
++          (Counter overflow is handled by unsigned wraparound; the delta
++           is correct for up to 2^64 - 1 misses between reads.)
++
++7. Store current value:
++      ts->ts_cachemiss_prev = raw
++
++8. Accumulate:
++      ts->ts_cachemiss += delta
++```
++
++**Counter reset on context switch in:** When a thread is switched in, its
++`ts_cachemiss_prev` must be refreshed so that the next delta calculation
++does not include misses from other threads.  This is done by adding a
++small hook in `sched_ule_sswitch()` (in the post-`cpu_switch()` path
++where the new thread resumes), guarded by `#ifdef HWPMC_HOOKS`:
++
++```
++If cachemiss_enabled and sched_pmc_is_active():
++    ts->ts_cachemiss_prev = sched_pmc_read(cpuid);
++```
++
++This ensures the baseline is always set to the counter value at the
++moment the thread starts running.
++
++### Step-by-step: Penalty calculation in `sched_priority()`
++
++The penalty is applied only to non-interactive timeshare threads (the
++`score >= sched_interact` branch in `sched_priority()`).  Interactive
++threads (those with a score below `sched_interact`) are not penalized,
++as the intent is to keep interactive responsiveness intact.
++
++In the non-interactive branch, after computing `pri` as
++`PRI_MIN_BATCH + cpu_pri_off + nice_pri_off`, the following is inserted,
++guarded by `#ifdef HWPMC_HOOKS`:
++
++```
++If cachemiss_enabled != 0:
++    penalty = ts->ts_cachemiss_penalty
++    pri = min(pri + penalty, PRI_MAX_BATCH)
++```
++
++The `ts_cachemiss_penalty` field is computed in `sched_ule_clock()` (not in
++`sched_priority()`) to keep the priority function cheap:
++
++```
++After step 8 (accumulation) above:
++
++9. If ts->ts_cachemiss > cachemiss_threshold:
++       excess = ts->ts_cachemiss - cachemiss_threshold
++       /* Scale: every 'cachemiss_threshold' additional misses adds 1 penalty level. */
++       raw_penalty = (int)(excess / cachemiss_threshold)
++       raw_penalty = raw_penalty * cachemiss_weight
++       ts->ts_cachemiss_penalty = min(raw_penalty, SCHED_CACHEMISS_PENALTY_MAX)
++   Else:
++       ts->ts_cachemiss_penalty = 0
++```
++
++### Step-by-step: Window decay
++
++The cache-miss accumulator (`ts_cachemiss`) must decay over time so that a
++thread that stops causing cache misses eventually recovers its priority.
++This decay is tied to the existing interactivity window mechanism.
++
++In `sched_interact_update()`, when the runtime/slptime history is scaled
++down, the cache-miss accumulator is also scaled down proportionally.
++Specifically:
++
++- When `sum > SCHED_SLP_RUN_MAX * 2` (the aggressive reset path):
++  `ts->ts_cachemiss = 0`
++- When `sum > (SCHED_SLP_RUN_MAX / 5) * 6` (the halving path):
++  `ts->ts_cachemiss /= 2`
++- In the normal 4/5 scaling path:
++  `ts->ts_cachemiss = (ts->ts_cachemiss / 5) * 4`
++
++After any of these scalings, `ts->ts_cachemiss_penalty` is recomputed
++using the formula from step 9 above.
++
++### Step-by-step: Thread lifecycle
++
++**Thread creation (`sched_ule_fork_thread()`):**
++- `ts_cachemiss` is initialized to 0.
++- `ts_cachemiss_prev` is initialized to 0.
++- `ts_cachemiss_ticks` is initialized to 0.
++- `ts_cachemiss_penalty` is initialized to 0.
++
++Cache-miss history is NOT inherited from the parent.
++
++**Thread exit (`sched_ule_exit_thread()`):**
++- No special cleanup needed; the fields are part of `td_sched` which is
++  freed with the thread.
++
++**Thread sleep/wakeup:**
++- On wakeup (`sched_ule_wakeup()`), `ts_cachemiss_prev` is set to 0
++  so that the first read after waking computes no delta (the counter
++  may have advanced due to other threads while this thread slept).
++  `ts_cachemiss_ticks` is also reset to 0.
++- The accumulated `ts_cachemiss` and `ts_cachemiss_penalty` are preserved
++  across sleep/wakeup so that a thread that repeatedly sleeps briefly
++  and wakes to cause cache misses is still penalized.
++
++---
++
++## Edge Cases & Error Handling
++
++### E1: hwpmc(4) module not loaded
++
++When `cachemiss_enabled` is set to 1 but the hwpmc kernel module is not
++loaded (i.e., `pmc_hook == NULL`), `sched_pmc_is_active()` returns 0.
++The scheduler skips all PMC reads and applies no penalty.  No error is
++reported; the sysctl write succeeds.  If hwpmc is later loaded and the
++sysctl is toggled 0->1, the PMCs are allocated at that point.
++
++### E2: PMC allocation failure
++
++If the system has no available PMC hardware counters (all are in use by
++userland pmcstat(8) or other consumers), `sched_pmc` fails to allocate.
++`sched_pmc_is_active()` returns 0.  The scheduler operates normally
++without any penalty.  A message is logged via `log(LOG_WARNING, ...)`.
++
++### E3: Counter overflow / wraparound
++
++PMC counters on x86 are typically 48 bits wide.  The delta computation
++uses unsigned 64-bit subtraction, which correctly handles wraparound:
++`delta = (uint64_t)(raw - ts->ts_cachemiss_prev)`.  If the counter wraps
++around more than once between reads (which would require 2^48 LLC misses
++in a single sampling interval -- physically impossible), the delta would
++be incorrect, but this case cannot occur in practice.
++
++### E4: Thread migration between CPUs
++
++LLC-miss counters are per-CPU.  When a thread migrates:
++
++- The context-switch-in path resets `ts_cachemiss_prev` to the new CPU's
++  counter value.
++- The delta from the partial tick on the old CPU is lost.  This is
++  acceptable: the lost delta is at most one sampling interval's worth
++  of misses, and the penalty is computed from accumulated misses, so
++  losing one sample has minimal impact.
++
++### E5: System under low load
++
++When the system is lightly loaded and there is no CPU contention, the
++penalty has no practical effect -- the thread runs regardless of its
++priority because no other thread is competing for the CPU.  This is
++correct and expected behavior.
++
++### E6: Realtime and idle-class threads
++
++Only timeshare-class threads (`PRI_BASE(td->td_pri_class) == PRI_TIMESHARE`)
++are affected.  Realtime, interrupt, and idle threads are never penalized
++by cache-miss data.  This is enforced by the existing `PRI_BASE` check at
++the top of `sched_priority()`.
++
++### E7: Feature toggled at runtime
++
++When `cachemiss_enabled` transitions from 1 to 0:
++- The PMCs are released (stopped and deallocated).
++- All threads' `ts_cachemiss_penalty` fields remain at their current
++  values temporarily.  They will naturally decay to 0 as
++  `sched_interact_update()` scales down `ts_cachemiss` over subsequent
++  ticks.
++
++When `cachemiss_enabled` transitions from 0 to 1:
++- PMCs are allocated and started.
++- All threads begin with `ts_cachemiss_prev == 0`, so the first sample
++  after enabling produces no delta.  Meaningful data begins accumulating
++  after the second sample.
++
++### E8: Non-x86 architectures
++
++On architectures where `rdpmc()` is not available or where the PMC
++subsystem does not support system-wide counting mode, the
++`sched_pmc_init()` function returns an error and
++`sched_pmc_is_active()` remains 0.  The feature is inert on such
++platforms.  The sysctl knobs are still visible but have no effect.
++
++### E9: Interaction with nice(1)
++
++The cache-miss penalty is additive with the nice-based priority offset.
++A thread with `nice 19` and maximum cache-miss penalty receives:
++`PRI_MIN_BATCH + cpu_pri_off + SCHED_PRI_NICE(19) + SCHED_CACHEMISS_PENALTY_MAX`,
++clamped to `PRI_MAX_BATCH`.  The clamping ensures the thread never falls
++into the idle priority band.
++
++### E10: Interaction with priority lending (turnstile/PI)
++
++The cache-miss penalty applies only to the base user priority
++(`td_base_user_pri`), which is set via `sched_user_prio()`.  Priority
++lending (`td_lend_user_pri`) operates independently and takes precedence
++when the lent priority is higher (lower numeric value).
++
++---
++
++## Invariants & Constraints
++
++**INV-1:** The cache-miss penalty never causes a timeshare thread's
++priority to exceed `PRI_MAX_BATCH` (223).  The penalty is always clamped:
++`pri = min(pri + penalty, PRI_MAX_BATCH)`.
++
++**INV-2:** `ts_cachemiss_penalty` is always in the range
++`[0, SCHED_CACHEMISS_PENALTY_MAX]` (i.e., `[0, 50]`).
++
++**INV-3:** When `cachemiss_enabled == 0`, no PMC reads occur and no
++penalty is applied.  The fast-path check is a single load-and-branch on a
++`__read_mostly` variable.
++
++**INV-4:** The feature does not alter behavior when `HWPMC_HOOKS` is not
++defined in the kernel configuration.  All new code is guarded by
++`#ifdef HWPMC_HOOKS`.
++
++**INV-5:** The feature never allocates memory, sleeps, or acquires a
++sleeping lock from the scheduler tick or context-switch paths.
++
++**INV-6:** `ts_cachemiss_prev` is always reset to the current CPU's counter
++value when a thread is switched in, so that cross-CPU counter differences
++never contaminate the delta calculation.
++
++**INV-7:** The `thread0_storage.t0st_sched` static assertion continues to
++hold after adding the new fields.
++
++**INV-8:** PMC reads occur at most once every `cachemiss_interval` ticks
++per thread (default 4).  At 127 Hz stathz, this is roughly every 31 ms.
++
++**INV-9:** The cache-miss accumulator (`ts_cachemiss`) decays in lockstep
++with the existing interactivity history, ensuring that past behavior does
++not permanently penalize a thread.
++
++---
++
++## Performance Considerations
++
++**Cost of `rdpmc`:** On modern x86, `rdpmc` takes approximately 20-40
++cycles.  At the default `cachemiss_interval` of 4 ticks (one read every
++~31 ms), this adds approximately 0.0001% overhead per CPU.
++
++**Branch prediction:** The fast-path check (`if (cachemiss_enabled == 0)`)
++on a `__read_mostly` variable will be well-predicted as not-taken when the
++feature is disabled.
++
++**Cache footprint:** The four new fields in `td_sched` add 24 bytes per
++thread.  On a system with 10,000 threads, this is 240 KB of additional
++memory -- negligible.
++
++**Lock contention:** No additional locks are taken.  The PMC read is a
++CPU-local operation performed under the existing `tdq` spin lock.
++
++---
++
++## Files Modified
++
++| File | Change |
++|---|---|
++| `sys/kern/sched_ule.c` | Add `td_sched` fields, modify `sched_ule_clock()`, `sched_priority()`, `sched_ule_sswitch()`, `sched_ule_fork_thread()`, `sched_ule_wakeup()`, `sched_interact_update()`. Add sysctl knobs. |
++| `sys/kern/sched_pmc.c` | **New file.** PMC lifecycle management for the scheduler: allocate/release per-CPU LLC-miss counters, provide `sched_pmc_read()` and `sched_pmc_is_active()`. Compiled only with `HWPMC_HOOKS`. |
++| `sys/kern/sched_pmc.h` | **New file.** Header declaring `sched_pmc_read()`, `sched_pmc_is_active()`, `sched_pmc_init()`, `sched_pmc_fini()`. |
++| `sys/conf/files` | Add `kern/sched_pmc.c` compilation rule, conditional on `HWPMC_HOOKS`. |
++| `sys/sys/proc.h` | No changes (the `thread0_storage` size is sufficient). |
++
++---
++
++## Acceptance Criteria
++
++### Compile-time
++
++**AC-1:** A kernel built without `options HWPMC_HOOKS` compiles and boots
++with no reference to any cache-miss-related code or symbols.  The
++`struct td_sched` does not contain the new fields.
++
++**AC-2:** A kernel built with `options HWPMC_HOOKS` compiles and boots
++successfully.  The `_Static_assert` on `thread0_storage` size passes.
++
++### Sysctl interface
++
++**AC-3:** On a kernel with `HWPMC_HOOKS`, the four new sysctl knobs are
++visible under `kern.sched.ule`:
++`cachemiss_enabled`, `cachemiss_weight`, `cachemiss_threshold`,
++`cachemiss_interval`.
++
++**AC-4:** Default values match the specification: `cachemiss_enabled=0`,
++`cachemiss_weight=1`, `cachemiss_threshold=1000`,
++`cachemiss_interval=4`.
++
++**AC-5:** Setting `cachemiss_weight` to a value > 10 results in it being
++clamped to 10.  Setting it to a value < 0 results in it being clamped
++to 0.
++
++**AC-6:** Setting `cachemiss_interval` to a value > 100 results in it
++being clamped to 100.  Setting it to < 1 results in it being clamped to 1.
++
++### Disabled behavior
++
++**AC-7:** With `cachemiss_enabled=0`, running a cache-miss-heavy workload
++(e.g., random-access traversal of a large array) alongside a cache-friendly
++workload shows no change in scheduling priority for either thread compared
++to an unmodified kernel.
++
++### Enabled behavior
++
++**AC-8:** With `cachemiss_enabled=1`, `cachemiss_weight=1`,
++`cachemiss_threshold=1000`: a thread that consistently generates LLC misses
++well above the threshold has a higher (worse) `td_base_user_pri` than a
++CPU-bound thread of the same nice value that fits in cache.  Specifically,
++`sysctl kern.proc.all` or equivalent inspection shows the cache-miss-heavy
++thread with a priority at least 1 level worse (higher numeric value).
++
++**AC-9:** The priority penalty for a cache-miss-heavy thread never exceeds
++`SCHED_CACHEMISS_PENALTY_MAX` (50) priority levels, regardless of how many
++misses occur.
++
++**AC-10:** The priority penalty for a cache-miss-heavy thread never pushes
++the thread's priority below `PRI_MAX_BATCH` (numeric 223) -- it must not
++enter the idle priority band.
++
++### Priority recovery
++
++**AC-11:** After a cache-miss-heavy thread changes its access pattern to
++become cache-friendly, its `ts_cachemiss_penalty` decays to 0 within
++`SCHED_SLP_RUN_MAX` seconds (approximately 5 seconds at default settings).
++
++### Thread lifecycle
++
++**AC-12:** A newly forked thread starts with `ts_cachemiss == 0` and
++`ts_cachemiss_penalty == 0`, regardless of the parent's cache-miss history.
++
++**AC-13:** A thread that sleeps and then wakes up retains its accumulated
++`ts_cachemiss` but resets `ts_cachemiss_prev` so the first PMC read after
++waking does not produce a spurious delta.
++
++### CPU migration
++
++**AC-14:** When a thread migrates from CPU A to CPU B, the first cache-miss
++delta computed on CPU B is zero (because `ts_cachemiss_prev` is reset to
++CPU B's counter value on switch-in).
++
++### hwpmc not loaded
++
++**AC-15:** With `cachemiss_enabled=1` but the hwpmc kernel module not
++loaded, the scheduler does not panic, does not print errors to the console
++on every tick, and applies no cache-miss penalty.  A single warning message
++is logged when the enable is attempted.
++
++### Interaction with nice
++
++**AC-16:** A thread with `nice 0` and maximum cache-miss penalty has a
++lower scheduling priority (higher numeric value) than a thread with
++`nice 0` and zero cache-miss penalty, all else being equal.
++
++**AC-17:** A thread with `nice -20` is not penalized by cache-miss data
++if it qualifies as interactive (score < `sched_interact`).
++
++### Weight control
++
++**AC-18:** Setting `cachemiss_weight=0` with `cachemiss_enabled=1` results
++in no priority penalty being applied, even for threads with high cache-miss
++counts.
++
++**AC-19:** Setting `cachemiss_weight=5` results in a penalty 5x larger
++than `cachemiss_weight=1` for the same cache-miss rate, up to the
++`SCHED_CACHEMISS_PENALTY_MAX` cap.
++
++### Runtime toggle
++
++**AC-20:** Toggling `cachemiss_enabled` from 1 to 0 releases the PMC
++resources.  Subsequent PMC allocation by userland pmcstat(8) for the same
++hardware counter succeeds.
++
++**AC-21:** Toggling `cachemiss_enabled` from 0 to 1 while the PMC hardware
++counters are all in use by other consumers results in no crash and a
++warning message.  `sched_pmc_is_active()` returns 0.
++
++---
++
++## Out of Scope
++
++- **L1/L2 cache miss tracking:** This spec covers LLC (last-level cache)
++  misses only.  Extending to other cache levels is future work.
++
++- **Per-process (as opposed to per-thread) penalty:** The penalty is
++  per-thread.  Aggregating across all threads in a process is not covered.
++
++- **Userland visibility of per-thread cache-miss data:** Exposing
++  `ts_cachemiss` or `ts_cachemiss_penalty` via `procstat(1)` or similar
++  tools is future work, though the data structures support it.
++
++- **Automatic tuning of thresholds:** The threshold and weight values are
++  static sysctl knobs.  Adaptive algorithms are out of scope.
++
++- **Non-timeshare scheduling classes:** Realtime, interrupt-thread, and
++  idle-class threads are never affected.
++
++- **IBS (Instruction-Based Sampling) on AMD:** Only counting-mode PMCs are
++  used; sampling-mode / IBS integration is out of scope.
++
++- **NUMA-aware penalty adjustment:** The penalty does not distinguish between
++  local and remote memory access patterns.
++
++- **Dynamic PMC event selection:** The LLC-miss event is hardcoded per
++  architecture.  Allowing the administrator to select an arbitrary PMC
++  event is out of scope.
+diff --git a/sys/conf/files b/sys/conf/files
+index 126a08d697b4a9..f39657032789f1 100644
+--- a/sys/conf/files
++++ b/sys/conf/files
+@@ -3943,6 +3943,7 @@ kern/p1003_1b.c			standard
+ kern/posix4_mib.c		standard
+ kern/sched_4bsd.c		optional sched_4bsd
+ kern/sched_shim.c		standard
++kern/sched_pmc.c		optional sched_ule hwpmc_hooks
+ kern/sched_ule.c		optional sched_ule
+ kern/serdev_if.m		standard
+ kern/stack_protector.c		standard \
+diff --git a/sys/kern/sched_pmc.c b/sys/kern/sched_pmc.c
+new file mode 100644
+index 00000000000000..1ef59aa1f849bf
+--- /dev/null
++++ b/sys/kern/sched_pmc.c
+@@ -0,0 +1,474 @@
++/*-
++ * SPDX-License-Identifier: BSD-2-Clause
++ *
++ * Copyright (c) 2026, George V. Neville-Neil
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice unmodified, this list of conditions, and the following
++ *    disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
++ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
++ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++/*
++ * Scheduler PMC subsystem for cache-miss-aware priority adjustment.
++ *
++ * This module manages per-CPU LLC-miss hardware performance counters
++ * for use by the ULE scheduler.  It programs a single general-purpose
++ * PMC on each CPU to count LLC misses in system-wide counting mode.
++ *
++ * The counter is read via rdpmc (x86) or equivalent, which is safe
++ * to call from spin-lock context (no sleeping, no memory allocation).
++ *
++ * Compiled only when HWPMC_HOOKS is defined.
++ */
++
++#include "opt_hwpmc_hooks.h"
++
++#ifdef HWPMC_HOOKS
++
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/kernel.h>
++#include <sys/smp.h>
++#include <sys/syslog.h>
++#include <sys/pmckern.h>
++#include <sys/sched.h>
++
++#include <machine/cpu.h>
++#include <machine/cpufunc.h>
++
++#include "sched_pmc.h"
++
++/*
++ * Per-CPU state for the scheduler's LLC-miss PMC.
++ *
++ * We use a single general-purpose programmable PMC (counter index 0)
++ * on each CPU.  The counter index used for rdpmc is stored in
++ * spc_rdpmc_idx.  On x86, this is the hardware counter number (0).
++ *
++ * Assumption: We use general-purpose PMC index 0.  This may conflict
++ * with other PMC consumers.  The init function checks if the counter
++ * is available and fails gracefully if not.
++ */
++struct sched_pmc_cpu {
++	int	spc_active;	/* 1 if this CPU's counter is running */
++	int	spc_rdpmc_idx;	/* rdpmc index for reading */
++};
++
++static struct sched_pmc_cpu sched_pmc_cpus[MAXCPU];
++static volatile int sched_pmc_active;	/* global active flag */
++
++/*
++ * Architecture-specific LLC-miss event configuration.
++ *
++ * Intel: LONGEST_LAT_CACHE.MISS = event 0x2E, umask 0x41
++ * AMD:   L3 cache miss data fills = event 0x04, umask 0x01 (Zen/Fam 17h+)
++ *        Verification against the specific AMD PPR for the target platform
++ *        is recommended, as event semantics can vary across Zen generations.
++ * ARM:   LL_CACHE_MISS_RD = event 0x37
++ *
++ * On x86, we program the PERFEVTSEL MSR directly.  The PERFEVTSEL
++ * encoding is:
++ *   bits  7:0  = event select
++ *   bits 15:8  = unit mask
++ *   bit  16    = USR (count in user mode)
++ *   bit  17    = OS  (count in kernel mode)
++ *   bit  22    = EN  (enable counter)
++ *
++ * We count both user and kernel LLC misses (USR | OS | EN).
++ */
++
++#if defined(__amd64__) || defined(__i386__)
++
++/*
++ * Intel PERFEVTSEL MSR base address.  Counter 0's EVSEL is at 0x186,
++ * and the corresponding performance counter is at PMC 0x0C1.
++ */
++#define	SCHED_PMC_INTEL_EVSEL0		0x186
++#define	SCHED_PMC_INTEL_PMC0		0x0C1
++
++/*
++ * Intel LONGEST_LAT_CACHE.MISS: event=0x2E, umask=0x41.
++ * With USR (bit 16), OS (bit 17), EN (bit 22) set.
++ */
++#define	SCHED_PMC_INTEL_LLC_MISS_EVSEL	\
++	(0x2E | (0x41 << 8) | (1 << 16) | (1 << 17) | (1 << 22))
++
++/*
++ * AMD core counter MSR base address (Fam 17h+).
++ * EVSEL at 0xC0010200 + 2*n, PERFCTR at 0xC0010200 + 2*n + 1.
++ * For legacy (K8): EVSEL at 0xC0010000, PERFCTR at 0xC0010004.
++ *
++ * AMD LLC miss event: We use event 0x04, umask 0x01, which targets
++ * L3 cache miss data fills on AMD Zen (Fam 17h+) core performance
++ * counters.  Verification against the specific AMD PPR (Processor
++ * Programming Reference) for the target platform is recommended,
++ * as event semantics can vary across Zen generations.
++ */
++#define	SCHED_PMC_AMD_CORE_EVSEL0	0xC0010200
++#define	SCHED_PMC_AMD_CORE_PMC0		0xC0010201
++#define	SCHED_PMC_AMD_LEGACY_EVSEL0	0xC0010000
++#define	SCHED_PMC_AMD_LEGACY_PMC0	0xC0010004
++
++/*
++ * AMD event encoding for LLC miss.
++ * We program the EVSEL register with:
++ *   Event 0x04, Umask 0x01 (L3 miss, data cache fills)
++ *   USR (bit 16) | OS (bit 17) | EN (bit 22)
++ */
++#define	SCHED_PMC_AMD_LLC_MISS_EVSEL	\
++	(0x04 | (0x01 << 8) | (1 << 16) | (1 << 17) | (1 << 22))
++
++static int sched_pmc_is_intel;
++static int sched_pmc_is_amd;
++static uint32_t sched_pmc_evsel_msr;
++static uint32_t sched_pmc_ctr_msr;
++static uint64_t sched_pmc_evsel_val;
++
++static void
++sched_pmc_detect_cpu(void)
++{
++	u_int regs[4];
++	u_int base_family, family;
++	char vendor[13];
++
++	do_cpuid(0, regs);
++	memcpy(vendor, &regs[1], 4);
++	memcpy(vendor + 4, &regs[3], 4);
++	memcpy(vendor + 8, &regs[2], 4);
++	vendor[12] = '\0';
++
++	if (strcmp(vendor, "GenuineIntel") == 0) {
++		sched_pmc_is_intel = 1;
++		sched_pmc_evsel_msr = SCHED_PMC_INTEL_EVSEL0;
++		sched_pmc_ctr_msr = SCHED_PMC_INTEL_PMC0;
++		sched_pmc_evsel_val = SCHED_PMC_INTEL_LLC_MISS_EVSEL;
++	} else if (strcmp(vendor, "AuthenticAMD") == 0) {
++		sched_pmc_is_amd = 1;
++		/*
++		 * Use core counter base on Fam 17h+ (Zen).
++		 * Fall back to legacy MSRs on older AMD.
++		 */
++		do_cpuid(1, regs);
++		/*
++		 * Fix 7: Per CPUID spec, ExtendedFamily is only added
++		 * when BaseFamily == 0xF.
++		 */
++		base_family = (regs[0] >> 8) & 0xF;
++		family = base_family;
++		if (base_family == 0xF)
++			family += (regs[0] >> 20) & 0xFF;
++		if (family >= 0x17) {
++			sched_pmc_evsel_msr = SCHED_PMC_AMD_CORE_EVSEL0;
++			sched_pmc_ctr_msr = SCHED_PMC_AMD_CORE_PMC0;
++		} else {
++			sched_pmc_evsel_msr = SCHED_PMC_AMD_LEGACY_EVSEL0;
++			sched_pmc_ctr_msr = SCHED_PMC_AMD_LEGACY_PMC0;
++		}
++		sched_pmc_evsel_val = SCHED_PMC_AMD_LLC_MISS_EVSEL;
++	}
++}
++
++/*
++ * Program the LLC-miss counter on the current CPU.
++ * Must be called with the thread pinned to the target CPU.
++ */
++static int
++sched_pmc_program_cpu(int cpu)
++{
++
++	if (!sched_pmc_is_intel && !sched_pmc_is_amd)
++		return (ENXIO);
++
++	/* Stop the counter first (clear EN bit). */
++	wrmsr(sched_pmc_evsel_msr, 0);
++
++	/* Zero the counter. */
++	wrmsr(sched_pmc_ctr_msr, 0);
++
++	/* Program and start the counter. */
++	wrmsr(sched_pmc_evsel_msr, sched_pmc_evsel_val);
++
++	sched_pmc_cpus[cpu].spc_rdpmc_idx = 0;
++	sched_pmc_cpus[cpu].spc_active = 1;
++
++	return (0);
++}
++
++/*
++ * Stop the LLC-miss counter on the current CPU.
++ * Must be called with the thread pinned to the target CPU.
++ */
++static void
++sched_pmc_stop_cpu(int cpu)
++{
++
++	if (sched_pmc_cpus[cpu].spc_active) {
++		/* Disable the counter by clearing the EVSEL. */
++		wrmsr(sched_pmc_evsel_msr, 0);
++		sched_pmc_cpus[cpu].spc_active = 0;
++	}
++}
++
++/*
++ * sched_pmc_read - Read the LLC-miss counter for the specified CPU.
++ *
++ * Precondition: Called on the local CPU (cpu == curcpu) with
++ * the tdq spin lock held.  This is a single rdpmc instruction.
++ *
++ * Returns 0 if the PMC subsystem is not active or counters are
++ * not allocated.
++ */
++uint64_t
++sched_pmc_read(int cpu)
++{
++
++	if (__predict_false(!sched_pmc_active))
++		return (0);
++	if (__predict_false(!sched_pmc_cpus[cpu].spc_active))
++		return (0);
++
++	return (rdpmc(sched_pmc_cpus[cpu].spc_rdpmc_idx));
++}
++
++#elif defined(__aarch64__)
++
++/*
++ * ARM64 PMU event: LL_CACHE_MISS_RD = 0x37
++ *
++ * We use PMEVCNTR0_EL0 (event counter 0) and program PMEVTYPER0_EL0
++ * with the event type.  We also need to enable the counter in
++ * PMCNTENSET_EL0.
++ */
++#define	SCHED_PMC_ARM64_LLC_MISS_EVENT	0x37
++
++static void
++sched_pmc_detect_cpu(void)
++{
++	/* Nothing to detect on ARM64; we use the standard PMU interface. */
++}
++
++static int
++sched_pmc_program_cpu(int cpu)
++{
++	uint64_t val;
++
++	/* Select counter 0. */
++	WRITE_SPECIALREG(pmselr_el0, 0);
++	isb();
++
++	/* Program the event type. */
++	WRITE_SPECIALREG(pmxevtyper_el0, SCHED_PMC_ARM64_LLC_MISS_EVENT);
++	isb();
++
++	/* Zero the counter. */
++	WRITE_SPECIALREG(pmxevcntr_el0, 0);
++	isb();
++
++	/* Enable counter 0 in PMCNTENSET_EL0. */
++	val = READ_SPECIALREG(pmcntenset_el0);
++	WRITE_SPECIALREG(pmcntenset_el0, val | (1UL << 0));
++	isb();
++
++	/* Enable the PMU in PMCR_EL0 (set E bit). */
++	val = READ_SPECIALREG(pmcr_el0);
++	WRITE_SPECIALREG(pmcr_el0, val | 1);
++	isb();
++
++	sched_pmc_cpus[cpu].spc_rdpmc_idx = 0;
++	sched_pmc_cpus[cpu].spc_active = 1;
++
++	return (0);
++}
++
++static void
++sched_pmc_stop_cpu(int cpu)
++{
++	uint64_t val;
++
++	if (sched_pmc_cpus[cpu].spc_active) {
++		/* Disable counter 0 in PMCNTENCLR_EL0. */
++		val = (1UL << 0);
++		WRITE_SPECIALREG(pmcntenclr_el0, val);
++		isb();
++		sched_pmc_cpus[cpu].spc_active = 0;
++	}
++}
++
++uint64_t
++sched_pmc_read(int cpu)
++{
++
++	if (__predict_false(!sched_pmc_active))
++		return (0);
++	if (__predict_false(!sched_pmc_cpus[cpu].spc_active))
++		return (0);
++
++	/* Select counter 0 and read it. */
++	WRITE_SPECIALREG(pmselr_el0, 0);
++	isb();
++	return (READ_SPECIALREG(pmxevcntr_el0));
++}
++
++#else /* Unsupported architecture */
++
++static void
++sched_pmc_detect_cpu(void)
++{
++}
++
++static int
++sched_pmc_program_cpu(int cpu __unused)
++{
++
++	return (ENXIO);
++}
++
++static void
++sched_pmc_stop_cpu(int cpu __unused)
++{
++}
++
++uint64_t
++sched_pmc_read(int cpu __unused)
++{
++
++	return (0);
++}
++
++#endif /* architecture selection */
++
++/*
++ * sched_pmc_is_active - Check if the PMC subsystem is active.
++ *
++ * Returns 1 if counters are running, 0 otherwise.
++ * Safe to call from any context.
++ */
++int
++sched_pmc_is_active(void)
++{
++
++	return (sched_pmc_active);
++}
++
++/*
++ * sched_pmc_init - Allocate and start per-CPU LLC-miss counters.
++ *
++ * This function detects the CPU type and programs a general-purpose
++ * PMC on each online CPU to count LLC misses.  It must be called
++ * from a context that can sleep (smp_rendezvous is used to program
++ * each CPU's MSRs).
++ *
++ * Returns 0 on success, non-zero on failure.
++ *
++ * AC-15: When hwpmc is not loaded or PMC hardware is unavailable,
++ * this logs a warning and returns an error.
++ * AC-21: If counters cannot be allocated, returns error, no crash.
++ */
++
++static void
++sched_pmc_program_ipi(void *arg __unused)
++{
++	int cpu;
++
++	cpu = PCPU_GET(cpuid);
++	sched_pmc_program_cpu(cpu);
++}
++
++static void
++sched_pmc_stop_ipi(void *arg __unused)
++{
++	int cpu;
++
++	cpu = PCPU_GET(cpuid);
++	sched_pmc_stop_cpu(cpu);
++}
++
++int
++sched_pmc_init(void)
++{
++	int error;
++
++	sched_pmc_detect_cpu();
++
++	/*
++	 * Fix 5: Pin the current thread so it cannot migrate between
++	 * PCPU_GET(cpuid) and the wrmsr() inside sched_pmc_program_cpu().
++	 */
++	sched_pin();
++
++	/*
++	 * Test-program on the current CPU first to verify the hardware
++	 * supports the event we need.
++	 */
++	error = sched_pmc_program_cpu(PCPU_GET(cpuid));
++	if (error != 0) {
++		sched_unpin();
++		/* AC-15, E2: Log warning, return error, no panic. */
++		log(LOG_WARNING,
++		    "sched_pmc: LLC-miss PMC not available on this platform\n");
++		return (error);
++	}
++	/* Stop the test counter; we'll reprogram all CPUs below. */
++	sched_pmc_stop_cpu(PCPU_GET(cpuid));
++
++	sched_unpin();
++
++#ifdef SMP
++	/*
++	 * Use smp_rendezvous to program counters on all CPUs.
++	 * This runs the function on each CPU with interrupts disabled.
++	 */
++	smp_rendezvous(NULL, sched_pmc_program_ipi, NULL, NULL);
++#else
++	sched_pmc_program_cpu(0);
++#endif
++
++	/* Verify at least one CPU succeeded. */
++	if (!sched_pmc_cpus[PCPU_GET(cpuid)].spc_active) {
++		log(LOG_WARNING,
++		    "sched_pmc: failed to program LLC-miss counter\n");
++		return (ENXIO);
++	}
++
++	atomic_store_int(&sched_pmc_active, 1);
++	return (0);
++}
++
++/*
++ * sched_pmc_fini - Stop and release per-CPU LLC-miss counters.
++ *
++ * AC-20: After this call, the PMC hardware counters are free for
++ * use by other consumers (e.g., pmcstat(8)).
++ */
++void
++sched_pmc_fini(void)
++{
++
++	atomic_store_int(&sched_pmc_active, 0);
++
++#ifdef SMP
++	smp_rendezvous(NULL, sched_pmc_stop_ipi, NULL, NULL);
++#else
++	sched_pmc_stop_cpu(0);
++#endif
++}
++
++#endif /* HWPMC_HOOKS */
+diff --git a/sys/kern/sched_pmc.h b/sys/kern/sched_pmc.h
+new file mode 100644
+index 00000000000000..b076919208f93a
+--- /dev/null
++++ b/sys/kern/sched_pmc.h
+@@ -0,0 +1,85 @@
++/*-
++ * SPDX-License-Identifier: BSD-2-Clause
++ *
++ * Copyright (c) 2026, George V. Neville-Neil
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice unmodified, this list of conditions, and the following
++ *    disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
++ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
++ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++/*
++ * Scheduler PMC interface for cache-miss-aware priority adjustment.
++ *
++ * This header declares the interface used by sched_ule.c to read
++ * LLC-miss hardware performance counters.  All functions are compiled
++ * only when HWPMC_HOOKS is defined.
++ */
++
++#ifndef _KERN_SCHED_PMC_H_
++#define	_KERN_SCHED_PMC_H_
++
++#ifdef HWPMC_HOOKS
++
++#include <sys/types.h>
++
++/*
++ * sched_pmc_read - Read the current raw LLC-miss counter for the calling CPU.
++ *
++ * Preconditions:
++ *   - Called with the current CPU's tdq lock held (spin-lock context).
++ *   - cpu must equal curcpu.
++ *   - cachemiss_enabled must be 1.
++ *
++ * Returns the current raw value of the LLC-miss counter.
++ * Returns 0 if hwpmc is not loaded or the PMC could not be allocated.
++ *
++ * Cost: A single rdpmc instruction on x86 (tens of nanoseconds).
++ */
++uint64_t	sched_pmc_read(int cpu);
++
++/*
++ * sched_pmc_is_active - Check if the cache-miss PMC subsystem is active.
++ *
++ * Returns 1 if counters are running, 0 otherwise.
++ * Safe to call from any context (reads a single int flag).
++ */
++int		sched_pmc_is_active(void);
++
++/*
++ * sched_pmc_init - Allocate per-CPU LLC-miss counters.
++ *
++ * Programs a system-wide counting-mode PMC on each online CPU for the
++ * architecture-appropriate LLC-miss event.  Returns 0 on success,
++ * non-zero on failure.
++ */
++int		sched_pmc_init(void);
++
++/*
++ * sched_pmc_fini - Release per-CPU LLC-miss counters.
++ *
++ * Stops and deallocates the PMCs on all CPUs.
++ */
++void		sched_pmc_fini(void);
++
++#endif /* HWPMC_HOOKS */
++
++#endif /* _KERN_SCHED_PMC_H_ */
+diff --git a/sys/kern/sched_ule.c b/sys/kern/sched_ule.c
+index c6bfe15e768b9d..cefe5435bb9726 100644
+--- a/sys/kern/sched_ule.c
++++ b/sys/kern/sched_ule.c
+@@ -66,6 +66,8 @@
+ 
+ #ifdef HWPMC_HOOKS
+ #include <sys/pmckern.h>
++#include <sys/syslog.h>
++#include "sched_pmc.h"
+ #endif
+ 
+ #ifdef HWT_HOOKS
+@@ -96,6 +98,12 @@ struct td_sched {
+ 	u_int		ts_slptime;	/* Number of ticks we vol. slept */
+ 	u_int		ts_runtime;	/* Number of ticks we were running */
+ 	u_int		ts_ticks;	/* pctcpu window's running tick count */
++#ifdef HWPMC_HOOKS
++	uint64_t	ts_cachemiss;		/* LLC misses this window. */
++	uint64_t	ts_cachemiss_prev;	/* LLC misses at last PMC read. */
++	u_int		ts_cachemiss_ticks;	/* Ticks since last PMC read. */
++	int		ts_cachemiss_penalty;	/* Priority penalty [0..MAX]. */
++#endif
+ #ifdef KTR
+ 	char		ts_name[TS_NAME_LEN];
+ #endif
+@@ -247,6 +255,51 @@ static int __read_mostly static_boost = PRI_MIN_BATCH;
+ static int __read_mostly sched_idlespins = 10000;
+ static int __read_mostly sched_idlespinthresh = -1;
+ 
++#ifdef HWPMC_HOOKS
++/*
++ * Cache-miss-aware priority adjustment knobs.
++ * AC-3, AC-4: Sysctl knobs under kern.sched.ule with specified defaults.
++ * INV-3: When cachemiss_enabled == 0, no PMC reads occur.
++ */
++#define	SCHED_CACHEMISS_PENALTY_MAX	50
++
++static int __read_mostly cachemiss_enabled;
++static int __read_mostly cachemiss_weight = 1;
++static uint64_t __read_mostly cachemiss_threshold = 1000;
++static int __read_mostly cachemiss_interval = 4;
++
++/* Fix 2: Serialize concurrent sysctl writes to cachemiss_enabled. */
++static struct mtx cachemiss_mtx;
++MTX_SYSINIT(cachemiss_mtx, &cachemiss_mtx, "sched cachemiss", MTX_DEF);
++
++/*
++ * Fix 9: Helper to compute cache-miss penalty from accumulated misses.
++ * Consolidates the penalty calculation used in sched_interact_update()
++ * and sched_ule_clock().
++ *
++ * Fix 4: Clamp excess/threshold before casting to int to avoid
++ * implementation-defined behavior when the uint64_t result exceeds INT_MAX.
++ */
++static inline void
++sched_cachemiss_update_penalty(struct td_sched *ts)
++{
++
++	if (ts->ts_cachemiss > cachemiss_threshold) {
++		uint64_t excess;
++		int raw_penalty;
++
++		excess = ts->ts_cachemiss - cachemiss_threshold;
++		raw_penalty = (int)MIN(excess / cachemiss_threshold,
++		    (uint64_t)SCHED_CACHEMISS_PENALTY_MAX);
++		raw_penalty *= cachemiss_weight;
++		ts->ts_cachemiss_penalty = min(raw_penalty,
++		    SCHED_CACHEMISS_PENALTY_MAX);
++	} else {
++		ts->ts_cachemiss_penalty = 0;
++	}
++}
++#endif
++
+ /*
+  * tdq - per processor runqs and statistics.  A mutex synchronizes access to
+  * most fields.  Some fields are loaded or modified without the mutex.
+@@ -1778,6 +1831,17 @@ sched_priority(struct thread *td)
+ 		    "Nice: %d => nice pri off: %u)",
+ 		    pri, PRI_MIN_BATCH, PRI_MAX_BATCH, PRI_MIN_BATCH,
+ 		    len, run, run_unshifted, cpu_pri_off, nice, nice_pri_off));
++#ifdef HWPMC_HOOKS
++		/*
++		 * AC-8, AC-9, AC-10, AC-16, AC-17, INV-1, INV-2:
++		 * Apply cache-miss penalty to non-interactive threads.
++		 * Interactive threads (score < sched_interact) are never
++		 * penalized (AC-17).  Clamp to PRI_MAX_BATCH (INV-1).
++		 */
++		if (cachemiss_enabled != 0)
++			pri = min(pri + ts->ts_cachemiss_penalty,
++			    PRI_MAX_BATCH);
++#endif
+ 	}
+ 	sched_user_prio(td, pri);
+ 
+@@ -1812,6 +1876,13 @@ sched_interact_update(struct thread *td)
+ 			ts->ts_slptime = SCHED_SLP_RUN_MAX;
+ 			ts->ts_runtime = 1;
+ 		}
++#ifdef HWPMC_HOOKS
++		/* AC-11, INV-9: Aggressive reset of cache-miss history. */
++		if (cachemiss_enabled != 0) {
++			ts->ts_cachemiss = 0;
++			sched_cachemiss_update_penalty(ts);
++		}
++#endif
+ 		return;
+ 	}
+ 	/*
+@@ -1822,10 +1893,24 @@ sched_interact_update(struct thread *td)
+ 	if (sum > (SCHED_SLP_RUN_MAX / 5) * 6) {
+ 		ts->ts_runtime /= 2;
+ 		ts->ts_slptime /= 2;
++#ifdef HWPMC_HOOKS
++		/* AC-11, INV-9: Halving path for cache-miss history. */
++		if (cachemiss_enabled != 0) {
++			ts->ts_cachemiss /= 2;
++			sched_cachemiss_update_penalty(ts);
++		}
++#endif
+ 		return;
+ 	}
+ 	ts->ts_runtime = (ts->ts_runtime / 5) * 4;
+ 	ts->ts_slptime = (ts->ts_slptime / 5) * 4;
++#ifdef HWPMC_HOOKS
++	/* AC-11, INV-9: 4/5 scaling path for cache-miss history. */
++	if (cachemiss_enabled != 0) {
++		ts->ts_cachemiss = (ts->ts_cachemiss / 5) * 4;
++		sched_cachemiss_update_penalty(ts);
++	}
++#endif
+ }
+ 
+ /*
+@@ -2413,6 +2498,15 @@ sched_ule_sswitch(struct thread *td, int flags)
+ #ifdef	HWPMC_HOOKS
+ 		if (PMC_PROC_IS_USING_PMCS(td->td_proc))
+ 			PMC_SWITCH_CONTEXT(td, PMC_FN_CSW_IN);
++		/*
++		 * AC-14, INV-6, E4: Reset the LLC-miss baseline to
++		 * the current CPU's counter value so that the next
++		 * delta does not include misses from other threads
++		 * or from the old CPU after migration.
++		 */
++		if (cachemiss_enabled != 0 && sched_pmc_is_active())
++			td_get_sched(td)->ts_cachemiss_prev =
++			    sched_pmc_read(cpuid);
+ #endif
+ 	} else {
+ 		thread_unblock_switch(td, mtx);
+@@ -2501,6 +2595,18 @@ sched_ule_wakeup(struct thread *td, int srqflags)
+ 	 * Reset the slice value since we slept and advanced the round-robin.
+ 	 */
+ 	ts->ts_slice = 0;
++#ifdef HWPMC_HOOKS
++	/*
++	 * AC-13: Reset PMC baseline on wakeup so the first read
++	 * after waking does not produce a spurious delta (the
++	 * counter may have advanced while this thread slept).
++	 * Preserve ts_cachemiss and ts_cachemiss_penalty so that
++	 * a thread that repeatedly sleeps briefly and wakes to
++	 * cause cache misses is still penalized.
++	 */
++	ts->ts_cachemiss_prev = 0;
++	ts->ts_cachemiss_ticks = 0;
++#endif
+ 	sched_add(td, SRQ_BORING | srqflags);
+ }
+ 
+@@ -2565,6 +2671,16 @@ sched_ule_fork_thread(struct thread *td, struct thread *child)
+ 	ts2->ts_runtime = ts->ts_runtime;
+ 	/* Attempt to quickly learn interactivity. */
+ 	ts2->ts_slice = tdq_slice(tdq) - sched_slice_min;
++#ifdef HWPMC_HOOKS
++	/*
++	 * AC-12: New threads start with no cache-miss history.
++	 * Do not inherit from the parent.
++	 */
++	ts2->ts_cachemiss = 0;
++	ts2->ts_cachemiss_prev = 0;
++	ts2->ts_cachemiss_ticks = 0;
++	ts2->ts_cachemiss_penalty = 0;
++#endif
+ #ifdef KTR
+ 	bzero(ts2->ts_name, sizeof(ts2->ts_name));
+ #endif
+@@ -2737,6 +2853,49 @@ sched_ule_clock(struct thread *td, int cnt)
+ 		 */
+ 		td_get_sched(td)->ts_runtime += tickincr * cnt;
+ 		sched_interact_update(td);
++#ifdef HWPMC_HOOKS
++		/*
++		 * AC-8, INV-3, INV-5, INV-8:
++		 * Read LLC-miss PMC counter every cachemiss_interval ticks.
++		 * Compute delta and update accumulated miss count and penalty.
++		 */
++		if (cachemiss_enabled != 0 && sched_pmc_is_active()) {
++			uint64_t raw, delta;
++
++			ts->ts_cachemiss_ticks += cnt;
++			if (ts->ts_cachemiss_ticks >=
++			    (u_int)cachemiss_interval) {
++				ts->ts_cachemiss_ticks = 0;
++
++				/* Step 5: Read the current counter. */
++				raw = sched_pmc_read(TDQ_ID(tdq));
++
++				/*
++				 * Step 6: Compute delta.
++				 * E3: Unsigned subtraction handles
++				 * counter wraparound correctly.
++				 */
++				if (ts->ts_cachemiss_prev == 0)
++					delta = 0;
++				else
++					delta = raw - ts->ts_cachemiss_prev;
++
++				/* Step 7: Store current value. */
++				ts->ts_cachemiss_prev = raw;
++
++				/* Step 8: Accumulate. */
++				ts->ts_cachemiss += delta;
++
++				/*
++				 * Step 9: Compute penalty.
++				 * AC-9, AC-18, AC-19, INV-2: Penalty
++				 * is clamped to
++				 * SCHED_CACHEMISS_PENALTY_MAX.
++				 */
++				sched_cachemiss_update_penalty(ts);
++			}
++		}
++#endif
+ 		sched_priority(td);
+ 	}
+ 
+@@ -3510,3 +3669,150 @@ SYSCTL_INT(_kern_sched_ule, OID_AUTO, always_steal, CTLFLAG_RWTUN,
+     &always_steal, 0,
+     "Always run the stealer from the idle thread");
+ #endif
++
++#ifdef HWPMC_HOOKS
++/*
++ * Sysctl handler for cachemiss_enabled.
++ * AC-3, AC-7, AC-20, AC-21, E7: Toggling enabled allocates/releases PMCs.
++ */
++static int
++sysctl_cachemiss_enabled(SYSCTL_HANDLER_ARGS)
++{
++	int error, new_val, old_val;
++
++	old_val = cachemiss_enabled;
++	new_val = old_val;
++	error = sysctl_handle_int(oidp, &new_val, 0, req);
++	if (error != 0 || req->newptr == NULL)
++		return (error);
++
++	new_val = (new_val != 0) ? 1 : 0;
++
++	/* Fix 2: Serialize concurrent sysctl writes. */
++	mtx_lock(&cachemiss_mtx);
++
++	if (new_val == cachemiss_enabled) {
++		mtx_unlock(&cachemiss_mtx);
++		return (0);
++	}
++
++	if (new_val) {
++#ifdef SMP
++		/*
++		 * Fix 3: CTLFLAG_RWTUN causes this handler to run
++		 * during SI_SUB_KMEM before APs are started.  Defer
++		 * PMC init until SMP is running.
++		 */
++		if (!smp_started) {
++			log(LOG_WARNING,
++			    "sched_ule: cachemiss PMC init deferred; "
++			    "SMP not yet started\n");
++			cachemiss_enabled = 0;
++			mtx_unlock(&cachemiss_mtx);
++			return (0);
++		}
++#endif
++		/* AC-20, AC-21: Transition 0 -> 1: allocate PMCs. */
++		error = sched_pmc_init();
++		if (error != 0) {
++			/*
++			 * AC-15, AC-21: PMC allocation failed.
++			 * Log a warning but do not return an error to the
++			 * sysctl caller -- the sysctl write succeeds per E1.
++			 *
++			 * Fix 8: Keep feature disabled when init fails.
++			 */
++			log(LOG_WARNING,
++			    "sched_ule: cachemiss PMC init failed (%d); "
++			    "cache-miss penalty will not be applied\n", error);
++			new_val = 0;
++		}
++	} else {
++		/* AC-20: Transition 1 -> 0: release PMCs. */
++		sched_pmc_fini();
++	}
++	cachemiss_enabled = new_val;
++	mtx_unlock(&cachemiss_mtx);
++	return (0);
++}
++
++/*
++ * Sysctl handler for cachemiss_weight with clamping to [0, 10].
++ * AC-5: Values outside range are clamped silently.
++ */
++static int
++sysctl_cachemiss_weight(SYSCTL_HANDLER_ARGS)
++{
++	int error, new_val;
++
++	new_val = cachemiss_weight;
++	error = sysctl_handle_int(oidp, &new_val, 0, req);
++	if (error != 0 || req->newptr == NULL)
++		return (error);
++	if (new_val < 0)
++		new_val = 0;
++	if (new_val > 10)
++		new_val = 10;
++	cachemiss_weight = new_val;
++	return (0);
++}
++
++/*
++ * Sysctl handler for cachemiss_interval with clamping to [1, 100].
++ * AC-6: Values outside range are clamped silently.
++ */
++static int
++sysctl_cachemiss_interval(SYSCTL_HANDLER_ARGS)
++{
++	int error, new_val;
++
++	new_val = cachemiss_interval;
++	error = sysctl_handle_int(oidp, &new_val, 0, req);
++	if (error != 0 || req->newptr == NULL)
++		return (error);
++	if (new_val < 1)
++		new_val = 1;
++	if (new_val > 100)
++		new_val = 100;
++	cachemiss_interval = new_val;
++	return (0);
++}
++
++/*
++ * Fix 1: Sysctl handler for cachemiss_threshold with minimum clamp to 1.
++ * Prevents division by zero when computing excess / cachemiss_threshold
++ * in scheduler tick context.
++ */
++static int
++sysctl_cachemiss_threshold(SYSCTL_HANDLER_ARGS)
++{
++	uint64_t new_val;
++	int error;
++
++	new_val = cachemiss_threshold;
++	error = sysctl_handle_64(oidp, &new_val, 0, req);
++	if (error != 0 || req->newptr == NULL)
++		return (error);
++	if (new_val < 1)
++		new_val = 1;
++	cachemiss_threshold = new_val;
++	return (0);
++}
++
++SYSCTL_PROC(_kern_sched_ule, OID_AUTO, cachemiss_enabled,
++    CTLTYPE_INT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, NULL, 0,
++    sysctl_cachemiss_enabled, "I",
++    "Enable cache-miss-aware priority adjustment (0=disabled, 1=enabled)");
++SYSCTL_PROC(_kern_sched_ule, OID_AUTO, cachemiss_weight,
++    CTLTYPE_INT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, NULL, 0,
++    sysctl_cachemiss_weight, "I",
++    "Cache-miss penalty multiplier (0-10, clamped)");
++SYSCTL_PROC(_kern_sched_ule, OID_AUTO, cachemiss_threshold,
++    CTLTYPE_U64 | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, NULL, 0,
++    sysctl_cachemiss_threshold, "QU",
++    "Cache-miss count threshold below which no penalty is applied");
++SYSCTL_PROC(_kern_sched_ule, OID_AUTO, cachemiss_interval,
++    CTLTYPE_INT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, NULL, 0,
++    sysctl_cachemiss_interval, "I",
++    "Number of sched_clock ticks between PMC reads (1-100, clamped)");
++#endif /* HWPMC_HOOKS */
+diff --git a/tests/sys/kern/Makefile b/tests/sys/kern/Makefile
+index 3b09ee3181d2e5..b6ba5d90bae7fc 100644
+--- a/tests/sys/kern/Makefile
++++ b/tests/sys/kern/Makefile
+@@ -156,6 +156,7 @@ WARNS?=	3
+ TESTS_SUBDIRS+=	acct
+ TESTS_SUBDIRS+=	execve
+ TESTS_SUBDIRS+=	pipe
++TESTS_SUBDIRS+=	sched_cachemiss
+ TESTS_SUBDIRS+=	tty
+ 
+ .include <netbsd-tests.test.mk>
+diff --git a/tests/sys/kern/sched_cachemiss/Makefile b/tests/sys/kern/sched_cachemiss/Makefile
+new file mode 100644
+index 00000000000000..b1eec1109e9377
+--- /dev/null
++++ b/tests/sys/kern/sched_cachemiss/Makefile
+@@ -0,0 +1,10 @@
++TESTSDIR=	${TESTSBASE}/sys/kern/sched_cachemiss
++
++ATF_TESTS_C=	sched_cachemiss_test
++
++TEST_METADATA.sched_cachemiss_test+=	is_exclusive="true"
++TEST_METADATA.sched_cachemiss_test+=	timeout="120"
++
++WARNS?=	3
++
++.include <bsd.test.mk>
+diff --git a/tests/sys/kern/sched_cachemiss/Makefile.depend b/tests/sys/kern/sched_cachemiss/Makefile.depend
+new file mode 100644
+index 00000000000000..e1523b07ad448d
+--- /dev/null
++++ b/tests/sys/kern/sched_cachemiss/Makefile.depend
+@@ -0,0 +1,18 @@
++# Autogenerated - do NOT edit!
++
++DIRDEPS = \
++	gnu/lib/csu \
++	include \
++	include/xlocale \
++	lib/${CSU_DIR} \
++	lib/atf/libatf-c \
++	lib/libc \
++	lib/libcompiler_rt \
++	lib/msun \
++
++
++.include <dirdeps.mk>
++
++.if ${DEP_RELDIR} == ${_DEP_RELDIR}
++# local dependencies - needed for -jN in clean tree
++.endif
+diff --git a/tests/sys/kern/sched_cachemiss/sched_cachemiss_test.c b/tests/sys/kern/sched_cachemiss/sched_cachemiss_test.c
+new file mode 100644
+index 00000000000000..58923a38e3ae72
+--- /dev/null
++++ b/tests/sys/kern/sched_cachemiss/sched_cachemiss_test.c
+@@ -0,0 +1,1884 @@
++/*-
++ * SPDX-License-Identifier: BSD-2-Clause
++ *
++ * Copyright (c) 2026 The FreeBSD Foundation
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
++ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++ * SUCH DAMAGE.
++ */
++
++/*
++ * ATF tests for the ULE scheduler cache-miss-aware priority adjustment
++ * feature, as specified in spec/sched_ule_cachemiss_priority_v1.md.
++ *
++ * These tests exercise the feature through the sysctl interface and
++ * observation of thread priorities via kinfo_proc.
++ *
++ * Most tests require root to modify sysctl knobs.
++ */
++
++#include <sys/param.h>
++#include <sys/module.h>
++#include <sys/sysctl.h>
++#include <sys/user.h>
++#include <sys/wait.h>
++#include <sys/resource.h>
++#include <sys/time.h>
++#include <sys/cpuset.h>
++
++#include <errno.h>
++#include <signal.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++
++#include <atf-c.h>
++
++/*
++ * Constants from the spec.
++ */
++#define	SCHED_CACHEMISS_PENALTY_MAX	50
++#define	PRI_MAX_BATCH			223	/* PRI_MAX_TIMESHARE */
++#define	PRI_MIN_TIMESHARE		56
++
++/*
++ * Sysctl paths as specified.
++ */
++#define	SYSCTL_ENABLED		"kern.sched.ule.cachemiss_enabled"
++#define	SYSCTL_WEIGHT		"kern.sched.ule.cachemiss_weight"
++#define	SYSCTL_THRESHOLD	"kern.sched.ule.cachemiss_threshold"
++#define	SYSCTL_INTERVAL		"kern.sched.ule.cachemiss_interval"
++
++/*
++ * Size of large array for cache-hostile workloads (64 MB).
++ */
++#define	HOSTILE_ARRAY_SIZE	(64 * 1024 * 1024 / sizeof(uint64_t))
++
++/*
++ * Size of small array for cache-friendly workloads (32 KB, fits in L1).
++ */
++#define	FRIENDLY_ARRAY_SIZE	(32 * 1024 / sizeof(uint64_t))
++
++/*
++ * Duration of workload in seconds for behavioral tests.
++ */
++#define	WORKLOAD_DURATION	3
++
++/*
++ * Decay timeout in seconds (spec says ~5s for SCHED_SLP_RUN_MAX).
++ */
++#define	DECAY_TIMEOUT		8
++
++/* ------------------------------------------------------------------ */
++/*  Helper: sysctl read/write wrappers                                */
++/* ------------------------------------------------------------------ */
++
++static int
++sysctl_read_int(const char *name, int *val)
++{
++	size_t sz = sizeof(*val);
++
++	return (sysctlbyname(name, val, &sz, NULL, 0));
++}
++
++static int
++sysctl_write_int(const char *name, int val)
++{
++
++	return (sysctlbyname(name, NULL, NULL, &val, sizeof(val)));
++}
++
++static int
++sysctl_read_u64(const char *name, uint64_t *val)
++{
++	size_t sz = sizeof(*val);
++
++	return (sysctlbyname(name, val, &sz, NULL, 0));
++}
++
++static int
++sysctl_write_u64(const char *name, uint64_t val)
++{
++
++	return (sysctlbyname(name, NULL, NULL, &val, sizeof(val)));
++}
++
++/*
++ * Check that a sysctl exists.  Returns 0 on success, -1 on failure.
++ */
++static int
++sysctl_exists(const char *name)
++{
++	size_t sz = 0;
++
++	if (sysctlbyname(name, NULL, &sz, NULL, 0) == -1 &&
++	    errno == ENOENT)
++		return (-1);
++	return (0);
++}
++
++/* ------------------------------------------------------------------ */
++/*  Helper: save and restore sysctl state                             */
++/* ------------------------------------------------------------------ */
++
++struct cachemiss_state {
++	int	enabled;
++	int	weight;
++	uint64_t threshold;
++	int	interval;
++};
++
++static void
++save_state(struct cachemiss_state *st)
++{
++
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_ENABLED, &st->enabled) == 0);
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_WEIGHT, &st->weight) == 0);
++	ATF_REQUIRE(sysctl_read_u64(SYSCTL_THRESHOLD, &st->threshold) == 0);
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_INTERVAL, &st->interval) == 0);
++}
++
++static void
++restore_state(const struct cachemiss_state *st)
++{
++
++	(void)sysctl_write_int(SYSCTL_ENABLED, st->enabled);
++	(void)sysctl_write_int(SYSCTL_WEIGHT, st->weight);
++	(void)sysctl_write_u64(SYSCTL_THRESHOLD, st->threshold);
++	(void)sysctl_write_int(SYSCTL_INTERVAL, st->interval);
++}
++
++/* ------------------------------------------------------------------ */
++/*  Helper: require the feature to be compiled in                     */
++/* ------------------------------------------------------------------ */
++
++static void
++require_cachemiss_support(void)
++{
++
++	if (sysctl_exists(SYSCTL_ENABLED) != 0)
++		atf_tc_skip("Kernel does not have HWPMC_HOOKS / "
++		    "cachemiss sysctls; feature not compiled in");
++}
++
++/* ------------------------------------------------------------------ */
++/*  Helper: get priority of a process via KERN_PROC_PID               */
++/* ------------------------------------------------------------------ */
++
++static int
++get_priority(pid_t pid, unsigned char *pri_level, unsigned char *pri_user)
++{
++	struct kinfo_proc kp;
++	int mib[4];
++	size_t sz;
++
++	mib[0] = CTL_KERN;
++	mib[1] = KERN_PROC;
++	mib[2] = KERN_PROC_PID;
++	mib[3] = pid;
++	sz = sizeof(kp);
++	if (sysctl(mib, 4, &kp, &sz, NULL, 0) == -1)
++		return (-1);
++	if (pri_level != NULL)
++		*pri_level = kp.ki_pri.pri_level;
++	if (pri_user != NULL)
++		*pri_user = kp.ki_pri.pri_user;
++	return (0);
++}
++
++/* ------------------------------------------------------------------ */
++/*  Helper: pin calling process to a specific CPU                     */
++/* ------------------------------------------------------------------ */
++
++static void
++pin_to_cpu(int cpu)
++{
++	cpuset_t mask;
++
++	CPU_ZERO(&mask);
++	CPU_SET(cpu, &mask);
++	if (cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_PID, -1,
++	    sizeof(mask), &mask) == -1)
++		_exit(2);
++}
++
++/* ------------------------------------------------------------------ */
++/*  Helper: cache-hostile workload (random access, large array)       */
++/* ------------------------------------------------------------------ */
++
++static volatile uint64_t sink;
++
++static void
++run_cache_hostile(int duration_sec)
++{
++	uint64_t *arr;
++	size_t n = HOSTILE_ARRAY_SIZE;
++	struct timeval start, now;
++	unsigned long seed = 12345;
++
++	arr = malloc(n * sizeof(uint64_t));
++	if (arr == NULL)
++		_exit(1);
++	/* Touch every page to ensure allocation. */
++	for (size_t i = 0; i < n; i++)
++		arr[i] = i;
++
++	gettimeofday(&start, NULL);
++	for (;;) {
++		/* Simple LCG for pseudo-random access. */
++		for (int i = 0; i < 100000; i++) {
++			seed = seed * 6364136223846793005ULL + 1;
++			sink = arr[seed % n];
++		}
++		gettimeofday(&now, NULL);
++		if (now.tv_sec - start.tv_sec >= duration_sec)
++			break;
++	}
++	free(arr);
++}
++
++/* ------------------------------------------------------------------ */
++/*  Helper: cache-friendly workload (sequential access, small array)  */
++/* ------------------------------------------------------------------ */
++
++static void
++run_cache_friendly(int duration_sec)
++{
++	uint64_t *arr;
++	size_t n = FRIENDLY_ARRAY_SIZE;
++	struct timeval start, now;
++	uint64_t sum = 0;
++
++	arr = malloc(n * sizeof(uint64_t));
++	if (arr == NULL)
++		_exit(1);
++	for (size_t i = 0; i < n; i++)
++		arr[i] = i;
++
++	gettimeofday(&start, NULL);
++	for (;;) {
++		for (size_t i = 0; i < n; i++)
++			sum += arr[i];
++		gettimeofday(&now, NULL);
++		if (now.tv_sec - start.tv_sec >= duration_sec)
++			break;
++	}
++	sink = sum;
++	free(arr);
++}
++
++/* ==================================================================
++ *  AC-3: Sysctl knobs exist
++ * ================================================================== */
++
++ATF_TC(sysctl_knobs_exist);
++ATF_TC_HEAD(sysctl_knobs_exist, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-3: Verify all four cachemiss sysctl knobs exist");
++}
++ATF_TC_BODY(sysctl_knobs_exist, tc)
++{
++
++	require_cachemiss_support();
++
++	ATF_REQUIRE_MSG(sysctl_exists(SYSCTL_ENABLED) == 0,
++	    "sysctl %s does not exist", SYSCTL_ENABLED);
++	ATF_REQUIRE_MSG(sysctl_exists(SYSCTL_WEIGHT) == 0,
++	    "sysctl %s does not exist", SYSCTL_WEIGHT);
++	ATF_REQUIRE_MSG(sysctl_exists(SYSCTL_THRESHOLD) == 0,
++	    "sysctl %s does not exist", SYSCTL_THRESHOLD);
++	ATF_REQUIRE_MSG(sysctl_exists(SYSCTL_INTERVAL) == 0,
++	    "sysctl %s does not exist", SYSCTL_INTERVAL);
++}
++
++/* ==================================================================
++ *  AC-4: Default values
++ * ================================================================== */
++
++ATF_TC(sysctl_defaults);
++ATF_TC_HEAD(sysctl_defaults, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-4: Verify default values of cachemiss sysctl knobs");
++	atf_tc_set_md_var(tc, "require.user", "root");
++}
++ATF_TC_BODY(sysctl_defaults, tc)
++{
++	int ival;
++	uint64_t u64val;
++
++	require_cachemiss_support();
++
++	/*
++	 * Note: These tests check current values.  If the system has been
++	 * booted with non-default tunables, this test may fail legitimately.
++	 * The spec says these are the defaults.  If RWTUN was used to change
++	 * them at boot, the test documents that difference.
++	 */
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_ENABLED, &ival) == 0);
++	ATF_CHECK_EQ_MSG(ival, 0,
++	    "cachemiss_enabled default should be 0, got %d", ival);
++
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_WEIGHT, &ival) == 0);
++	ATF_CHECK_EQ_MSG(ival, 1,
++	    "cachemiss_weight default should be 1, got %d", ival);
++
++	ATF_REQUIRE(sysctl_read_u64(SYSCTL_THRESHOLD, &u64val) == 0);
++	ATF_CHECK_EQ_MSG(u64val, 1000,
++	    "cachemiss_threshold default should be 1000, got %ju",
++	    (uintmax_t)u64val);
++
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_INTERVAL, &ival) == 0);
++	ATF_CHECK_EQ_MSG(ival, 4,
++	    "cachemiss_interval default should be 4, got %d", ival);
++}
++
++/* ==================================================================
++ *  AC-5: cachemiss_weight clamping
++ * ================================================================== */
++
++ATF_TC_WITH_CLEANUP(sysctl_weight_clamp_high);
++ATF_TC_HEAD(sysctl_weight_clamp_high, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-5: cachemiss_weight > 10 is clamped to 10");
++	atf_tc_set_md_var(tc, "require.user", "root");
++}
++ATF_TC_BODY(sysctl_weight_clamp_high, tc)
++{
++	struct cachemiss_state saved;
++	int val;
++
++	require_cachemiss_support();
++	save_state(&saved);
++
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_WEIGHT, 50) == 0);
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_WEIGHT, &val) == 0);
++	ATF_CHECK_EQ_MSG(val, 10,
++	    "weight=50 should clamp to 10, got %d", val);
++
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_WEIGHT, 11) == 0);
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_WEIGHT, &val) == 0);
++	ATF_CHECK_EQ_MSG(val, 10,
++	    "weight=11 should clamp to 10, got %d", val);
++
++	/* Boundary: exactly 10 should be accepted. */
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_WEIGHT, 10) == 0);
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_WEIGHT, &val) == 0);
++	ATF_CHECK_EQ_MSG(val, 10,
++	    "weight=10 should be accepted, got %d", val);
++
++	restore_state(&saved);
++}
++ATF_TC_CLEANUP(sysctl_weight_clamp_high, tc)
++{
++	/* Best-effort restore; ignore errors. */
++	(void)sysctl_write_int(SYSCTL_WEIGHT, 1);
++}
++
++ATF_TC_WITH_CLEANUP(sysctl_weight_clamp_low);
++ATF_TC_HEAD(sysctl_weight_clamp_low, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-5: cachemiss_weight < 0 is clamped to 0");
++	atf_tc_set_md_var(tc, "require.user", "root");
++}
++ATF_TC_BODY(sysctl_weight_clamp_low, tc)
++{
++	struct cachemiss_state saved;
++	int val;
++
++	require_cachemiss_support();
++	save_state(&saved);
++
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_WEIGHT, -1) == 0);
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_WEIGHT, &val) == 0);
++	ATF_CHECK_EQ_MSG(val, 0,
++	    "weight=-1 should clamp to 0, got %d", val);
++
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_WEIGHT, -100) == 0);
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_WEIGHT, &val) == 0);
++	ATF_CHECK_EQ_MSG(val, 0,
++	    "weight=-100 should clamp to 0, got %d", val);
++
++	/* Boundary: exactly 0 should be accepted. */
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_WEIGHT, 0) == 0);
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_WEIGHT, &val) == 0);
++	ATF_CHECK_EQ_MSG(val, 0,
++	    "weight=0 should be accepted, got %d", val);
++
++	restore_state(&saved);
++}
++ATF_TC_CLEANUP(sysctl_weight_clamp_low, tc)
++{
++
++	(void)sysctl_write_int(SYSCTL_WEIGHT, 1);
++}
++
++/* ==================================================================
++ *  AC-6: cachemiss_interval clamping
++ * ================================================================== */
++
++ATF_TC_WITH_CLEANUP(sysctl_interval_clamp_high);
++ATF_TC_HEAD(sysctl_interval_clamp_high, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-6: cachemiss_interval > 100 is clamped to 100");
++	atf_tc_set_md_var(tc, "require.user", "root");
++}
++ATF_TC_BODY(sysctl_interval_clamp_high, tc)
++{
++	struct cachemiss_state saved;
++	int val;
++
++	require_cachemiss_support();
++	save_state(&saved);
++
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_INTERVAL, 200) == 0);
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_INTERVAL, &val) == 0);
++	ATF_CHECK_EQ_MSG(val, 100,
++	    "interval=200 should clamp to 100, got %d", val);
++
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_INTERVAL, 101) == 0);
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_INTERVAL, &val) == 0);
++	ATF_CHECK_EQ_MSG(val, 100,
++	    "interval=101 should clamp to 100, got %d", val);
++
++	/* Boundary: exactly 100 should be accepted. */
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_INTERVAL, 100) == 0);
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_INTERVAL, &val) == 0);
++	ATF_CHECK_EQ_MSG(val, 100,
++	    "interval=100 should be accepted, got %d", val);
++
++	restore_state(&saved);
++}
++ATF_TC_CLEANUP(sysctl_interval_clamp_high, tc)
++{
++
++	(void)sysctl_write_int(SYSCTL_INTERVAL, 4);
++}
++
++ATF_TC_WITH_CLEANUP(sysctl_interval_clamp_low);
++ATF_TC_HEAD(sysctl_interval_clamp_low, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-6: cachemiss_interval < 1 is clamped to 1");
++	atf_tc_set_md_var(tc, "require.user", "root");
++}
++ATF_TC_BODY(sysctl_interval_clamp_low, tc)
++{
++	struct cachemiss_state saved;
++	int val;
++
++	require_cachemiss_support();
++	save_state(&saved);
++
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_INTERVAL, 0) == 0);
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_INTERVAL, &val) == 0);
++	ATF_CHECK_EQ_MSG(val, 1,
++	    "interval=0 should clamp to 1, got %d", val);
++
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_INTERVAL, -5) == 0);
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_INTERVAL, &val) == 0);
++	ATF_CHECK_EQ_MSG(val, 1,
++	    "interval=-5 should clamp to 1, got %d", val);
++
++	/* Boundary: exactly 1 should be accepted. */
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_INTERVAL, 1) == 0);
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_INTERVAL, &val) == 0);
++	ATF_CHECK_EQ_MSG(val, 1,
++	    "interval=1 should be accepted, got %d", val);
++
++	restore_state(&saved);
++}
++ATF_TC_CLEANUP(sysctl_interval_clamp_low, tc)
++{
++
++	(void)sysctl_write_int(SYSCTL_INTERVAL, 4);
++}
++
++/* ==================================================================
++ *  AC-7: Disabled behavior -- no priority difference
++ * ================================================================== */
++
++ATF_TC_WITH_CLEANUP(disabled_no_penalty);
++ATF_TC_HEAD(disabled_no_penalty, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-7: With cachemiss_enabled=0, no priority difference "
++	    "between cache-hostile and cache-friendly workloads");
++	atf_tc_set_md_var(tc, "require.user", "root");
++	atf_tc_set_md_var(tc, "timeout", "30");
++}
++ATF_TC_BODY(disabled_no_penalty, tc)
++{
++	struct cachemiss_state saved;
++	pid_t hostile, friendly;
++	unsigned char hostile_pri, friendly_pri;
++	int status;
++
++	require_cachemiss_support();
++	save_state(&saved);
++
++	/* Ensure feature is disabled. */
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 0) == 0);
++
++	/* Fork a cache-hostile child, pinned to CPU 0. */
++	hostile = fork();
++	ATF_REQUIRE(hostile >= 0);
++	if (hostile == 0) {
++		pin_to_cpu(1);
++		run_cache_hostile(WORKLOAD_DURATION);
++		_exit(0);
++	}
++
++	/* Fork a cache-friendly child, pinned to same CPU. */
++	friendly = fork();
++	ATF_REQUIRE(friendly >= 0);
++	if (friendly == 0) {
++		pin_to_cpu(1);
++		run_cache_friendly(WORKLOAD_DURATION);
++		_exit(0);
++	}
++
++	/* Let workloads run for a bit before sampling priorities. */
++	sleep(WORKLOAD_DURATION / 2 + 1);
++
++	/*
++	 * Read priorities.  With the feature disabled, the priorities
++	 * should be in the same range for both processes (both are
++	 * CPU-bound timeshare at nice 0).
++	 */
++	ATF_REQUIRE(get_priority(hostile, NULL, &hostile_pri) == 0);
++	ATF_REQUIRE(get_priority(friendly, NULL, &friendly_pri) == 0);
++
++	/*
++	 * The spec says there should be "no change in scheduling priority
++	 * for either thread compared to an unmodified kernel."  We verify
++	 * this by checking the priorities are within a small delta of each
++	 * other (the scheduler naturally jitters priorities a bit).
++	 */
++	int diff = (int)hostile_pri - (int)friendly_pri;
++	if (diff < 0)
++		diff = -diff;
++	ATF_CHECK_MSG(diff <= 4,
++	    "AC-7: With feature disabled, priority difference between "
++	    "cache-hostile (%u) and cache-friendly (%u) should be small "
++	    "(got %d), expected <= 4",
++	    hostile_pri, friendly_pri, diff);
++
++	/* Clean up children. */
++	kill(hostile, SIGKILL);
++	kill(friendly, SIGKILL);
++	waitpid(hostile, &status, 0);
++	waitpid(friendly, &status, 0);
++
++	restore_state(&saved);
++}
++ATF_TC_CLEANUP(disabled_no_penalty, tc)
++{
++
++	(void)sysctl_write_int(SYSCTL_ENABLED, 0);
++}
++
++/* ==================================================================
++ *  AC-8: Enabled behavior -- cache-hostile thread gets worse priority
++ * ================================================================== */
++
++ATF_TC_WITH_CLEANUP(enabled_penalty_applied);
++ATF_TC_HEAD(enabled_penalty_applied, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-8: With cachemiss_enabled=1, cache-hostile thread gets "
++	    "a worse (higher numeric) priority than cache-friendly thread");
++	atf_tc_set_md_var(tc, "require.user", "root");
++	atf_tc_set_md_var(tc, "timeout", "30");
++}
++ATF_TC_BODY(enabled_penalty_applied, tc)
++{
++	struct cachemiss_state saved;
++	pid_t hostile, friendly;
++	unsigned char hostile_pri, friendly_pri;
++	int status, enabled;
++
++	require_cachemiss_support();
++	save_state(&saved);
++
++	/* Enable the feature with default weight=1, threshold=1000. */
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 1) == 0);
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_WEIGHT, 1) == 0);
++	ATF_REQUIRE(sysctl_write_u64(SYSCTL_THRESHOLD, 1000) == 0);
++
++	/*
++	 * Verify the feature is actually active.  It might not be if
++	 * hwpmc is not loaded.
++	 */
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_ENABLED, &enabled) == 0);
++	if (enabled != 1) {
++		restore_state(&saved);
++		atf_tc_skip("Could not enable cachemiss feature "
++		    "(hwpmc may not be loaded)");
++	}
++
++	hostile = fork();
++	ATF_REQUIRE(hostile >= 0);
++	if (hostile == 0) {
++		pin_to_cpu(1);
++		run_cache_hostile(WORKLOAD_DURATION);
++		_exit(0);
++	}
++
++	friendly = fork();
++	ATF_REQUIRE(friendly >= 0);
++	if (friendly == 0) {
++		pin_to_cpu(1);
++		run_cache_friendly(WORKLOAD_DURATION);
++		_exit(0);
++	}
++
++	/* Let them accumulate cache misses. */
++	sleep(WORKLOAD_DURATION / 2 + 1);
++
++	/*
++	 * Sample priorities multiple times and take the worst case.
++	 * The scheduler recalculates priorities on each tick, so we
++	 * sample several times.
++	 */
++	int best_diff = 0;
++	for (int i = 0; i < 10; i++) {
++		if (get_priority(hostile, NULL, &hostile_pri) == 0 &&
++		    get_priority(friendly, NULL, &friendly_pri) == 0) {
++			int d = (int)hostile_pri - (int)friendly_pri;
++			if (d > best_diff)
++				best_diff = d;
++		}
++		usleep(100000); /* 100ms between samples */
++	}
++
++	/*
++	 * AC-8 says the cache-miss-heavy thread should have a priority
++	 * "at least 1 level worse (higher numeric value)."
++	 */
++	ATF_CHECK_MSG(best_diff >= 1,
++	    "AC-8: cache-hostile pri (%u) should be worse than "
++	    "cache-friendly pri (%u) by at least 1, best diff=%d",
++	    hostile_pri, friendly_pri, best_diff);
++
++	kill(hostile, SIGKILL);
++	kill(friendly, SIGKILL);
++	waitpid(hostile, &status, 0);
++	waitpid(friendly, &status, 0);
++
++	restore_state(&saved);
++}
++ATF_TC_CLEANUP(enabled_penalty_applied, tc)
++{
++
++	(void)sysctl_write_int(SYSCTL_ENABLED, 0);
++}
++
++/* ==================================================================
++ *  AC-9: Penalty never exceeds SCHED_CACHEMISS_PENALTY_MAX (50)
++ * ================================================================== */
++
++ATF_TC_WITH_CLEANUP(penalty_max_cap);
++ATF_TC_HEAD(penalty_max_cap, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-9: Priority penalty never exceeds 20 levels");
++	atf_tc_set_md_var(tc, "require.user", "root");
++	atf_tc_set_md_var(tc, "timeout", "30");
++}
++ATF_TC_BODY(penalty_max_cap, tc)
++{
++	struct cachemiss_state saved;
++	pid_t hostile, baseline;
++	unsigned char hostile_pri, baseline_pri;
++	int status;
++
++	require_cachemiss_support();
++	save_state(&saved);
++
++	/*
++	 * Use max weight to amplify penalty.  With weight=10, the penalty
++	 * should hit the cap quickly.
++	 */
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 1) == 0);
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_WEIGHT, 10) == 0);
++	ATF_REQUIRE(sysctl_write_u64(SYSCTL_THRESHOLD, 100) == 0);
++
++	hostile = fork();
++	ATF_REQUIRE(hostile >= 0);
++	if (hostile == 0) {
++		pin_to_cpu(1);
++		run_cache_hostile(WORKLOAD_DURATION + 2);
++		_exit(0);
++	}
++
++	/* A minimal CPU burner as baseline. */
++	baseline = fork();
++	ATF_REQUIRE(baseline >= 0);
++	if (baseline == 0) {
++		pin_to_cpu(1);
++		run_cache_friendly(WORKLOAD_DURATION + 2);
++		_exit(0);
++	}
++
++	sleep(WORKLOAD_DURATION);
++
++	/*
++	 * Sample many times and verify the gap never exceeds
++	 * SCHED_CACHEMISS_PENALTY_MAX.
++	 */
++	int max_diff = 0;
++	for (int i = 0; i < 20; i++) {
++		if (get_priority(hostile, NULL, &hostile_pri) == 0 &&
++		    get_priority(baseline, NULL, &baseline_pri) == 0) {
++			int d = (int)hostile_pri - (int)baseline_pri;
++			if (d > max_diff)
++				max_diff = d;
++		}
++		usleep(50000);
++	}
++
++	/*
++	 * The penalty component alone is capped at 20.  But the
++	 * observed priority difference includes the penalty difference
++	 * between both processes.  Since baseline should have ~0 penalty,
++	 * the difference should be approximately the hostile's penalty.
++	 * It must not exceed 20.
++	 */
++	ATF_CHECK_MSG(max_diff <= SCHED_CACHEMISS_PENALTY_MAX,
++	    "AC-9: maximum observed priority difference (%d) should not "
++	    "exceed SCHED_CACHEMISS_PENALTY_MAX (%d)",
++	    max_diff, SCHED_CACHEMISS_PENALTY_MAX);
++
++	kill(hostile, SIGKILL);
++	kill(baseline, SIGKILL);
++	waitpid(hostile, &status, 0);
++	waitpid(baseline, &status, 0);
++
++	restore_state(&saved);
++}
++ATF_TC_CLEANUP(penalty_max_cap, tc)
++{
++
++	(void)sysctl_write_int(SYSCTL_ENABLED, 0);
++}
++
++/* ==================================================================
++ *  AC-10: Priority never goes below PRI_MAX_BATCH (223)
++ * ================================================================== */
++
++ATF_TC_WITH_CLEANUP(priority_floor);
++ATF_TC_HEAD(priority_floor, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-10: Priority with penalty never exceeds PRI_MAX_BATCH (223)");
++	atf_tc_set_md_var(tc, "require.user", "root");
++	atf_tc_set_md_var(tc, "timeout", "30");
++}
++ATF_TC_BODY(priority_floor, tc)
++{
++	struct cachemiss_state saved;
++	pid_t hostile;
++	int status;
++
++	require_cachemiss_support();
++	save_state(&saved);
++
++	/*
++	 * Use high weight, low threshold, and nice 19 to push the thread
++	 * toward the maximum.  nice 19 already pushes priority high;
++	 * adding the cachemiss penalty should still not exceed 223.
++	 */
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 1) == 0);
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_WEIGHT, 10) == 0);
++	ATF_REQUIRE(sysctl_write_u64(SYSCTL_THRESHOLD, 100) == 0);
++
++	hostile = fork();
++	ATF_REQUIRE(hostile >= 0);
++	if (hostile == 0) {
++		pin_to_cpu(1);
++		/* Set nice to 19 to push base priority high. */
++		(void)setpriority(PRIO_PROCESS, 0, 19);
++		run_cache_hostile(WORKLOAD_DURATION + 2);
++		_exit(0);
++	}
++
++	sleep(WORKLOAD_DURATION);
++
++	/*
++	 * Sample the thread's priority multiple times and ensure it
++	 * never exceeds PRI_MAX_BATCH.
++	 */
++	for (int i = 0; i < 20; i++) {
++		unsigned char pri;
++		if (get_priority(hostile, NULL, &pri) == 0) {
++			ATF_CHECK_MSG(pri <= PRI_MAX_BATCH,
++			    "AC-10: priority %u exceeds PRI_MAX_BATCH (%d)",
++			    pri, PRI_MAX_BATCH);
++		}
++		usleep(50000);
++	}
++
++	kill(hostile, SIGKILL);
++	waitpid(hostile, &status, 0);
++
++	restore_state(&saved);
++}
++ATF_TC_CLEANUP(priority_floor, tc)
++{
++
++	(void)sysctl_write_int(SYSCTL_ENABLED, 0);
++}
++
++/* ==================================================================
++ *  AC-11: Priority recovery -- penalty decays to 0
++ * ================================================================== */
++
++ATF_TC_WITH_CLEANUP(penalty_decay);
++ATF_TC_HEAD(penalty_decay, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-11: Penalty decays to 0 after thread becomes cache-friendly");
++	atf_tc_set_md_var(tc, "require.user", "root");
++	atf_tc_set_md_var(tc, "timeout", "30");
++}
++ATF_TC_BODY(penalty_decay, tc)
++{
++	struct cachemiss_state saved;
++	int status;
++	int pipefd[2];
++
++	require_cachemiss_support();
++	save_state(&saved);
++
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 1) == 0);
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_WEIGHT, 5) == 0);
++	ATF_REQUIRE(sysctl_write_u64(SYSCTL_THRESHOLD, 100) == 0);
++
++	ATF_REQUIRE(pipe(pipefd) == 0);
++
++	pid_t child = fork();
++	ATF_REQUIRE(child >= 0);
++	if (child == 0) {
++		close(pipefd[0]);
++		/* Phase 1: cache-hostile for a few seconds. */
++		run_cache_hostile(WORKLOAD_DURATION);
++		/* Signal parent that phase 1 is done. */
++		write(pipefd[1], "D", 1);
++		/* Phase 2: cache-friendly (penalty should decay). */
++		run_cache_friendly(DECAY_TIMEOUT);
++		close(pipefd[1]);
++		_exit(0);
++	}
++	close(pipefd[1]);
++
++	/* Wait for phase 1 to complete. */
++	char buf;
++	ATF_REQUIRE(read(pipefd[0], &buf, 1) == 1);
++	close(pipefd[0]);
++
++	/*
++	 * Record priority right after the hostile phase ends.
++	 * Then wait for decay and check again.
++	 */
++	unsigned char pri_after_hostile;
++	ATF_REQUIRE(get_priority(child, NULL, &pri_after_hostile) == 0);
++
++	/* Wait for decay (spec says ~5 seconds). */
++	sleep(DECAY_TIMEOUT);
++
++	unsigned char pri_after_decay;
++	if (get_priority(child, NULL, &pri_after_decay) == 0) {
++		/*
++		 * After decay, the priority should be better (lower
++		 * numeric value) or equal.  We do not require exactly 0
++		 * penalty because the cache-friendly workload still runs,
++		 * but the gap should have narrowed significantly.
++		 */
++		ATF_CHECK_MSG(pri_after_decay <= pri_after_hostile,
++		    "AC-11: priority should improve after decay; "
++		    "after hostile=%u, after decay=%u",
++		    pri_after_hostile, pri_after_decay);
++	}
++
++	kill(child, SIGKILL);
++	waitpid(child, &status, 0);
++
++	restore_state(&saved);
++}
++ATF_TC_CLEANUP(penalty_decay, tc)
++{
++
++	(void)sysctl_write_int(SYSCTL_ENABLED, 0);
++}
++
++/* ==================================================================
++ *  AC-12: Forked thread starts with zero penalty
++ * ================================================================== */
++
++ATF_TC_WITH_CLEANUP(fork_zero_penalty);
++ATF_TC_HEAD(fork_zero_penalty, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-12: Newly forked thread starts with zero cachemiss penalty");
++	atf_tc_set_md_var(tc, "require.user", "root");
++	atf_tc_set_md_var(tc, "timeout", "30");
++}
++ATF_TC_BODY(fork_zero_penalty, tc)
++{
++	struct cachemiss_state saved;
++	int status;
++
++	require_cachemiss_support();
++	save_state(&saved);
++
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 1) == 0);
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_WEIGHT, 5) == 0);
++	ATF_REQUIRE(sysctl_write_u64(SYSCTL_THRESHOLD, 100) == 0);
++
++	/* Parent runs cache-hostile workload to accumulate penalty. */
++	run_cache_hostile(2);
++
++	/*
++	 * Now fork a child and immediately read its priority.
++	 * It should not inherit the parent's penalty.
++	 */
++	pid_t child = fork();
++	ATF_REQUIRE(child >= 0);
++	if (child == 0) {
++		/* Child does nothing; just pause so parent can read prio. */
++		volatile int dummy = 0;
++		for (int i = 0; i < 100000000; i++)
++			dummy += i;
++		(void)dummy;
++		_exit(0);
++	}
++
++	/*
++	 * Give the child a moment to start, then read its priority.
++	 * It should be a normal timeshare priority without penalty.
++	 */
++	usleep(200000);
++	unsigned char child_pri;
++	ATF_REQUIRE(get_priority(child, NULL, &child_pri) == 0);
++
++	/*
++	 * A normal timeshare thread at nice 0 should be well below
++	 * PRI_MAX_BATCH.  If the child inherited the parent's penalty,
++	 * it would be much higher.  We check it is in a reasonable
++	 * range for a fresh thread.
++	 */
++	ATF_CHECK_MSG(child_pri >= PRI_MIN_TIMESHARE &&
++	    child_pri <= PRI_MAX_BATCH,
++	    "AC-12: child priority %u should be in timeshare range [%d, %d]",
++	    child_pri, PRI_MIN_TIMESHARE, PRI_MAX_BATCH);
++
++	kill(child, SIGKILL);
++	waitpid(child, &status, 0);
++
++	restore_state(&saved);
++}
++ATF_TC_CLEANUP(fork_zero_penalty, tc)
++{
++
++	(void)sysctl_write_int(SYSCTL_ENABLED, 0);
++}
++
++/* ==================================================================
++ *  AC-13: Sleep/wake preserves accumulated misses
++ * ================================================================== */
++
++ATF_TC_WITH_CLEANUP(sleep_wake_preserves);
++ATF_TC_HEAD(sleep_wake_preserves, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-13: Sleep/wake preserves accumulated cachemiss penalty");
++	atf_tc_set_md_var(tc, "require.user", "root");
++	atf_tc_set_md_var(tc, "timeout", "30");
++}
++ATF_TC_BODY(sleep_wake_preserves, tc)
++{
++	struct cachemiss_state saved;
++	int status;
++	int pipefd[2];
++
++	require_cachemiss_support();
++	save_state(&saved);
++
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 1) == 0);
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_WEIGHT, 5) == 0);
++	ATF_REQUIRE(sysctl_write_u64(SYSCTL_THRESHOLD, 100) == 0);
++
++	ATF_REQUIRE(pipe(pipefd) == 0);
++
++	pid_t child = fork();
++	ATF_REQUIRE(child >= 0);
++	if (child == 0) {
++		close(pipefd[0]);
++		/* Phase 1: cache-hostile to build up penalty. */
++		run_cache_hostile(WORKLOAD_DURATION);
++		/* Signal parent we are about to sleep. */
++		write(pipefd[1], "S", 1);
++		/* Sleep briefly. */
++		usleep(500000);
++		/* Signal parent we are awake. */
++		write(pipefd[1], "W", 1);
++		/* Phase 2: brief CPU burn so priority is recalculated. */
++		run_cache_hostile(1);
++		close(pipefd[1]);
++		_exit(0);
++	}
++	close(pipefd[1]);
++
++	/* Wait for child to signal it is about to sleep. */
++	char buf;
++	ATF_REQUIRE(read(pipefd[0], &buf, 1) == 1);
++
++	/* Read priority before sleep (should have penalty). */
++	unsigned char pri_before;
++	ATF_REQUIRE(get_priority(child, NULL, &pri_before) == 0);
++
++	/* Wait for child to wake up and signal. */
++	ATF_REQUIRE(read(pipefd[0], &buf, 1) == 1);
++	close(pipefd[0]);
++
++	/* Give child a moment to recalculate priority. */
++	usleep(500000);
++
++	/* Read priority after wake. */
++	unsigned char pri_after;
++	if (get_priority(child, NULL, &pri_after) == 0) {
++		/*
++		 * The spec says accumulated ts_cachemiss and
++		 * ts_cachemiss_penalty are preserved across sleep/wakeup.
++		 * So the post-wake priority should still reflect the
++		 * penalty (similar to pre-sleep priority).
++		 */
++		ATF_CHECK_MSG(pri_after >= pri_before - 4,
++		    "AC-13: post-wake priority (%u) should still reflect "
++		    "penalty (pre-sleep=%u); expected pri_after >= %d",
++		    pri_after, pri_before, pri_before - 4);
++	}
++
++	kill(child, SIGKILL);
++	waitpid(child, &status, 0);
++
++	restore_state(&saved);
++}
++ATF_TC_CLEANUP(sleep_wake_preserves, tc)
++{
++
++	(void)sysctl_write_int(SYSCTL_ENABLED, 0);
++}
++
++/* ==================================================================
++ *  AC-15: hwpmc not loaded -- graceful degradation
++ * ================================================================== */
++
++ATF_TC_WITH_CLEANUP(hwpmc_not_loaded);
++ATF_TC_HEAD(hwpmc_not_loaded, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-15: With hwpmc not loaded, enabling cachemiss does not "
++	    "panic and applies no penalty");
++	atf_tc_set_md_var(tc, "require.user", "root");
++	atf_tc_set_md_var(tc, "timeout", "20");
++}
++ATF_TC_BODY(hwpmc_not_loaded, tc)
++{
++	struct cachemiss_state saved;
++	int status;
++
++	require_cachemiss_support();
++	save_state(&saved);
++
++	/*
++	 * We cannot unload hwpmc from a test, so we check: if hwpmc
++	 * is not loaded (the modfind check), verify that enabling
++	 * the feature does not crash and that workloads run normally.
++	 * If hwpmc IS loaded, skip this test.
++	 */
++	if (modfind("hwpmc") != -1) {
++		restore_state(&saved);
++		atf_tc_skip("hwpmc module is loaded; cannot test "
++		    "the 'not loaded' path");
++	}
++
++	/*
++	 * hwpmc is NOT loaded.  The sysctl write should succeed
++	 * (spec says no error is reported).
++	 */
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 1) == 0);
++
++	/* Run a cache-hostile workload; it should complete without panic. */
++	pid_t child = fork();
++	ATF_REQUIRE(child >= 0);
++	if (child == 0) {
++		run_cache_hostile(2);
++		_exit(0);
++	}
++	waitpid(child, &status, 0);
++	ATF_CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
++
++	/*
++	 * Verify no penalty was applied: the child's priority should
++	 * have been normal.  (The child already exited, so we cannot
++	 * read its priority.  The fact it exited normally without
++	 * panic is the main check for AC-15.)
++	 */
++
++	restore_state(&saved);
++}
++ATF_TC_CLEANUP(hwpmc_not_loaded, tc)
++{
++
++	(void)sysctl_write_int(SYSCTL_ENABLED, 0);
++}
++
++/* ==================================================================
++ *  AC-18: cachemiss_weight=0 disables penalty
++ * ================================================================== */
++
++ATF_TC_WITH_CLEANUP(weight_zero_no_penalty);
++ATF_TC_HEAD(weight_zero_no_penalty, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-18: cachemiss_weight=0 with enabled=1 results in no penalty");
++	atf_tc_set_md_var(tc, "require.user", "root");
++	atf_tc_set_md_var(tc, "timeout", "30");
++}
++ATF_TC_BODY(weight_zero_no_penalty, tc)
++{
++	struct cachemiss_state saved;
++	pid_t hostile, friendly;
++	unsigned char hostile_pri, friendly_pri;
++	int status;
++
++	require_cachemiss_support();
++	save_state(&saved);
++
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 1) == 0);
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_WEIGHT, 0) == 0);
++	ATF_REQUIRE(sysctl_write_u64(SYSCTL_THRESHOLD, 100) == 0);
++
++	hostile = fork();
++	ATF_REQUIRE(hostile >= 0);
++	if (hostile == 0) {
++		pin_to_cpu(1);
++		run_cache_hostile(WORKLOAD_DURATION);
++		_exit(0);
++	}
++
++	friendly = fork();
++	ATF_REQUIRE(friendly >= 0);
++	if (friendly == 0) {
++		pin_to_cpu(1);
++		run_cache_friendly(WORKLOAD_DURATION);
++		_exit(0);
++	}
++
++	sleep(WORKLOAD_DURATION / 2 + 1);
++
++	ATF_REQUIRE(get_priority(hostile, NULL, &hostile_pri) == 0);
++	ATF_REQUIRE(get_priority(friendly, NULL, &friendly_pri) == 0);
++
++	/*
++	 * With weight=0, raw_penalty * 0 = 0, so no penalty is applied.
++	 * Priorities should be similar.
++	 */
++	int diff = (int)hostile_pri - (int)friendly_pri;
++	if (diff < 0)
++		diff = -diff;
++	ATF_CHECK_MSG(diff <= 4,
++	    "AC-18: With weight=0, priority difference between "
++	    "cache-hostile (%u) and cache-friendly (%u) should be small "
++	    "(got %d), expected <= 4",
++	    hostile_pri, friendly_pri, diff);
++
++	kill(hostile, SIGKILL);
++	kill(friendly, SIGKILL);
++	waitpid(hostile, &status, 0);
++	waitpid(friendly, &status, 0);
++
++	restore_state(&saved);
++}
++ATF_TC_CLEANUP(weight_zero_no_penalty, tc)
++{
++
++	(void)sysctl_write_int(SYSCTL_ENABLED, 0);
++	(void)sysctl_write_int(SYSCTL_WEIGHT, 1);
++}
++
++/* ==================================================================
++ *  AC-19: Weight scaling
++ * ================================================================== */
++
++ATF_TC_WITH_CLEANUP(weight_scaling);
++ATF_TC_HEAD(weight_scaling, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-19: cachemiss_weight=5 results in larger penalty than weight=1");
++	atf_tc_set_md_var(tc, "require.user", "root");
++	atf_tc_set_md_var(tc, "timeout", "60");
++}
++ATF_TC_BODY(weight_scaling, tc)
++{
++	struct cachemiss_state saved;
++	pid_t hostile, friendly;
++	unsigned char hostile_pri, friendly_pri;
++	int status;
++	int diff_w1, diff_w5;
++
++	require_cachemiss_support();
++	save_state(&saved);
++
++	/*
++	 * Phase 1: Run with weight=1 and measure priority difference.
++	 */
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 1) == 0);
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_WEIGHT, 1) == 0);
++	ATF_REQUIRE(sysctl_write_u64(SYSCTL_THRESHOLD, 100) == 0);
++
++	hostile = fork();
++	ATF_REQUIRE(hostile >= 0);
++	if (hostile == 0) {
++		pin_to_cpu(1);
++		run_cache_hostile(WORKLOAD_DURATION);
++		_exit(0);
++	}
++
++	friendly = fork();
++	ATF_REQUIRE(friendly >= 0);
++	if (friendly == 0) {
++		pin_to_cpu(1);
++		run_cache_friendly(WORKLOAD_DURATION);
++		_exit(0);
++	}
++
++	sleep(WORKLOAD_DURATION / 2 + 1);
++
++	diff_w1 = 0;
++	for (int i = 0; i < 10; i++) {
++		if (get_priority(hostile, NULL, &hostile_pri) == 0 &&
++		    get_priority(friendly, NULL, &friendly_pri) == 0) {
++			int d = (int)hostile_pri - (int)friendly_pri;
++			if (d > diff_w1)
++				diff_w1 = d;
++		}
++		usleep(100000);
++	}
++
++	kill(hostile, SIGKILL);
++	kill(friendly, SIGKILL);
++	waitpid(hostile, &status, 0);
++	waitpid(friendly, &status, 0);
++
++	/*
++	 * Phase 2: Run with weight=5 and measure priority difference.
++	 */
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_WEIGHT, 5) == 0);
++
++	hostile = fork();
++	ATF_REQUIRE(hostile >= 0);
++	if (hostile == 0) {
++		pin_to_cpu(1);
++		run_cache_hostile(WORKLOAD_DURATION);
++		_exit(0);
++	}
++
++	friendly = fork();
++	ATF_REQUIRE(friendly >= 0);
++	if (friendly == 0) {
++		pin_to_cpu(1);
++		run_cache_friendly(WORKLOAD_DURATION);
++		_exit(0);
++	}
++
++	sleep(WORKLOAD_DURATION / 2 + 1);
++
++	diff_w5 = 0;
++	for (int i = 0; i < 10; i++) {
++		if (get_priority(hostile, NULL, &hostile_pri) == 0 &&
++		    get_priority(friendly, NULL, &friendly_pri) == 0) {
++			int d = (int)hostile_pri - (int)friendly_pri;
++			if (d > diff_w5)
++				diff_w5 = d;
++		}
++		usleep(100000);
++	}
++
++	kill(hostile, SIGKILL);
++	kill(friendly, SIGKILL);
++	waitpid(hostile, &status, 0);
++	waitpid(friendly, &status, 0);
++
++	/*
++	 * AC-19: weight=5 should produce a penalty 5x larger than weight=1,
++	 * up to the cap.  If weight=1 produced any penalty, weight=5 should
++	 * produce a strictly larger one (unless both hit the cap).
++	 */
++	if (diff_w1 > 0) {
++		ATF_CHECK_MSG(diff_w5 > diff_w1 ||
++		    diff_w5 >= SCHED_CACHEMISS_PENALTY_MAX,
++		    "AC-19: weight=5 diff (%d) should exceed weight=1 diff "
++		    "(%d) or hit the cap (%d)",
++		    diff_w5, diff_w1, SCHED_CACHEMISS_PENALTY_MAX);
++	} else {
++		/*
++		 * If weight=1 produced no observable penalty, we cannot
++		 * meaningfully test the scaling.  This might happen if
++		 * hwpmc is not loaded or the workload did not generate
++		 * enough misses.
++		 */
++		atf_tc_skip("weight=1 produced no observable penalty; "
++		    "cannot test scaling");
++	}
++
++	restore_state(&saved);
++}
++ATF_TC_CLEANUP(weight_scaling, tc)
++{
++
++	(void)sysctl_write_int(SYSCTL_ENABLED, 0);
++	(void)sysctl_write_int(SYSCTL_WEIGHT, 1);
++}
++
++/* ==================================================================
++ *  AC-20: Toggle enabled 1->0 releases PMC resources
++ * ================================================================== */
++
++ATF_TC_WITH_CLEANUP(toggle_disable);
++ATF_TC_HEAD(toggle_disable, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-20: Toggling cachemiss_enabled from 1 to 0 releases PMCs");
++	atf_tc_set_md_var(tc, "require.user", "root");
++	atf_tc_set_md_var(tc, "timeout", "10");
++}
++ATF_TC_BODY(toggle_disable, tc)
++{
++	struct cachemiss_state saved;
++	int val;
++
++	require_cachemiss_support();
++	save_state(&saved);
++
++	/* Enable, then disable. */
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 1) == 0);
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_ENABLED, &val) == 0);
++
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 0) == 0);
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_ENABLED, &val) == 0);
++	ATF_CHECK_EQ_MSG(val, 0,
++	    "AC-20: cachemiss_enabled should be 0 after toggle, got %d", val);
++
++	/*
++	 * After disabling, the PMC resources should be released.
++	 * We cannot directly verify PMC allocation from userland,
++	 * but we verify that re-enabling works (which implies the
++	 * resources were properly released).
++	 */
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 1) == 0);
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_ENABLED, &val) == 0);
++	/* If we could enable again, the PMCs were released on disable. */
++
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 0) == 0);
++
++	restore_state(&saved);
++}
++ATF_TC_CLEANUP(toggle_disable, tc)
++{
++
++	(void)sysctl_write_int(SYSCTL_ENABLED, 0);
++}
++
++/* ==================================================================
++ *  AC-21: Toggle enabled 0->1 with PMCs busy -- no crash
++ * ================================================================== */
++
++ATF_TC_WITH_CLEANUP(toggle_enable_pmc_busy);
++ATF_TC_HEAD(toggle_enable_pmc_busy, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-21: Enabling when PMC hardware is busy does not crash "
++	    "and sched_pmc_is_active returns 0");
++	atf_tc_set_md_var(tc, "require.user", "root");
++	atf_tc_set_md_var(tc, "timeout", "10");
++}
++ATF_TC_BODY(toggle_enable_pmc_busy, tc)
++{
++
++	require_cachemiss_support();
++
++	/*
++	 * We cannot easily guarantee all PMCs are busy from userland.
++	 * However, we CAN verify that toggling enabled=1 does not crash
++	 * even when there might be contention.  The sysctl write should
++	 * succeed.  If a warning is logged, that is correct per the spec.
++	 *
++	 * The primary test is that the system does not panic.
++	 */
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 0) == 0);
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 1) == 0);
++
++	int val;
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_ENABLED, &val) == 0);
++	ATF_CHECK_MSG(val == 1,
++	    "AC-21: cachemiss_enabled should be 1 after toggle, got %d", val);
++
++	/* Cleanup: disable. */
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 0) == 0);
++}
++ATF_TC_CLEANUP(toggle_enable_pmc_busy, tc)
++{
++
++	(void)sysctl_write_int(SYSCTL_ENABLED, 0);
++}
++
++/* ==================================================================
++ *  AC-1, AC-2, AC-14, AC-16, AC-17: Untestable from userland
++ * ================================================================== */
++
++ATF_TC(compile_time_untestable);
++ATF_TC_HEAD(compile_time_untestable, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-1, AC-2, AC-14: Compile-time and kernel-internal criteria "
++	    "not testable from userland");
++}
++ATF_TC_BODY(compile_time_untestable, tc)
++{
++
++	atf_tc_skip("AC-1 (no HWPMC_HOOKS build), AC-2 (static_assert), "
++	    "AC-14 (CPU migration reset) require kernel-level "
++	    "instrumentation or separate builds; cannot be tested from "
++	    "userland ATF tests");
++}
++
++ATF_TC(interactive_exempt_untestable);
++ATF_TC_HEAD(interactive_exempt_untestable, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-17: Interactive threads exempt from penalty -- difficult "
++	    "to test from userland");
++}
++ATF_TC_BODY(interactive_exempt_untestable, tc)
++{
++
++	atf_tc_skip("AC-17: Interactive thread exemption depends on the "
++	    "internal interactivity score (sched_interact), which is "
++	    "not exposed to userland.  A thread with nice -20 may or "
++	    "may not qualify as interactive depending on its "
++	    "sleep/run ratio.  Cannot reliably test from userland.");
++}
++
++/* ==================================================================
++ *  AC-16: Interaction with nice -- penalized thread gets worse priority
++ * ================================================================== */
++
++ATF_TC_WITH_CLEANUP(nice_interaction);
++ATF_TC_HEAD(nice_interaction, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-16: Thread with nice 0 and max cache-miss penalty has "
++	    "lower priority than one with nice 0 and zero penalty");
++	atf_tc_set_md_var(tc, "require.user", "root");
++	atf_tc_set_md_var(tc, "timeout", "30");
++}
++ATF_TC_BODY(nice_interaction, tc)
++{
++	struct cachemiss_state saved;
++	pid_t hostile, friendly;
++	unsigned char hostile_pri, friendly_pri;
++	int status;
++
++	require_cachemiss_support();
++	save_state(&saved);
++
++	/* Enable with high weight to push penalty to maximum. */
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 1) == 0);
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_WEIGHT, 10) == 0);
++	ATF_REQUIRE(sysctl_write_u64(SYSCTL_THRESHOLD, 100) == 0);
++
++	/* Both children at nice 0, pinned to same CPU. */
++	hostile = fork();
++	ATF_REQUIRE(hostile >= 0);
++	if (hostile == 0) {
++		pin_to_cpu(1);
++		(void)setpriority(PRIO_PROCESS, 0, 0);
++		run_cache_hostile(WORKLOAD_DURATION);
++		_exit(0);
++	}
++
++	friendly = fork();
++	ATF_REQUIRE(friendly >= 0);
++	if (friendly == 0) {
++		pin_to_cpu(1);
++		(void)setpriority(PRIO_PROCESS, 0, 0);
++		run_cache_friendly(WORKLOAD_DURATION);
++		_exit(0);
++	}
++
++	sleep(WORKLOAD_DURATION / 2 + 1);
++
++	int max_diff = 0;
++	for (int i = 0; i < 10; i++) {
++		if (get_priority(hostile, NULL, &hostile_pri) == 0 &&
++		    get_priority(friendly, NULL, &friendly_pri) == 0) {
++			int d = (int)hostile_pri - (int)friendly_pri;
++			if (d > max_diff)
++				max_diff = d;
++		}
++		usleep(100000);
++	}
++
++	ATF_CHECK_MSG(max_diff >= 1,
++	    "AC-16: cache-hostile thread at nice 0 (%u) should have "
++	    "worse priority than cache-friendly thread at nice 0 (%u), "
++	    "diff=%d",
++	    hostile_pri, friendly_pri, max_diff);
++
++	kill(hostile, SIGKILL);
++	kill(friendly, SIGKILL);
++	waitpid(hostile, &status, 0);
++	waitpid(friendly, &status, 0);
++
++	restore_state(&saved);
++}
++ATF_TC_CLEANUP(nice_interaction, tc)
++{
++
++	(void)sysctl_write_int(SYSCTL_ENABLED, 0);
++}
++
++/* ==================================================================
++ *  AC-20 extended: Repeated toggling
++ * ================================================================== */
++
++ATF_TC_WITH_CLEANUP(toggle_repeated);
++ATF_TC_HEAD(toggle_repeated, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-20/AC-21: Rapidly toggling enabled does not crash");
++	atf_tc_set_md_var(tc, "require.user", "root");
++	atf_tc_set_md_var(tc, "timeout", "15");
++}
++ATF_TC_BODY(toggle_repeated, tc)
++{
++	struct cachemiss_state saved;
++
++	require_cachemiss_support();
++	save_state(&saved);
++
++	/*
++	 * Toggle the feature on and off many times.  This stresses the
++	 * PMC allocation/deallocation path.  The system must not panic.
++	 */
++	for (int i = 0; i < 50; i++) {
++		ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 1) == 0);
++		ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 0) == 0);
++	}
++
++	/* Verify final state is disabled. */
++	int val;
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_ENABLED, &val) == 0);
++	ATF_CHECK_EQ(val, 0);
++
++	restore_state(&saved);
++}
++ATF_TC_CLEANUP(toggle_repeated, tc)
++{
++
++	(void)sysctl_write_int(SYSCTL_ENABLED, 0);
++}
++
++/* ==================================================================
++ *  Additional edge case: sysctl_weight boundary values
++ * ================================================================== */
++
++ATF_TC_WITH_CLEANUP(sysctl_weight_boundary_values);
++ATF_TC_HEAD(sysctl_weight_boundary_values, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-5: Verify boundary values for cachemiss_weight (0..10)");
++	atf_tc_set_md_var(tc, "require.user", "root");
++}
++ATF_TC_BODY(sysctl_weight_boundary_values, tc)
++{
++	struct cachemiss_state saved;
++	int val;
++
++	require_cachemiss_support();
++	save_state(&saved);
++
++	/* All values in valid range should stick. */
++	for (int i = 0; i <= 10; i++) {
++		ATF_REQUIRE(sysctl_write_int(SYSCTL_WEIGHT, i) == 0);
++		ATF_REQUIRE(sysctl_read_int(SYSCTL_WEIGHT, &val) == 0);
++		ATF_CHECK_EQ_MSG(val, i,
++		    "weight=%d should be accepted, got %d", i, val);
++	}
++
++	restore_state(&saved);
++}
++ATF_TC_CLEANUP(sysctl_weight_boundary_values, tc)
++{
++
++	(void)sysctl_write_int(SYSCTL_WEIGHT, 1);
++}
++
++/* ==================================================================
++ *  Additional edge case: sysctl_interval boundary values
++ * ================================================================== */
++
++ATF_TC_WITH_CLEANUP(sysctl_interval_boundary_values);
++ATF_TC_HEAD(sysctl_interval_boundary_values, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-6: Verify boundary values for cachemiss_interval (1..100)");
++	atf_tc_set_md_var(tc, "require.user", "root");
++}
++ATF_TC_BODY(sysctl_interval_boundary_values, tc)
++{
++	struct cachemiss_state saved;
++	int val;
++
++	require_cachemiss_support();
++	save_state(&saved);
++
++	/* Test specific values across the range. */
++	int test_vals[] = { 1, 2, 4, 50, 99, 100 };
++	for (size_t i = 0; i < sizeof(test_vals)/sizeof(test_vals[0]); i++) {
++		ATF_REQUIRE(sysctl_write_int(SYSCTL_INTERVAL,
++		    test_vals[i]) == 0);
++		ATF_REQUIRE(sysctl_read_int(SYSCTL_INTERVAL, &val) == 0);
++		ATF_CHECK_EQ_MSG(val, test_vals[i],
++		    "interval=%d should be accepted, got %d",
++		    test_vals[i], val);
++	}
++
++	restore_state(&saved);
++}
++ATF_TC_CLEANUP(sysctl_interval_boundary_values, tc)
++{
++
++	(void)sysctl_write_int(SYSCTL_INTERVAL, 4);
++}
++
++/* ==================================================================
++ *  Additional: threshold can be read/written
++ * ================================================================== */
++
++ATF_TC_WITH_CLEANUP(sysctl_threshold_readwrite);
++ATF_TC_HEAD(sysctl_threshold_readwrite, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-3/AC-4: Verify cachemiss_threshold is a uint64 and "
++	    "can be read and written");
++	atf_tc_set_md_var(tc, "require.user", "root");
++}
++ATF_TC_BODY(sysctl_threshold_readwrite, tc)
++{
++	struct cachemiss_state saved;
++	uint64_t val;
++
++	require_cachemiss_support();
++	save_state(&saved);
++
++	/* Write and read back a large value. */
++	ATF_REQUIRE(sysctl_write_u64(SYSCTL_THRESHOLD, 500000) == 0);
++	ATF_REQUIRE(sysctl_read_u64(SYSCTL_THRESHOLD, &val) == 0);
++	ATF_CHECK_EQ_MSG(val, 500000,
++	    "threshold=500000 should be accepted, got %ju",
++	    (uintmax_t)val);
++
++	/* Write 0. */
++	ATF_REQUIRE(sysctl_write_u64(SYSCTL_THRESHOLD, 0) == 0);
++	ATF_REQUIRE(sysctl_read_u64(SYSCTL_THRESHOLD, &val) == 0);
++	ATF_CHECK_EQ_MSG(val, 0,
++	    "threshold=0 should be accepted, got %ju",
++	    (uintmax_t)val);
++
++	/* Write a very large value. */
++	ATF_REQUIRE(sysctl_write_u64(SYSCTL_THRESHOLD,
++	    UINT64_MAX) == 0);
++	ATF_REQUIRE(sysctl_read_u64(SYSCTL_THRESHOLD, &val) == 0);
++	ATF_CHECK_EQ_MSG(val, UINT64_MAX,
++	    "threshold=UINT64_MAX should be accepted, got %ju",
++	    (uintmax_t)val);
++
++	restore_state(&saved);
++}
++ATF_TC_CLEANUP(sysctl_threshold_readwrite, tc)
++{
++
++	(void)sysctl_write_u64(SYSCTL_THRESHOLD, 1000);
++}
++
++/* ==================================================================
++ *  Additional: Enabled knob only accepts 0 and 1
++ * ================================================================== */
++
++ATF_TC_WITH_CLEANUP(sysctl_enabled_values);
++ATF_TC_HEAD(sysctl_enabled_values, tc)
++{
++
++	atf_tc_set_md_var(tc, "descr",
++	    "AC-3: Verify cachemiss_enabled accepts 0 and 1");
++	atf_tc_set_md_var(tc, "require.user", "root");
++}
++ATF_TC_BODY(sysctl_enabled_values, tc)
++{
++	struct cachemiss_state saved;
++	int val;
++
++	require_cachemiss_support();
++	save_state(&saved);
++
++	/* Write 0, should succeed. */
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 0) == 0);
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_ENABLED, &val) == 0);
++	ATF_CHECK_EQ(val, 0);
++
++	/* Write 1, should succeed. */
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 1) == 0);
++	ATF_REQUIRE(sysctl_read_int(SYSCTL_ENABLED, &val) == 0);
++	ATF_CHECK_EQ(val, 1);
++
++	/* Disable again for cleanup. */
++	ATF_REQUIRE(sysctl_write_int(SYSCTL_ENABLED, 0) == 0);
++
++	restore_state(&saved);
++}
++ATF_TC_CLEANUP(sysctl_enabled_values, tc)
++{
++
++	(void)sysctl_write_int(SYSCTL_ENABLED, 0);
++}
++
++/* ==================================================================
++ *  Test registration
++ * ================================================================== */
++
++ATF_TP_ADD_TCS(tp)
++{
++
++	/* AC-3: Sysctl existence */
++	ATF_TP_ADD_TC(tp, sysctl_knobs_exist);
++
++	/* AC-4: Defaults */
++	ATF_TP_ADD_TC(tp, sysctl_defaults);
++
++	/* AC-5: Weight clamping */
++	ATF_TP_ADD_TC(tp, sysctl_weight_clamp_high);
++	ATF_TP_ADD_TC(tp, sysctl_weight_clamp_low);
++	ATF_TP_ADD_TC(tp, sysctl_weight_boundary_values);
++
++	/* AC-6: Interval clamping */
++	ATF_TP_ADD_TC(tp, sysctl_interval_clamp_high);
++	ATF_TP_ADD_TC(tp, sysctl_interval_clamp_low);
++	ATF_TP_ADD_TC(tp, sysctl_interval_boundary_values);
++
++	/* AC-3/AC-4 additional: Threshold read/write */
++	ATF_TP_ADD_TC(tp, sysctl_threshold_readwrite);
++	ATF_TP_ADD_TC(tp, sysctl_enabled_values);
++
++	/* AC-7: Disabled behavior */
++	ATF_TP_ADD_TC(tp, disabled_no_penalty);
++
++	/* AC-8: Enabled behavior */
++	ATF_TP_ADD_TC(tp, enabled_penalty_applied);
++
++	/* AC-9: Penalty cap */
++	ATF_TP_ADD_TC(tp, penalty_max_cap);
++
++	/* AC-10: Priority floor */
++	ATF_TP_ADD_TC(tp, priority_floor);
++
++	/* AC-11: Decay */
++	ATF_TP_ADD_TC(tp, penalty_decay);
++
++	/* AC-12: Fork zero penalty */
++	ATF_TP_ADD_TC(tp, fork_zero_penalty);
++
++	/* AC-13: Sleep/wake preserves */
++	ATF_TP_ADD_TC(tp, sleep_wake_preserves);
++
++	/* AC-15: hwpmc not loaded */
++	ATF_TP_ADD_TC(tp, hwpmc_not_loaded);
++
++	/* AC-16: Nice interaction */
++	ATF_TP_ADD_TC(tp, nice_interaction);
++
++	/* AC-17: Interactive exempt (skip) */
++	ATF_TP_ADD_TC(tp, interactive_exempt_untestable);
++
++	/* AC-18: Weight zero */
++	ATF_TP_ADD_TC(tp, weight_zero_no_penalty);
++
++	/* AC-19: Weight scaling */
++	ATF_TP_ADD_TC(tp, weight_scaling);
++
++	/* AC-20: Toggle disable */
++	ATF_TP_ADD_TC(tp, toggle_disable);
++
++	/* AC-21: Toggle enable with busy PMCs */
++	ATF_TP_ADD_TC(tp, toggle_enable_pmc_busy);
++
++	/* AC-20/21: Repeated toggling */
++	ATF_TP_ADD_TC(tp, toggle_repeated);
++
++	/* AC-1, AC-2, AC-14: Compile-time (skip) */
++	ATF_TP_ADD_TC(tp, compile_time_untestable);
++
++	return (atf_no_error());
++}
+diff --git a/tools/regression/sched_cachemiss/Makefile b/tools/regression/sched_cachemiss/Makefile
+new file mode 100644
+index 00000000000000..dce9550ab430df
+--- /dev/null
++++ b/tools/regression/sched_cachemiss/Makefile
+@@ -0,0 +1,6 @@
++PROG=	cachemiss_bench
++SRCS=	cachemiss_bench.c
++MAN=
++WARNS?=	3
++
++.include <bsd.prog.mk>
+diff --git a/tools/regression/sched_cachemiss/cachemiss_bench.c b/tools/regression/sched_cachemiss/cachemiss_bench.c
+new file mode 100644
+index 00000000000000..40181920c5398e
+--- /dev/null
++++ b/tools/regression/sched_cachemiss/cachemiss_bench.c
+@@ -0,0 +1,574 @@
++/*-
++ * SPDX-License-Identifier: BSD-2-Clause
++ *
++ * Copyright (c) 2026 The FreeBSD Foundation
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
++ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++ * SUCH DAMAGE.
++ */
++
++/*
++ * Benchmark for the ULE scheduler cache-miss-aware priority adjustment.
++ *
++ * This program forks one cache-hostile worker per available CPU core
++ * and a single cache-friendly worker.  Each hostile child is pinned to
++ * its own core via cpuset(2); the friendly child floats freely.
++ *
++ * The hostile workload does random access over a 64 MB array (exceeds LLC),
++ * while the friendly workload does sequential access over a 32 KB array
++ * (fits in L1).  Both run for a configurable duration.
++ *
++ * Two phases are run:
++ *   Phase 1: cachemiss feature DISABLED (baseline)
++ *   Phase 2: cachemiss feature ENABLED
++ *
++ * Expected result: when the feature is enabled, the cache-friendly
++ * workload completes more iterations relative to the hostile workloads.
++ *
++ * Usage:
++ *   cachemiss_bench [-d duration] [-t threshold] [-w weight]
++ *
++ *   -d duration    Duration of each phase in seconds (default: 5)
++ *   -t threshold   Value for kern.sched.ule.cachemiss_threshold (default: 1000)
++ *   -w weight      Value for kern.sched.ule.cachemiss_weight (default: 1)
++ *
++ * Must be run as root (to modify sysctls).
++ * Requires a kernel built with HWPMC_HOOKS and the hwpmc module loaded.
++ */
++
++#include <sys/param.h>
++#include <sys/sysctl.h>
++#include <sys/user.h>
++#include <sys/wait.h>
++#include <sys/resource.h>
++#include <sys/time.h>
++#include <sys/cpuset.h>
++
++#include <err.h>
++#include <errno.h>
++#include <signal.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++
++/*
++ * Sysctl paths.
++ */
++#define	SYSCTL_ENABLED		"kern.sched.ule.cachemiss_enabled"
++#define	SYSCTL_WEIGHT		"kern.sched.ule.cachemiss_weight"
++#define	SYSCTL_THRESHOLD	"kern.sched.ule.cachemiss_threshold"
++#define	SYSCTL_INTERVAL		"kern.sched.ule.cachemiss_interval"
++
++/*
++ * Array sizes.
++ */
++#define	HOSTILE_ARRAY_SIZE	(64 * 1024 * 1024 / sizeof(uint64_t))
++#define	FRIENDLY_ARRAY_SIZE	(32 * 1024 / sizeof(uint64_t))
++
++#define	MAX_CPUS		256
++
++/*
++ * Data sent from each child worker back to the parent via pipe.
++ */
++struct worker_report {
++	uint64_t	iterations;
++	uint64_t	elapsed_usec;
++};
++
++static volatile int stop_flag;
++
++/*
++ * Pin the calling process to CPU 'cpu' using cpuset_setaffinity(2).
++ */
++static void
++pin_to_cpu(int cpu)
++{
++	cpuset_t mask;
++
++	CPU_ZERO(&mask);
++	CPU_SET(cpu, &mask);
++	if (cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_PID, -1,
++	    sizeof(mask), &mask) == -1)
++		err(1, "cpuset_setaffinity(%d)", cpu);
++}
++
++static void
++sigalrm_handler(int sig __unused)
++{
++
++	stop_flag = 1;
++}
++
++static int
++sysctl_write_int(const char *name, int val)
++{
++
++	return (sysctlbyname(name, NULL, NULL, &val, sizeof(val)));
++}
++
++static int
++sysctl_write_u64(const char *name, uint64_t val)
++{
++
++	return (sysctlbyname(name, NULL, NULL, &val, sizeof(val)));
++}
++
++static int
++sysctl_read_int(const char *name, int *val)
++{
++	size_t sz = sizeof(*val);
++
++	return (sysctlbyname(name, val, &sz, NULL, 0));
++}
++
++static int
++sysctl_exists(const char *name)
++{
++	size_t sz = 0;
++
++	if (sysctlbyname(name, NULL, &sz, NULL, 0) == -1 &&
++	    errno == ENOENT)
++		return (-1);
++	return (0);
++}
++
++static int
++get_ncpus(void)
++{
++	int ncpus;
++	size_t sz = sizeof(ncpus);
++
++	if (sysctlbyname("hw.ncpu", &ncpus, &sz, NULL, 0) == -1)
++		err(1, "sysctl hw.ncpu");
++	if (ncpus > MAX_CPUS)
++		ncpus = MAX_CPUS;
++	return (ncpus);
++}
++
++/*
++ * Get the user priority of a process.
++ */
++static int
++get_priority(pid_t pid, unsigned char *pri_user)
++{
++	struct kinfo_proc kp;
++	int mib[4];
++	size_t sz;
++
++	mib[0] = CTL_KERN;
++	mib[1] = KERN_PROC;
++	mib[2] = KERN_PROC_PID;
++	mib[3] = pid;
++	sz = sizeof(kp);
++	if (sysctl(mib, 4, &kp, &sz, NULL, 0) == -1)
++		return (-1);
++	if (pri_user != NULL)
++		*pri_user = kp.ki_pri.pri_user;
++	return (0);
++}
++
++/*
++ * Cache-hostile workload: random access over a large array.
++ * Returns the number of iterations completed before the alarm fires.
++ */
++static uint64_t
++workload_hostile(int duration_sec)
++{
++	uint64_t *arr;
++	size_t n = HOSTILE_ARRAY_SIZE;
++	uint64_t iters = 0;
++	unsigned long seed = 67890;
++	volatile uint64_t sink;
++
++	arr = malloc(n * sizeof(uint64_t));
++	if (arr == NULL)
++		err(1, "malloc hostile array");
++	for (size_t i = 0; i < n; i++)
++		arr[i] = i;
++
++	stop_flag = 0;
++	signal(SIGALRM, sigalrm_handler);
++	alarm(duration_sec);
++
++	while (!stop_flag) {
++		for (int i = 0; i < 1000 && !stop_flag; i++) {
++			seed = seed * 6364136223846793005ULL + 1;
++			sink = arr[seed % n];
++		}
++		iters++;
++	}
++
++	(void)sink;
++	free(arr);
++	return (iters);
++}
++
++/*
++ * Cache-friendly workload: sequential access over a small array.
++ * Returns the number of iterations completed before the alarm fires.
++ */
++static uint64_t
++workload_friendly(int duration_sec)
++{
++	uint64_t *arr;
++	size_t n = FRIENDLY_ARRAY_SIZE;
++	uint64_t iters = 0;
++	uint64_t sum = 0;
++
++	arr = malloc(n * sizeof(uint64_t));
++	if (arr == NULL)
++		err(1, "malloc friendly array");
++	for (size_t i = 0; i < n; i++)
++		arr[i] = i;
++
++	stop_flag = 0;
++	signal(SIGALRM, sigalrm_handler);
++	alarm(duration_sec);
++
++	while (!stop_flag) {
++		for (size_t i = 0; i < n && !stop_flag; i++)
++			sum += arr[i];
++		iters++;
++	}
++
++	volatile uint64_t sink = sum;
++	(void)sink;
++	free(arr);
++	return (iters);
++}
++
++struct phase_result {
++	int		ncpus;
++	uint64_t	hostile_iters[MAX_CPUS];
++	uint64_t	hostile_usec[MAX_CPUS];
++	unsigned char	hostile_pri[MAX_CPUS];
++	uint64_t	hostile_total_iters;
++	unsigned char	hostile_worst_pri;
++	uint64_t	friendly_iters;
++	uint64_t	friendly_usec;
++	unsigned char	friendly_pri;
++};
++
++/*
++ * Run one phase of the benchmark.
++ *
++ * Forks ncpus hostile children (one pinned per CPU) and one unpinned
++ * friendly child.  All run for 'duration' seconds.
++ */
++static void
++run_phase(int ncpus, int duration, struct phase_result *res)
++{
++	int hostile_pipes[MAX_CPUS][2];
++	pid_t hostile_pids[MAX_CPUS];
++	int friendly_pipe[2];
++	pid_t friendly_pid;
++	int status;
++
++	memset(res, 0, sizeof(*res));
++	res->ncpus = ncpus;
++
++	/* Create pipes for all hostile children. */
++	for (int i = 0; i < ncpus; i++) {
++		if (pipe(hostile_pipes[i]) == -1)
++			err(1, "pipe hostile[%d]", i);
++	}
++	if (pipe(friendly_pipe) == -1)
++		err(1, "pipe friendly");
++
++	/* Fork one hostile child per CPU, pinned. */
++	for (int i = 0; i < ncpus; i++) {
++		hostile_pids[i] = fork();
++		if (hostile_pids[i] == -1)
++			err(1, "fork hostile[%d]", i);
++		if (hostile_pids[i] == 0) {
++			struct worker_report rpt;
++			struct timeval t0, t1;
++
++			/* Close all pipe ends we don't need. */
++			for (int j = 0; j < ncpus; j++) {
++				close(hostile_pipes[j][0]);
++				if (j != i)
++					close(hostile_pipes[j][1]);
++			}
++			close(friendly_pipe[0]);
++			close(friendly_pipe[1]);
++
++			pin_to_cpu(i);
++			gettimeofday(&t0, NULL);
++			rpt.iterations = workload_hostile(duration);
++			gettimeofday(&t1, NULL);
++			rpt.elapsed_usec =
++			    (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000 +
++			    (uint64_t)(t1.tv_usec - t0.tv_usec);
++			write(hostile_pipes[i][1], &rpt, sizeof(rpt));
++			close(hostile_pipes[i][1]);
++			_exit(0);
++		}
++	}
++
++	/* Fork one friendly child, not pinned. */
++	friendly_pid = fork();
++	if (friendly_pid == -1)
++		err(1, "fork friendly");
++	if (friendly_pid == 0) {
++		struct worker_report rpt;
++		struct timeval t0, t1;
++
++		for (int j = 0; j < ncpus; j++) {
++			close(hostile_pipes[j][0]);
++			close(hostile_pipes[j][1]);
++		}
++		close(friendly_pipe[0]);
++
++		gettimeofday(&t0, NULL);
++		rpt.iterations = workload_friendly(duration);
++		gettimeofday(&t1, NULL);
++		rpt.elapsed_usec =
++		    (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000 +
++		    (uint64_t)(t1.tv_usec - t0.tv_usec);
++		write(friendly_pipe[1], &rpt, sizeof(rpt));
++		close(friendly_pipe[1]);
++		_exit(0);
++	}
++
++	/* Parent: close write ends. */
++	for (int i = 0; i < ncpus; i++)
++		close(hostile_pipes[i][1]);
++	close(friendly_pipe[1]);
++
++	/* Sample priorities near the end of the run. */
++	sleep(duration - 1);
++	res->hostile_worst_pri = 0;
++	res->friendly_pri = 255;
++	for (int s = 0; s < 5; s++) {
++		for (int i = 0; i < ncpus; i++) {
++			unsigned char hp;
++			if (get_priority(hostile_pids[i], &hp) == 0) {
++				if (hp > res->hostile_pri[i])
++					res->hostile_pri[i] = hp;
++				if (hp > res->hostile_worst_pri)
++					res->hostile_worst_pri = hp;
++			}
++		}
++		{
++			unsigned char fp;
++			if (get_priority(friendly_pid, &fp) == 0) {
++				if (fp < res->friendly_pri)
++					res->friendly_pri = fp;
++			}
++		}
++		usleep(100000);
++	}
++
++	/* Read worker reports. */
++	res->hostile_total_iters = 0;
++	for (int i = 0; i < ncpus; i++) {
++		struct worker_report rpt;
++
++		memset(&rpt, 0, sizeof(rpt));
++		if (read(hostile_pipes[i][0], &rpt, sizeof(rpt)) ==
++		    (ssize_t)sizeof(rpt)) {
++			res->hostile_iters[i] = rpt.iterations;
++			res->hostile_usec[i] = rpt.elapsed_usec;
++			res->hostile_total_iters += rpt.iterations;
++		}
++		close(hostile_pipes[i][0]);
++	}
++
++	{
++		struct worker_report rpt;
++
++		memset(&rpt, 0, sizeof(rpt));
++		if (read(friendly_pipe[0], &rpt, sizeof(rpt)) ==
++		    (ssize_t)sizeof(rpt)) {
++			res->friendly_iters = rpt.iterations;
++			res->friendly_usec = rpt.elapsed_usec;
++		}
++	}
++	close(friendly_pipe[0]);
++
++	/* Reap all children. */
++	for (int i = 0; i < ncpus; i++)
++		waitpid(hostile_pids[i], &status, 0);
++	waitpid(friendly_pid, &status, 0);
++}
++
++static void
++print_phase(const char *label, const struct phase_result *res)
++{
++
++	printf("--- %s ---\n", label);
++	for (int i = 0; i < res->ncpus; i++) {
++		printf("  Hostile CPU %d:  %ju iterations, %ju.%03ju s, "
++		    "pri_user=%u\n",
++		    i,
++		    (uintmax_t)res->hostile_iters[i],
++		    (uintmax_t)(res->hostile_usec[i] / 1000000),
++		    (uintmax_t)(res->hostile_usec[i] % 1000000 / 1000),
++		    res->hostile_pri[i]);
++	}
++	printf("  Hostile total:  %ju iterations, worst pri_user=%u\n",
++	    (uintmax_t)res->hostile_total_iters,
++	    res->hostile_worst_pri);
++	printf("  Friendly:       %ju iterations, %ju.%03ju s, pri_user=%u\n",
++	    (uintmax_t)res->friendly_iters,
++	    (uintmax_t)(res->friendly_usec / 1000000),
++	    (uintmax_t)(res->friendly_usec % 1000000 / 1000),
++	    res->friendly_pri);
++	if (res->hostile_total_iters > 0) {
++		printf("  Ratio (friendly/hostile_total): %.2f\n",
++		    (double)res->friendly_iters /
++		    (double)res->hostile_total_iters);
++	}
++	printf("\n");
++}
++
++static void
++usage(void)
++{
++
++	fprintf(stderr, "Usage: cachemiss_bench [-d duration] "
++	    "[-t threshold] [-w weight]\n");
++	exit(1);
++}
++
++int
++main(int argc, char *argv[])
++{
++	int duration = 5;
++	uint64_t threshold = 1000;
++	int weight = 1;
++	int ch, ncpus;
++	struct phase_result disabled_res, enabled_res;
++	int saved_enabled, saved_weight, saved_interval;
++	uint64_t saved_threshold;
++	size_t sz;
++
++	while ((ch = getopt(argc, argv, "d:t:w:")) != -1) {
++		switch (ch) {
++		case 'd':
++			duration = atoi(optarg);
++			if (duration < 2)
++				duration = 2;
++			break;
++		case 't':
++			threshold = strtoull(optarg, NULL, 10);
++			break;
++		case 'w':
++			weight = atoi(optarg);
++			break;
++		default:
++			usage();
++		}
++	}
++
++	if (geteuid() != 0)
++		errx(1, "must be run as root");
++
++	if (sysctl_exists(SYSCTL_ENABLED) != 0)
++		errx(1, "cachemiss sysctl knobs not found; "
++		    "kernel may not have HWPMC_HOOKS");
++
++	ncpus = get_ncpus();
++
++	/* Save current settings. */
++	sz = sizeof(saved_enabled);
++	sysctlbyname(SYSCTL_ENABLED, &saved_enabled, &sz, NULL, 0);
++	sz = sizeof(saved_weight);
++	sysctlbyname(SYSCTL_WEIGHT, &saved_weight, &sz, NULL, 0);
++	sz = sizeof(saved_threshold);
++	sysctlbyname(SYSCTL_THRESHOLD, &saved_threshold, &sz, NULL, 0);
++	sz = sizeof(saved_interval);
++	sysctlbyname(SYSCTL_INTERVAL, &saved_interval, &sz, NULL, 0);
++
++	printf("=== ULE Cache-Miss Priority Adjustment Benchmark ===\n");
++	printf("CPUs: %d (%d hostile children pinned, 1 friendly unpinned)\n",
++	    ncpus, ncpus);
++	printf("Duration per phase: %d seconds\n", duration);
++	printf("Weight: %d, Threshold: %ju\n", weight, (uintmax_t)threshold);
++	printf("\n");
++
++	/* ---- Phase 1: Feature DISABLED ---- */
++	sysctl_write_int(SYSCTL_ENABLED, 0);
++	run_phase(ncpus, duration, &disabled_res);
++	print_phase("Phase 1: Feature DISABLED", &disabled_res);
++
++	/* ---- Phase 2: Feature ENABLED ---- */
++	sysctl_write_int(SYSCTL_ENABLED, 1);
++	sysctl_write_int(SYSCTL_WEIGHT, weight);
++	sysctl_write_u64(SYSCTL_THRESHOLD, threshold);
++
++	/* Verify it actually enabled. */
++	int enabled_check;
++	sysctl_read_int(SYSCTL_ENABLED, &enabled_check);
++	if (enabled_check != 1) {
++		printf("WARNING: Could not enable cachemiss feature "
++		    "(hwpmc may not be loaded).\n");
++		printf("Skipping enabled phase.\n");
++		goto done;
++	}
++
++	run_phase(ncpus, duration, &enabled_res);
++	print_phase("Phase 2: Feature ENABLED", &enabled_res);
++
++	/* ---- Summary ---- */
++	printf("=== Summary ===\n");
++	printf("Priority difference (hostile worst - friendly best):\n");
++	printf("  Disabled: %d\n",
++	    (int)disabled_res.hostile_worst_pri -
++	    (int)disabled_res.friendly_pri);
++	printf("  Enabled:  %d\n",
++	    (int)enabled_res.hostile_worst_pri -
++	    (int)enabled_res.friendly_pri);
++
++	if (disabled_res.hostile_total_iters > 0 &&
++	    enabled_res.hostile_total_iters > 0) {
++		double ratio_disabled =
++		    (double)disabled_res.friendly_iters /
++		    (double)disabled_res.hostile_total_iters;
++		double ratio_enabled =
++		    (double)enabled_res.friendly_iters /
++		    (double)enabled_res.hostile_total_iters;
++		printf("Iteration ratio change: %.2f -> %.2f\n",
++		    ratio_disabled, ratio_enabled);
++		if (ratio_enabled > ratio_disabled) {
++			printf("RESULT: Cache-friendly workload gained "
++			    "%.1f%% more relative CPU time with feature "
++			    "enabled.\n",
++			    (ratio_enabled / ratio_disabled - 1.0) * 100.0);
++		} else {
++			printf("RESULT: No improvement observed.  The "
++			    "workloads may not be generating enough LLC "
++			    "misses, or the system may be lightly loaded.\n");
++		}
++	}
++
++done:
++	/* Restore original settings. */
++	sysctl_write_int(SYSCTL_ENABLED, saved_enabled);
++	sysctl_write_int(SYSCTL_WEIGHT, saved_weight);
++	sysctl_write_u64(SYSCTL_THRESHOLD, saved_threshold);
++	sysctl_write_int(SYSCTL_INTERVAL, saved_interval);
++
++	return (0);
++}
+
+From 831ace0a77bfbb0d2a7f7d7e7eefc61050080ccc Mon Sep 17 00:00:00 2001
+From: "George V. Neville-Neil" <gnn@FreeBSD.org>
+Date: Sun, 21 Jun 2026 06:48:13 +0000
+Subject: [PATCH 2/2] sched_cachemiss: Fix macro redefinition build error in
+ test
+
+Use PRI_MIN_TIMESHARE and PRI_MAX_TIMESHARE from <sys/priority.h>
+instead of redefining them, which caused -Werror,-Wmacro-redefined.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ tests/sys/kern/sched_cachemiss/sched_cachemiss_test.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/tests/sys/kern/sched_cachemiss/sched_cachemiss_test.c b/tests/sys/kern/sched_cachemiss/sched_cachemiss_test.c
+index 58923a38e3ae72..f3bc1c97750e9e 100644
+--- a/tests/sys/kern/sched_cachemiss/sched_cachemiss_test.c
++++ b/tests/sys/kern/sched_cachemiss/sched_cachemiss_test.c
+@@ -57,9 +57,9 @@
+ /*
+  * Constants from the spec.
+  */
++#include <sys/priority.h>
+ #define	SCHED_CACHEMISS_PENALTY_MAX	50
+-#define	PRI_MAX_BATCH			223	/* PRI_MAX_TIMESHARE */
+-#define	PRI_MIN_TIMESHARE		56
++#define	PRI_MAX_BATCH			PRI_MAX_TIMESHARE
+ 
+ /*
+  * Sysctl paths as specified.

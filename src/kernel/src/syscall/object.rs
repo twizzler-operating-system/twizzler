@@ -261,8 +261,18 @@ pub fn sys_object_map(
         },
     };
     // TODO
-    let _res =
+    let res =
         crate::operations::map_object_into_context(slot, obj, vm, prot.into(), flags, target_sctx);
+    if let Err(e) = res {
+        log::warn!(
+            "sys_object_map slot {} obj {} sctx {} failed: {:?} [{}]",
+            slot,
+            id,
+            target_sctx,
+            e,
+            MapCaller
+        );
+    }
     Ok(slot)
 }
 

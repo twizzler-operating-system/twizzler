@@ -13,55 +13,60 @@ use crate::{machine::info::devicetree, memory::VirtAddr, processor::Processor};
 
 // According to Section 6.4 the MMU and caches are disabled
 // and software must set the EL1h stack pointer
-unsafe fn psci_secondary_entry(context_id: &BootArgs) -> ! {
-    // TODO: manually set the configuration of registers
+/// Entry point handed to PSCI. Entered with the MMU **off**, at this function's physical
+/// address, with x0 = the physical address of the core's [`BootArgs`].
+///
+/// Naked deliberately: an ordinary Rust function's prologue writes to SP, and a freshly started
+/// core's SP is undefined. It also cannot call anything, for the same reason.
+#[unsafe(naked)]
+unsafe extern "C" fn psci_secondary_entry(context_id: *const BootArgs) -> ! {
+    core::arch::naked_asm!(
+        "ldr x1, [x0, #{mair}]",
+        "msr mair_el1, x1",
+        "ldr x1, [x0, #{ttbr0}]",
+        "msr ttbr0_el1, x1",
+        "ldr x1, [x0, #{ttbr1}]",
+        "msr ttbr1_el1, x1",
+        "ldr x1, [x0, #{tcr}]",
+        "msr tcr_el1, x1",
+        "isb",
 
-    // we need the lower half of memory identity mapped
-    // this is because we are using physical addresses here
-    // and when we turn on the mmu we still need to access
-    // instructions and other data in lower memory
-    core::arch::asm!(
-        // set up the system registers needed by address translation
-        "msr mair_el1, {}",
-        "msr ttbr0_el1, {}",
-        "msr ttbr1_el1, {}",
-        "msr tcr_el1, {}",
-        // ensure that all of these instructions commit
+        "ldr x1, [x0, #{cpacr}]",
+        "msr cpacr_el1, x1",
+        "ldr x1, [x0, #{entry}]",
+        "msr elr_el1, x1",
+        // The stack is recorded by its base; the pointer starts at the top, as x86's trampoline
+        // also does. Setting SP to the base put every push below the allocation.
+        "ldr x1, [x0, #{stack}]",
+        "mov x2, #{stack_size}",
+        "add x1, x1, x2",
+        "msr sp_el0, x1",
+        "ldr x1, [x0, #{spsr}]",
+        "msr spsr_el1, x1",
+        // Read sctlr while x0 is still the *physical* args pointer: the MMU is off until the
+        // store below, so a virtual x0 here would read a bogus address.
+        "ldr x1, [x0, #{sctlr}]",
+        // Hand the Rust entry the args by their kernel virtual address: the physical one we were
+        // given is not mapped once the MMU is on.
+        "ldr x0, [x0, #{self_va}]",
+        "msr sctlr_el1, x1",
         "isb",
-        // allow the use of FP instructions
-        "msr cpacr_el1, {}",
-        // set the entry point address (virtual)
-        "msr elr_el1, {}",
-        // set the stack pointer (virtual)
-        // TODO: set this and then use aarch64 cpu stuff
-        // TODO: verify if the way the stack grows is right
-        "msr sp_el0, {}",
-        // configure the execution state for EL1
-        "msr spsr_el1, {}",
-        // enable the MMU and caches
-        "msr sctlr_el1, {}",
-        // ensure that all other instructions commit
-        // before executing other code with virtual
-        // memory on
-        "isb",
-        // return to address specified in elr_el1
+        "mov w10, #0x45",
         "eret",
-        in(reg) context_id.mair,
-        in(reg) context_id.ttbr0,
-        in(reg) context_id.ttbr1,
-        in(reg) context_id.tcr,
-        in(reg) context_id.cpacr,
-        in(reg) context_id.entry,
-        in(reg) context_id.kernel_stack,
-        in(reg) context_id.spsr,
-        in(reg) context_id.sctlr,
-        options(noreturn, nostack),
-    );
+        mair = const core::mem::offset_of!(BootArgs, mair),
+        ttbr0 = const core::mem::offset_of!(BootArgs, ttbr0),
+        ttbr1 = const core::mem::offset_of!(BootArgs, ttbr1),
+        tcr = const core::mem::offset_of!(BootArgs, tcr),
+        cpacr = const core::mem::offset_of!(BootArgs, cpacr),
+        entry = const core::mem::offset_of!(BootArgs, entry),
+        stack = const core::mem::offset_of!(BootArgs, kernel_stack),
+        spsr = const core::mem::offset_of!(BootArgs, spsr),
+        sctlr = const core::mem::offset_of!(BootArgs, sctlr),
+        self_va = const core::mem::offset_of!(BootArgs, self_va),
+        stack_size = const crate::processor::KERNEL_STACK_SIZE,
+    )
 }
 
-/// At this point we expect the MMU to be turned on
-/// and paging to be functional. The executing environment
-/// should be set up so we can execute safe Rust code.
 fn rust_secondary_entry(args: &BootArgs) -> ! {
     // call the generic secondary cpu entry point
     crate::processor::mp::secondary_entry(
@@ -106,7 +111,12 @@ pub unsafe fn boot_core(core: &mut Processor, tcb_base: VirtAddr, kernel_stack: 
     core.arch.args.ttbr0 = TTBR0_EL1.get();
     core.arch.args.tcr = TCR_EL1.get();
     core.arch.args.sctlr = SCTLR_EL1.get();
-    core.arch.args.spsr = SPSR_EL1.get();
+    // EL1t with DAIF masked, not the BSP's current SPSR_EL1. `psci_secondary_entry` puts the
+    // secondary's stack in SP_EL0 and `init_secondary` is what promotes SPSel to ELx, so the
+    // `eret` must land in EL1**t**. Inheriting worked only while the bsp itself ran on SP_EL0:
+    // it now boots with SPSel=1, so the inherited value said EL1h and the secondary came up on
+    // an uninitialized SP_EL1 -- before `exception::init`, so with no vectors to report it.
+    core.arch.args.spsr = 0x3c4;
     core.arch.args.entry = rust_secondary_entry as u64;
     core.arch.args.cpacr = cpacr;
 
@@ -114,6 +124,23 @@ pub unsafe fn boot_core(core: &mut Processor, tcb_base: VirtAddr, kernel_stack: 
     core.arch.args.cpu = core.id;
     core.arch.args.tcb_base = tcb_base.raw();
     core.arch.args.kernel_stack = kernel_stack as u64;
+    core.arch.args.self_va = &core.arch.args as *const BootArgs as u64;
+
+    // The secondary reads these args with its MMU and caches OFF, so its loads bypass the
+    // caches the BSP just wrote them through. Clean the struct to the point of coherency, or the
+    // core comes up on stale ttbr/sctlr values and dies before it can install exception vectors.
+    unsafe {
+        let base = &core.arch.args as *const BootArgs as usize;
+        let len = core::mem::size_of::<BootArgs>();
+        // 64-byte lines cover every cortex-a class part this runs on; a smaller line just means
+        // redundant cleans of the same line.
+        let mut addr = base & !63;
+        while addr < base + len {
+            core::arch::asm!("dc cvac, {}", in(reg) addr);
+            addr += 64;
+        }
+        core::arch::asm!("dsb sy");
+    }
 
     // get the method from the psci root node
     let method = {

@@ -1,6 +1,5 @@
 #![allow(static_mut_refs)]
 use alloc::vec::Vec;
-use core::ops::RangeInclusive;
 
 use limine::{request::*, *};
 
@@ -113,9 +112,30 @@ static DTB_REQ: DeviceTreeBlobRequest = DeviceTreeBlobRequest::new();
 #[unsafe(link_section = ".limine_reqs")]
 static HHDM_REQ: HhdmRequest = HhdmRequest::new();
 
-// the kernel's entry point function from the limine bootloader
-// limine ensures we are in el1 (kernel mode)
+#[repr(C, align(16))]
+struct BootStack([u8; BOOT_STACK_SIZE]);
+const BOOT_STACK_SIZE: usize = crate::processor::KERNEL_STACK_SIZE;
+static mut BOOT_STACK: BootStack = BootStack([0; BOOT_STACK_SIZE]);
+
+// Limine enters at EL1 on a stack it placed at a physical address, which is gone once
+// `memory::init` installs the kernel's own tables. Boot on a stack inside the kernel image instead.
+#[unsafe(naked)]
 extern "C" fn limine_entry() -> ! {
+    core::arch::naked_asm!(
+        "msr spsel, #1",
+        "adrp x0, {stack}",
+        "add x0, x0, :lo12:{stack}",
+        "mov x1, {size}",
+        "add x0, x0, x1",
+        "mov sp, x0",
+        "b {main}",
+        stack = sym BOOT_STACK,
+        size = const BOOT_STACK_SIZE,
+        main = sym limine_main,
+    )
+}
+
+extern "C" fn limine_main() -> ! {
     // let's see what's in the memory map from limine
     let mmap = MEMORY_MAP
         .get_response()
@@ -151,21 +171,9 @@ extern "C" fn limine_entry() -> ! {
     unsafe {
         super::memory::PHYS_MEM_OFFSET = hhdm_info.offset();
     }
-    // Some versions of the limine bootloader place the identity map at the
-    // bottom of the higher half range of addresses covered by TTBR1_EL1.
-    // This must be taken into account by the MMIO address allocator which
-    // starts allocating addresses from the lowest part of the kernel address range.
-    if hhdm_info.offset() == *VirtAddr::TTBR1_EL1.start() {
-        // the identity map covers the first 4 GB of memory
-        const IDENTITY_MAP_SIZE: u64 = 0x1_0000_0000;
-        unsafe {
-            use super::address::MMIO_RANGE;
-            MMIO_RANGE = RangeInclusive::new(
-                *MMIO_RANGE.start() + IDENTITY_MAP_SIZE,
-                *MMIO_RANGE.end() + IDENTITY_MAP_SIZE,
-            );
-        }
-    }
+    // The kernel rebuilds the physical map at `PHYS_START` and keeps using this offset, so the
+    // two must agree.
+    assert_eq!(hhdm_info.offset(), VirtAddr::PHYS_START.raw());
 
     // generate generic boot info
     let mut boot_info = Armv8BootInfo {

@@ -16,7 +16,7 @@ use crate::{memory::VirtAddr, syscall::SyscallContext, thread::current_thread_re
 ///
 /// According to the ARM PCS Section 6, arguments/return values are
 /// passed in via registers x0-x7
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, Debug)]
 #[repr(C)]
 pub struct Armv8SyscallContext {
     x0: u64,
@@ -89,6 +89,10 @@ impl SyscallContext for Armv8SyscallContext {
 
 #[allow(named_asm_labels)]
 pub unsafe fn return_to_user(context: &Armv8SyscallContext) -> ! {
+    // Masked until `eret`: an interrupt taken after ELR/SP_EL0/SPSR are written returns through
+    // its own handler's `msr elr_el1`/`msr spsr_el1`, and the `eret` below then lands on a kernel
+    // pc at EL0.
+    crate::interrupt::set(false);
     // set the entry point address
     ELR_EL1.set(context.elr);
     // set the stack pointer
@@ -107,11 +111,39 @@ pub unsafe fn return_to_user(context: &Armv8SyscallContext) -> ! {
             + SPSR_EL1::M::EL0t,
     );
 
-    // TODO: zero out/copy all registers
+    // Only x0 carries anything; the rest would leak kernel register state to the new thread.
     core::arch::asm!(
-        // copy argument to register x0
         "mov x0, {}",
-        // return to address specified in elr_el1
+        "mov x1, xzr",
+        "mov x2, xzr",
+        "mov x3, xzr",
+        "mov x4, xzr",
+        "mov x5, xzr",
+        "mov x6, xzr",
+        "mov x7, xzr",
+        "mov x8, xzr",
+        "mov x9, xzr",
+        "mov x10, xzr",
+        "mov x11, xzr",
+        "mov x12, xzr",
+        "mov x13, xzr",
+        "mov x14, xzr",
+        "mov x15, xzr",
+        "mov x16, xzr",
+        "mov x17, xzr",
+        "mov x18, xzr",
+        "mov x19, xzr",
+        "mov x20, xzr",
+        "mov x21, xzr",
+        "mov x22, xzr",
+        "mov x23, xzr",
+        "mov x24, xzr",
+        "mov x25, xzr",
+        "mov x26, xzr",
+        "mov x27, xzr",
+        "mov x28, xzr",
+        "mov x29, xzr",
+        "mov x30, xzr",
         "eret",
         in(reg) context.x0,
         options(noreturn)
@@ -137,13 +169,14 @@ pub fn handle_syscall(ctx: &mut ExceptionContext) {
 
     crate::syscall::syscall_entry(&mut context);
 
-    crate::interrupt::set(false);
-    crate::thread::exit_kernel();
-
-    // copy over result values to exception return context
-    // we use registers x6 and x7 for this purpose
+    // Results go to x6/x7 in the exception context before `exit_kernel`: a mailbox upcall queued
+    // there snapshots `ctx` as the resume frame, and a copy made afterwards lands in the handler's
+    // entry registers instead, so the interrupted call resumed with its syscall number as code.
     ctx.x6 = context.x6;
     ctx.x7 = context.x7;
+
+    crate::interrupt::set(false);
+    crate::thread::exit_kernel();
 
     // check if we are restoring an upcall frame, and if so, do that.
     handle_upcall(ctx);
@@ -159,11 +192,10 @@ fn handle_upcall(ctx: &mut ExceptionContext) {
     // before we return to user space.
     let mut rf = cur_th.arch.upcall_restore_frame.borrow_mut();
     if let Some(mut up_frame) = rf.take() {
-        emerglogln!("returning from upcall to user");
         // we MUST manually drop this
         drop(rf);
 
-        // TODO: SIMD registers
+        super::thread::restore_fp_state(&up_frame);
 
         // restore the TLS registers which may have changed
         unsafe {

@@ -16,7 +16,11 @@ use lwext4::{
 };
 
 #[allow(unused, nonstandard_style)]
-mod lwext4;
+mod lwext4 {
+    // Generated per target: the bindings differ between x86_64 and aarch64 (`wchar_t`,
+    // `va_list`), so they must not land in a shared tracked file.
+    include!(concat!(env!("OUT_DIR"), "/lwext4.rs"));
+}
 
 /// Size of what a pointer points at, without forming a reference to it -- fields of the packed
 /// on-disk structs cannot be borrowed, even to measure.
