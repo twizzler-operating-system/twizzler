@@ -275,6 +275,12 @@ unsafe impl ferroc::base::BaseAlloc for TwzFerrocBase {
             }
         }
         let ptr = unsafe { self.local_alloc.alloc(layout) };
+        // `IS_ZEROED` covers fresh chunks too: ferroc builds a new slab's free list on the
+        // assumption that its memory reads zero, and a talc span is reused heap carrying talc's
+        // in-band metadata and whatever the last owner left.
+        if !ptr.is_null() && unsafe { !zero_range(ptr, layout.size()) } {
+            unsafe { core::ptr::write_bytes(ptr, 0, layout.size()) };
+        }
         // ferroc finds a block's owning slab by masking to SLAB_SIZE (slab.rs:134), and only
         // checks that we honored the requested alignment under `debug_assert!` (arena.rs:123),
         // which is compiled out in release. Verify it on our side of the boundary. Logging rather

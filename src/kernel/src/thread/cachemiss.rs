@@ -10,9 +10,9 @@ use super::Thread;
 use crate::pmc;
 
 /// Smoothed misses per stattick at or below which a thread pays nothing.
-pub const THRESHOLD: u64 = 4_000;
+pub const THRESHOLD: u64 = 10_000;
 /// Each further `STEP` misses per stattick costs one priority level.
-pub const STEP: u64 = 2_000;
+pub const STEP: u64 = 5_000;
 /// Three timeshare calendar buckets (`MAX_PRIORITY / NR_QUEUES` = 16 levels each). A User
 /// thread's value saturates at 0, so the class never changes.
 pub const MAX_PENALTY: u32 = 48;
