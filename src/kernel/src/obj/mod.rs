@@ -408,6 +408,12 @@ impl Object {
         PtGuard::new(self.page_tables())
     }
 
+    /// The page-table lock if it is free right now; see [Mutex::try_lock].
+    #[track_caller]
+    pub fn try_lock_page_tables(&self) -> Option<PtGuard<'_>> {
+        PtGuard::try_new(self.page_tables())
+    }
+
     pub fn add_mapping(&self, slot: usize, region: &Arc<MapRegion>) {
         self.mappings.lock().insert(slot, Arc::downgrade(region));
     }
@@ -688,6 +694,13 @@ impl<'a> PtGuard<'a> {
         }
     }
 
+    #[track_caller]
+    pub fn try_new(m: &'a Mutex<pagetables::ObjectPageTable>) -> Option<Self> {
+        Some(Self {
+            inner: Some(m.try_lock()?),
+        })
+    }
+
     /// Two objects' page tables at once, in the address order [crate::utils::lock_two] uses to keep
     /// deadlock cycles from forming.
     ///
@@ -857,11 +870,20 @@ pub fn print_all_objects() {
 
 /// Whether `obj` can be reaped now: nothing maps it and nothing has it pinned.
 ///
-/// Takes the object's pin lock and its page-table lock, so it must be called with the global map
-/// lock *released* -- see [`scan_deleted`] for what deadlocks otherwise.
+/// Tries the object's page-table lock and its pin lock, so it must be called with the global map
+/// lock *released* -- see [`scan_deleted`] for what deadlocks otherwise. Tries, never waits: a
+/// held lock means a fault or a pin is in flight, which answers the question by itself, and the
+/// caller is the idle loop, which cannot sleep on a mutex and used to spin here with interrupts
+/// masked -- on the bsp, that silenced wake ipis and ticks for every contended fault on the
+/// object, at ~1 ms per fault under four pinned threads.
 fn is_reapable(obj: &ObjectRef) -> bool {
-    let _tables = obj.lock_page_tables();
-    (obj.map_count() == 0 || stale_map_count(obj)) && obj.pin_info.lock().pins.len() == 0
+    let Some(_tables) = obj.try_lock_page_tables() else {
+        return false;
+    };
+    let Some(pins) = obj.pin_info.try_lock() else {
+        return false;
+    };
+    (obj.map_count() == 0 || stale_map_count(obj)) && pins.pins.len() == 0
 }
 
 /// A positive map count with no live mapping is stale accounting, not reachability: installs
@@ -872,10 +894,11 @@ fn is_reapable(obj: &ObjectRef) -> bool {
 /// what keeps any such miss from becoming a permanent leak. Counted so a healthy boot can prove
 /// how often the escape hatch fires.
 fn stale_map_count(obj: &ObjectRef) -> bool {
-    if !obj.mappings().is_empty() {
+    // Tried, not taken, for the same reason as [`is_reapable`]: this runs from the idle loop.
+    let Some(mappings) = obj.mappings.try_lock() else {
         return false;
-    }
-    true
+    };
+    mappings.values().all(|region| region.upgrade().is_none())
 }
 
 /// Remove `obj` from the map and hand it to the tie manager.

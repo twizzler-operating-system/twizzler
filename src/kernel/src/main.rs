@@ -124,6 +124,13 @@ pub fn no_pcid() -> bool {
 }
 
 static FLAT_PLACEMENT: AtomicBool = AtomicBool::new(false);
+static MUTEX_STEP_BOOST: AtomicBool = AtomicBool::new(false);
+
+/// `--mutex-step-boost`: a same-class mutex waiter lifts the owner one step above its own
+/// effective priority, as before the class ceiling. A runtime knob for the A/B.
+pub fn mutex_step_boost() -> bool {
+    MUTEX_STEP_BOOST.load(Ordering::Relaxed)
+}
 
 /// `--flat-placement`: the scheduler places threads as it did before it knew the cache
 /// hierarchy -- last cpu, else the first idle cpu in tree order, whole-machine balancing, SMT
@@ -318,6 +325,9 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
         }
         if opt == "--flat-placement" {
             FLAT_PLACEMENT.store(true, Ordering::SeqCst);
+        }
+        if opt == "--mutex-step-boost" {
+            MUTEX_STEP_BOOST.store(true, Ordering::SeqCst);
         }
         if opt == "--nobgsync" {
             BG_SYNC_DROP.store(true, Ordering::SeqCst);

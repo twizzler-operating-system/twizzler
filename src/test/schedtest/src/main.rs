@@ -35,6 +35,9 @@ struct Opts {
     secs: f64,
     threads: Vec<usize>,
     tests: Vec<String>,
+    /// `cache`: leave the hostile buffer zero-filled, so the hostiles first-touch every page
+    /// under the object's page-table lock. Reproduces the stall of a preempted lock holder.
+    cold: bool,
 }
 
 fn parse_args() -> Opts {
@@ -43,11 +46,13 @@ fn parse_args() -> Opts {
         secs: 5.0,
         threads: Vec::new(),
         tests: Vec::new(),
+        cold: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--secs" => opts.secs = args.next().unwrap().parse().unwrap(),
+            "--cold" => opts.cold = true,
             "--threads" => {
                 opts.threads = args
                     .next()
@@ -525,8 +530,9 @@ mod cache_test {
 
     /// Random read-modify-writes over a buffer far bigger than any cache: a miss per access.
     /// `seed` differs per thread, or every hostile walks the same lines in lockstep and
-    /// measures line bouncing instead of misses.
-    fn hostile_loop(buf: &[AtomicU64], seed: u64, dur: Duration, probe: &mut Probe) -> u64 {
+    /// measures line bouncing instead of misses. The buffer is plain `u64`s so a cold one can
+    /// come from `vec![0; n]` (an alloc-zeroed, never touched); the atomics are views.
+    fn hostile_loop(buf: &[u64], seed: u64, dur: Duration, probe: &mut Probe) -> u64 {
         let start = Instant::now();
         let mut x = 0x9e37_79b9_7f4a_7c15u64 ^ seed.wrapping_mul(0x2545_f491_4f6c_dd1d);
         let mut iters = 0u64;
@@ -535,7 +541,10 @@ mod cache_test {
                 x = x
                     .wrapping_mul(6364136223846793005)
                     .wrapping_add(1442695040888963407);
-                buf[(x >> 20) as usize % buf.len()].fetch_add(1, Ordering::Relaxed);
+                let slot = &buf[(x >> 20) as usize % buf.len()];
+                // The buffer is only ever accessed through atomics once the threads start.
+                unsafe { AtomicU64::from_ptr(slot as *const u64 as *mut u64) }
+                    .fetch_add(1, Ordering::Relaxed);
             }
             iters += BATCH;
             probe.tick();
@@ -567,19 +576,20 @@ mod cache_test {
     /// Reports what each side got, its misses and its penalty, then the behavioural checks: the
     /// friendly thread is never penalised, hostile ones are penalised within the cap, a penalty
     /// decays once the thread behaves, and sleeping preserves it.
-    pub fn cache(threads: usize, secs: f64) {
+    pub fn cache(threads: usize, secs: f64, cold: bool) {
         let steal0 = steal_ms();
         let k0 = KernelSnapshot::take();
         let cpus: Vec<u32> = cpu_infos().iter().map(|c| c.id).collect();
         let hostile = threads.max(1);
-        // Non-zero fill: a zeroed allocation is never touched, and a first touch from every
-        // hostile at once serialised on the object's page-table lock behind a preempted holder
-        // at ~0.5 ms a fault, so the hostiles managed one batch each in 5 s.
-        let buf: Arc<Vec<AtomicU64>> = Arc::new(
-            (0..HOSTILE_BYTES / 8)
-                .map(|i| AtomicU64::new(i as u64 | 1))
-                .collect(),
-        );
+        // Non-zero fill unless `cold`: a zeroed allocation is never touched, and a first touch
+        // from every hostile at once serialised on the object's page-table lock behind a
+        // preempted holder at ~0.5 ms a fault, so the hostiles managed one batch each in 5 s.
+        // `--cold` keeps exactly that as the reproducer.
+        let buf: Arc<Vec<u64>> = Arc::new(if cold {
+            vec![0u64; HOSTILE_BYTES / 8]
+        } else {
+            (0..HOSTILE_BYTES / 8).map(|i| i as u64 | 1).collect()
+        });
         let dur = Duration::from_secs_f64(secs);
         let buf2 = buf.clone();
         let res = run(hostile + 1, move |i, b| {
@@ -681,7 +691,7 @@ fn main() {
                 "memory" => memory(t, opts.secs / 4.0),
                 "spawn" => spawn(t, opts.secs),
                 #[cfg(target_os = "twizzler")]
-                "cache" => cache_test::cache(t, opts.secs),
+                "cache" => cache_test::cache(t, opts.secs, opts.cold),
                 other => panic!("unknown test {other}"),
             }
         }

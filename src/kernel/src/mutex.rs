@@ -20,8 +20,14 @@
 //! sleeping waiter or a pending handoff can never be bypassed by the bare CAS. One visible
 //! consequence: priority donation to an owner begins at first contention rather than at
 //! acquisition, since an uncontended fast-mode owner is anonymous until a waiter converts it.
-
-// TODO: reenable priority donation, and make it cheaper.
+//!
+//! Donation has two arms. A waiter of a higher class lends its priority (inheritance). A waiter
+//! of the owner's own class lifts the owner to the top of that class instead: within a class,
+//! values differ by the cache-miss penalty and by user choice, so "one step above the owner"
+//! could leave a penalised holder still below an unpenalised peer running on its cpu -- which
+//! is how a page-table-lock holder pinned behind a spinner stalled every waiter at tick cadence
+//! while nothing could preempt for it. The ceiling holds only until release, so a peer waits at
+//! most one critical section.
 
 use alloc::sync::Arc;
 use core::{
@@ -613,22 +619,23 @@ impl<T> Mutex<T> {
                         if let Some(ref owner) = queue.owner {
                             if let Some(ref pri) = queue.pri {
                                 let owner_pri = owner.effective_priority();
-                                if pri > &owner_pri {
+                                if pri.class > owner_pri.class {
                                     owner.donate_priority(pri.clone());
-                                } else if pri.class == owner_pri.class
-                                    && owner_pri.value + 1 < crate::thread::priority::MAX_PRIORITY
-                                {
+                                } else if pri.class == owner_pri.class {
                                     // Same-class contention, which is all of it for the pager and
-                                    // page-table locks: an equal-priority waiter cannot lift the
-                                    // owner by inheritance, and `donate_priority` re-files only
-                                    // when the donated value exceeds the owner's -- so the old
-                                    // `>` arm stored nothing and the owner kept being preempted by
-                                    // its peers while holding the lock. One step inside the
-                                    // owner's own class, so no class boundary is crossed and the
-                                    // release path restores it as before.
+                                    // page-table locks: the ceiling of the owner's own class, so
+                                    // no class boundary is crossed and no same-class runner -- an
+                                    // unpenalised peer included -- can hold the cpu against it.
+                                    // `donate_priority` is a no-op when already there.
+                                    let value = if crate::mutex_step_boost() {
+                                        (owner_pri.value + 1)
+                                            .min(crate::thread::priority::MAX_PRIORITY - 1)
+                                    } else {
+                                        crate::thread::priority::MAX_PRIORITY - 1
+                                    };
                                     owner.donate_priority(Priority {
                                         class: owner_pri.class,
-                                        value: owner_pri.value + 1,
+                                        value,
                                     });
                                 }
                             }
@@ -665,6 +672,41 @@ impl<T> Mutex<T> {
             timed: timing,
             charged,
         }
+    }
+
+    /// The uncontended fast path alone: the lock if it is free right now, else `None`, without
+    /// ever entering the wait loop. For callers that must not block -- an idle thread above all,
+    /// which cannot sleep and so spins that loop with interrupts masked, deafening its cpu to
+    /// wake ipis and ticks for as long as the owner keeps the lock.
+    #[track_caller]
+    pub fn try_lock(&self) -> Option<LockGuard<'_, T>> {
+        let current_thread = current_thread_ref();
+        let Some(ct) = current_thread else {
+            // Pre-threading there is nothing to deafen and no one to contend with.
+            return Some(self.lock());
+        };
+        let ptr = Arc::as_ptr(ct) as usize;
+        if self
+            .state
+            .compare_exchange(0, ptr, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return None;
+        }
+        let timing = timing_on();
+        ct.inc_mutex_count();
+        self.stamp_locked_at(core::panic::Location::caller());
+        Some(LockGuard {
+            lock: self,
+            prev_donated_priority: ct.get_donated_priority(),
+            start_time: if timing {
+                Instant::now()
+            } else {
+                Instant::zero()
+            },
+            timed: timing,
+            charged: Some(ct.clone()),
+        })
     }
 
     fn release(&self, charged: Option<&ThreadRef>) {
@@ -704,8 +746,24 @@ impl<T> Mutex<T> {
                 // Transfer the pending priority donation to the new owner, so it starts
                 // running at the correct priority immediately. This prevents priority
                 // inversion between schedule_thread() and the new owner's lock() call.
-                if let Some(ref pri) = queue.pri {
-                    thread.donate_priority(pri.clone());
+                //
+                // And lift it to the ceiling of its class: it wakes into a critical section
+                // every other waiter is queued behind, onto a cpu that may since have taken an
+                // equal-priority peer (with pinned waiters, an unpinned peer lands on exactly
+                // the cpu a blocked waiter vacated). At equal priority the wake waits out the
+                // rotation granularity, so four pinned threads faulting one object paid ~1 ms
+                // per page-table-lock handoff. The guard drops the donation at release.
+                let ceiling = Priority {
+                    class: thread.effective_priority().class,
+                    value: crate::thread::priority::MAX_PRIORITY - 1,
+                };
+                let donated = match (&queue.pri, crate::mutex_step_boost()) {
+                    (_, true) => queue.pri.clone(),
+                    (Some(pri), false) => Some(core::cmp::max(pri.clone(), ceiling)),
+                    (None, false) => Some(ceiling),
+                };
+                if let Some(pri) = donated {
+                    thread.donate_priority(pri);
                 }
                 queue.pri = rest_pri;
                 Some(thread)

@@ -331,11 +331,13 @@ fn find_cpus_from_topo(
         let mut jload = (load * 256).saturating_sub((quick_random() % 128) as u64);
         // An idle hyperthread of a busy core shares that core's pipeline: worth less than an
         // idle core (0) and more than any busy cpu (at least 129), and not a perfect hit.
+        // Load, not `is_idle`: a thread just placed on the sibling has not switched in yet, and
+        // a burst of spawns judged by idleness alone landed two per core with cores to spare.
         let sibling_busy = load == 0
             && !crate::flat_placement()
             && node.count > 1
             && (node.first..=node.last)
-                .any(|s| s != c && node.cpuset.contains(s) && !get_processor(s).is_idle());
+                .any(|s| s != c && node.cpuset.contains(s) && get_processor(s).current_load() > 0);
         if sibling_busy {
             jload = 128;
         }
