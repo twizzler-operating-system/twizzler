@@ -613,6 +613,19 @@ impl<const N: usize> RunQueue<N> {
         self.flags.load(Ordering::Acquire) & (RQ_HAS_IL | RQ_HAS_RT | RQ_HAS_TS) == 0
     }
 
+    /// Whether everything queued is in a class `take` serves after `class`. The realtime queue
+    /// also holds boosted User threads, so a Realtime caller counts any entry there.
+    pub fn only_below(&self, class: PriorityClass) -> bool {
+        let f = self.flags.load(Ordering::Acquire);
+        match class {
+            PriorityClass::Realtime => f & RQ_HAS_RT == 0,
+            PriorityClass::User => f & (RQ_HAS_RT | RQ_HAS_TS) == 0,
+            PriorityClass::Background | PriorityClass::Idle => {
+                f & (RQ_HAS_IL | RQ_HAS_RT | RQ_HAS_TS) == 0
+            }
+        }
+    }
+
     pub fn timeslice(&self, class: PriorityClass) -> u64 {
         match class {
             PriorityClass::User => {

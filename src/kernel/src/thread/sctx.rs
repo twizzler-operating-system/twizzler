@@ -203,6 +203,15 @@ impl SctxCache {
         result
     }
 
+    /// The active context's page-table target, if cached, with the strong reference that keeps it
+    /// registered for as long as the caller holds it. One lock, for the context-switch path.
+    pub fn active_target(&self) -> Option<(SwitchTarget, SecurityContextRef)> {
+        let cache = self.cache.lock();
+        let id = cache.active_id;
+        let entry = cache.entries.iter().flatten().find(|e| e.id == id)?;
+        Some((entry.target, entry.ctx.upgrade()?))
+    }
+
     /// Record a context as active without a cache entry for it, for the slow path.
     pub fn set_active(&self, id: ObjID, ctx: &SecurityContextRef) {
         let mut cache = self.cache.lock();

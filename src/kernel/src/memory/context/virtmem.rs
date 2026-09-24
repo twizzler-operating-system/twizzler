@@ -48,11 +48,11 @@ use crate::{
     processor::{
         mp::current_processor,
         sched::{SchedFlags, schedule},
-        spin_wait_until, tls_ready,
+        tls_ready,
     },
     security::KERNEL_SCTX,
     spinlock::Spinlock,
-    thread::current_thread_ref,
+    thread::{ThreadRef, current_thread_ref},
 };
 
 pub mod fault;
@@ -294,6 +294,11 @@ struct SctxSlot {
     /// fires for *any* guard outliving the start of teardown rather than only for one that happens
     /// to touch `arch` at the wrong moment.
     torn_down: AtomicBool,
+    /// Set while `unregister_sctx` is parked in [`Self::drainer`], so only a guard drop that could
+    /// matter takes the lock. SeqCst with `users` on both sides: a drainer that misses the last
+    /// decrement is always seen by that decrement's drop.
+    draining: AtomicBool,
+    drainer: Spinlock<Option<ThreadRef>>,
 }
 
 /// A slot borrowed for the duration of one callback. See [`SctxSlot::users`].
@@ -319,7 +324,13 @@ impl Drop for SlotGuard {
         );
         // Release, paired with the drain's Acquire load: everything the callback did to the page
         // tables must be visible to the teardown that is waiting on this reaching zero.
-        self.0.users.fetch_sub(1, Ordering::Release);
+        if self.0.users.fetch_sub(1, Ordering::SeqCst) == 1
+            && self.0.draining.load(Ordering::SeqCst)
+        {
+            if let Some(drainer) = self.0.drainer.lock().take() {
+                crate::syscall::sync::wake_parked(drainer);
+            }
+        }
     }
 }
 
@@ -684,6 +695,8 @@ impl VirtContext {
             arch,
             users: AtomicUsize::new(0),
             torn_down: AtomicBool::new(false),
+            draining: AtomicBool::new(false),
+            drainer: Spinlock::new(None),
         });
         // Slot tree first, `secctx` second -- the reverse of the original order, and it matters
         // now that lookups read the slot tree: inserting there last would leave a window in which
@@ -751,20 +764,37 @@ impl VirtContext {
         // `with_arch` callback touches a `SecurityContextRef`, so no thread can be
         // inside one while dropping the last reference to the same context. The
         // wait is bounded by callback duration.
-        // Yields rather than spinning bare, and that distinction is load-bearing. A
-        // `SlotGuard` is held across a callback that does real work -- `arch.object_map`, TLB
-        // batching -- so a timer can preempt its holder mid-callback. A pure spin here then
-        // never lets that holder run again, which deadlocked the single-vcpu test boot at
-        // `st` (schedtest, thread spawn/join churn): 36 of 55 tests, then silence. Measured,
-        // not theorised -- the same boot with the old mutex arm ran 55/55.
         //
-        // The mutex arm has no such hazard by construction: it *blocks* on `secctx`, and
-        // blocking yields the cpu. Replacing a blocking wait with a busy wait is what
-        // introduced this, which is the general hazard in the change, not an incidental bug.
-        spin_wait_until(
-            || (slot.users.load(Ordering::Acquire) == 0).then_some(()),
-            || schedule(SchedFlags::YIELD | SchedFlags::PREEMPT | SchedFlags::REINSERT),
-        );
+        // Parks rather than spins. A `SlotGuard` is held across real work -- `arch.object_map`,
+        // TLB batching -- so its holder can be preempted mid-callback. A bare spin never let it run
+        // again (single-vcpu `st` boot: 36 of 55 tests, then silence), and a yield only hands the
+        // cpu to an equal or higher priority thread: a drainer that outranks the holder -- the
+        // reaper boosted to REALTIME, dropping a compartment's last sctx reference -- took it
+        // straight back, forever on one cpu (a single-vcpu TCG boot went silent after net_test).
+        // The guard drop that empties the count wakes us. The idle thread and a critical caller
+        // cannot block; the idle thread's yield already hands off to anything runnable.
+        slot.draining.store(true, Ordering::SeqCst);
+        loop {
+            if slot.users.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            let cur = current_thread_ref().unwrap();
+            if cur.is_idle_thread() || cur.is_critical() {
+                schedule(SchedFlags::YIELD | SchedFlags::PREEMPT | SchedFlags::REINSERT);
+                continue;
+            }
+            crate::syscall::sync::park_until_woken(|me| {
+                *slot.drainer.lock() = Some(me.clone());
+                if slot.users.load(Ordering::SeqCst) != 0 {
+                    return true;
+                }
+                // Emptied while we published: sleep only if its drop already took us to wake.
+                slot.drainer.lock().take().is_none()
+            });
+        }
+        slot.draining.store(false, Ordering::SeqCst);
+        // A spurious wake can leave our own entry behind.
+        drop(slot.drainer.lock().take());
         // After the drain, before the walk: from here on any guard still alive is a drain
         // failure, and `SlotGuard::drop` says so. See `SctxSlot::torn_down`.
         slot.torn_down.store(true, Ordering::Release);

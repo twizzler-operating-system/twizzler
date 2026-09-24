@@ -175,6 +175,5 @@ pub unsafe fn set_kernel_stack(stack: VirtAddr) {
         .set_rsp(Ring::Ring0, stack.into());
     unsafe {
         core::arch::asm!("mov gs:0, rax", in("rax") stack.raw());
-        core::arch::asm!("mfence");
     }
 }

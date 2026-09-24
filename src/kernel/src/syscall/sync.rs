@@ -876,6 +876,39 @@ pub(crate) fn thread_sync_cb_timeout(thread: ThreadRef, sleep_gen: u64) {
     requeue_all();
 }
 
+/// Park the calling thread until [`wake_parked`] is called on it. `publish` runs with the sleep
+/// already armed, makes the thread reachable to its waker, and returns whether it must still sleep;
+/// a wake landing any time after the arm is claimed rather than lost. Callers re-check their
+/// condition on return, since a wake can be spurious. The caller must be allowed to sleep.
+pub(crate) fn park_until_woken(publish: impl FnOnce(&ThreadRef) -> bool) {
+    let thread = current_thread_ref().unwrap();
+    thread.set_sync_sleep();
+    if !publish(&thread) {
+        thread.reset_sync_sleep();
+        return;
+    }
+    let guard = thread.enter_critical();
+    thread.set_sync_sleep_done();
+    requeue_all();
+    // See simple_timed_sleep: requeue_all() skips critical threads, so a wake that arrived before
+    // the flag above went up is ours to claim.
+    block_or_claim(&thread, guard);
+    let _guard = thread.enter_critical();
+    thread.end_sync_sleep();
+    remove_from_requeue(&thread);
+    thread.reset_sync_sleep();
+    thread.reset_sync_sleep_done();
+}
+
+/// Wake a thread parked in [`park_until_woken`]. Safe from any context, interrupts included: the
+/// same sequence as the timeout callback.
+pub(crate) fn wake_parked(thread: ThreadRef) {
+    if thread.reset_sync_sleep() {
+        add_to_requeue(thread);
+    }
+    requeue_all();
+}
+
 fn simple_timed_sleep(timeout: &&mut Duration) {
     let thread = current_thread_ref().unwrap();
     thread.set_sync_sleep();

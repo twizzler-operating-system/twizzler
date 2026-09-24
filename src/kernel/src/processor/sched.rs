@@ -1502,8 +1502,12 @@ fn do_schedule(flags: SchedFlags) {
         } else {
             // This is a current thread to reinsert, but only count it as such if it is not
             // yielding so that other threads will run first. A yield with nothing queued would
-            // only insert and take itself straight back, so it takes the shortcut.
-            if flags.contains(SchedFlags::YIELD) && !processor.rq.is_empty() {
+            // only insert and take itself straight back, so it takes the shortcut -- and so does
+            // one with only lower classes queued: on one cpu the starved background threads kept
+            // every User yield on this path, at 2.3x the cost of the shortcut.
+            if flags.contains(SchedFlags::YIELD)
+                && !processor.rq.only_below(cur.effective_priority().class)
+            {
                 schedule_thread_on_cpu(cur.clone(), processor, false, false, false);
             } else {
                 // shortcut -- we are intending to just run this thread again.
@@ -1629,18 +1633,26 @@ pub fn schedule(flags: SchedFlags) {
     interrupt::set(istate);
 
     if flags.contains(SchedFlags::REINSERT) {
+        // Flag tests first, on the thread we already hold: both polls are almost always no-ops,
+        // and each one resolved the current thread (an `Arc` clone and drop) to find that out. A
+        // flag set just after its test is caught at the next poll, as it was before.
+        //
         // Resolving the current thread and then suspending it must not straddle an
         // interrupt-enabled gap: a preemption in between changes who is current, and
         // `maybe_suspend_self` is only meaningful for the thread actually executing. `suspend()`
         // takes the same precaution for the same reason.
-        interrupt::with_disabled(|| {
-            if let Some(cur) = current_thread_ref() {
-                cur.maybe_suspend_self();
-            }
-        });
+        if cur.must_suspend() {
+            interrupt::with_disabled(|| {
+                if let Some(cur) = current_thread_ref() {
+                    cur.maybe_suspend_self();
+                }
+            });
+        }
         // Left outside: this can call `exit()`, which must not run with interrupts masked.
-        if let Some(cur) = current_thread_ref() {
-            cur.maybe_exit();
+        if cur.must_exit() {
+            if let Some(cur) = current_thread_ref() {
+                cur.maybe_exit();
+            }
         }
     }
 }

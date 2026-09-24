@@ -210,6 +210,7 @@ pub fn register(id: u32, bsp_id: u32) {
 
 pub const MAX_CPU_ID: usize = 1024;
 
+#[inline]
 pub fn current_processor() -> &'static Processor {
     if !tls_ready() {
         panic!("tried to read a thread-local value with no FS base set");

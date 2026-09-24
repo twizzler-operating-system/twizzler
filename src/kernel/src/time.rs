@@ -12,7 +12,12 @@ pub struct Ticks {
 
 impl Ticks {
     pub fn as_nanos(&self) -> u128 {
-        (self.value as u128 * self.rate.0 as u128) / FEMTOS_PER_NANO as u128
+        // u64 until the product overflows (months of uptime at GHz tick rates): the u128 division
+        // is a library call, and every `current_ns` pays for it.
+        match self.value.checked_mul(self.rate.0) {
+            Some(fs) => (fs / FEMTOS_PER_NANO) as u128,
+            None => (self.value as u128 * self.rate.0 as u128) / FEMTOS_PER_NANO as u128,
+        }
     }
 }
 

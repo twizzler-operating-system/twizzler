@@ -7,8 +7,8 @@ use std::{
 
 use dynlink::tls::Tcb;
 use twizzler_abi::syscall::{
-    sys_thread_send_message, sys_thread_sync, sys_thread_yield, ThreadSync, ThreadSyncFlags,
-    ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
+    sys_thread_self_id, sys_thread_send_message, sys_thread_sync, sys_thread_yield, ThreadSync,
+    ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
 };
 use twizzler_rt_abi::{
     bindings::{stack_bounds, thread_info, twz_error},
@@ -155,11 +155,15 @@ impl ReferenceRuntime {
         let repr = THREAD_MGR
             .with_internal(id, |t| t.objid())
             .ok_or(TwzError::NOT_FOUND)?;
-        // A thread published before its spawn gate returned has no repr id yet. It cannot be
-        // holding a blocking call we need to interrupt, and 0 would name no thread at all.
-        if repr.raw() == 0 {
+        // A thread published before its spawn gate returned has no repr id yet. Another thread
+        // cannot need to interrupt it, but it can signal itself: the parent may not have run yet.
+        let repr = if repr.raw() != 0 {
+            repr
+        } else if with_current_thread(|cur| cur.id()) == id {
+            sys_thread_self_id()
+        } else {
             return Err(TwzError::NOT_FOUND);
-        }
+        };
         sys_thread_send_message(repr, signal, 0)
     }
 

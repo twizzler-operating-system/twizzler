@@ -554,8 +554,11 @@ impl Thread {
     pub fn switch_thread(&self, current: &Thread) {
         if self != current {
             if let Some(ref ctx) = self.memory_context {
-                // We have to use active_id here to avoid a mutex.
-                ctx.switch_to(self.active_sctx_id());
+                match self.sctx_cache.active_target() {
+                    // Safety: the target is this context's, and `_live` keeps it registered.
+                    Some((target, _live)) => unsafe { ctx.switch_to_target(&target) },
+                    None => ctx.switch_to(self.active_sctx_id()),
+                }
             } else {
                 // Threads with no memory context of their own (the idle thread, kernel
                 // threads) must not be left running on the outgoing thread's page tables.
