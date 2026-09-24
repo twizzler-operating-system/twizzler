@@ -821,10 +821,9 @@ fn select_cpu(thread: &ThreadRef, try_avoid: Option<u32>, is_wake: bool) -> u32 
     cpu
 }
 
-/// The `--irq-affine` rule: a device wake goes to the cpu that took the interrupt when that cpu is
-/// idle and loses it nothing cached. A pinned thread keeps its pin. Idle only: taking a busy cpu
-/// preempts whatever runs there, often the thread waiting on this very I/O
-/// (`--irq-affine-preempt` restores that for the A/B).
+/// The irq-affine rule: a device wake goes to the cpu that took the interrupt when that cpu is idle
+/// and loses it nothing cached. A pinned thread keeps its pin. Idle only: taking a busy cpu
+/// preempts whatever runs there, often the thread waiting on this very I/O.
 fn irq_affine_allows(thread: &ThreadRef, cpu: u32, try_avoid: Option<u32>) -> bool {
     if !crate::irq_affine()
         || crate::flat_placement()
@@ -835,9 +834,7 @@ fn irq_affine_allows(thread: &ThreadRef, cpu: u32, try_avoid: Option<u32>) -> bo
         return false;
     }
     let processor = get_processor(cpu);
-    let preempt =
-        crate::irq_affine_preempt() && thread.effective_priority() > processor.current_priority();
-    if !(processor.is_idle() || preempt) {
+    if !processor.is_idle() {
         return false;
     }
     match thread.sched.preferred_cpu() {

@@ -125,8 +125,7 @@ pub fn no_pcid() -> bool {
 
 static FLAT_PLACEMENT: AtomicBool = AtomicBool::new(false);
 static WAKE_AFFINE: AtomicBool = AtomicBool::new(true);
-static IRQ_AFFINE: AtomicBool = AtomicBool::new(false);
-static IRQ_AFFINE_PREEMPT: AtomicBool = AtomicBool::new(false);
+static IRQ_AFFINE: AtomicBool = AtomicBool::new(true);
 static IDLE_POLL: AtomicBool = AtomicBool::new(true);
 static MUTEX_STEP_BOOST: AtomicBool = AtomicBool::new(false);
 
@@ -150,16 +149,10 @@ pub fn wake_affine() -> bool {
     WAKE_AFFINE.load(Ordering::Relaxed)
 }
 
-/// `--irq-affine`: a device-interrupt wake goes to the cpu that took the interrupt when that cpu
-/// is idle and shares a cache with the thread's last cpu.
+/// A device-interrupt wake goes to the cpu that took the interrupt when that cpu is idle and
+/// shares a cache with the thread's last cpu; off with `--no-irq-affine`.
 pub fn irq_affine() -> bool {
     IRQ_AFFINE.load(Ordering::Relaxed)
-}
-
-/// `--irq-affine-preempt`: the irq-affine rule also takes a busy cpu running lower priority. A
-/// runtime knob for the A/B.
-pub fn irq_affine_preempt() -> bool {
-    IRQ_AFFINE_PREEMPT.load(Ordering::Relaxed)
 }
 
 /// The idle loop polls its queue for a while before halting; off with `--no-idle-poll`.
@@ -353,11 +346,8 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
         if opt == "--no-wake-affine" {
             WAKE_AFFINE.store(false, Ordering::SeqCst);
         }
-        if opt == "--irq-affine" {
-            IRQ_AFFINE.store(true, Ordering::SeqCst);
-        }
-        if opt == "--irq-affine-preempt" {
-            IRQ_AFFINE_PREEMPT.store(true, Ordering::SeqCst);
+        if opt == "--no-irq-affine" {
+            IRQ_AFFINE.store(false, Ordering::SeqCst);
         }
         if opt == "--no-idle-poll" {
             IDLE_POLL.store(false, Ordering::SeqCst);
