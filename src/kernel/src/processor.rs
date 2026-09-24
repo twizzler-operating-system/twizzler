@@ -473,10 +473,13 @@ pub const KERNEL_STACK_SIZE: usize = 2 * 1024 * 1024; // 2M
 /// A thread's kernel stack. [`KERNEL_STACK_SIZE`] stays for the boot and per-cpu stacks, which
 /// have no guard page. On x86, `TWZ_THREAD_STACK_KB` at build time overrides it, for sizing
 /// against the guard page (thread/kstack.rs).
+///
+/// 64 KiB: the smallest power of two that passed the debug and release suites and smp8 schedtest
+/// with stack probes on (2026-09-24). 32 KiB overflowed in the boot thread and one kernel test.
 #[cfg(target_arch = "x86_64")]
 pub const THREAD_STACK_SIZE: usize = match option_env!("TWZ_THREAD_STACK_KB") {
     Some(kb) => parse_kb(kb) * 1024,
-    None => KERNEL_STACK_SIZE,
+    None => 64 * 1024,
 };
 #[cfg(not(target_arch = "x86_64"))]
 pub const THREAD_STACK_SIZE: usize = KERNEL_STACK_SIZE;

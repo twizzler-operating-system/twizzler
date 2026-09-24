@@ -1070,7 +1070,9 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
     let first = ops.first().copied();
 
     let mut ready_count = 0;
-    let mut unsleeps = heapless::Vec::<_, 1024>::new();
+    // On the heap: inline, its 1024 slots were most of a 53 KiB frame that every call paid, the
+    // single-op fast paths above included.
+    let mut unsleeps = alloc::vec::Vec::with_capacity(ops.len());
     let mut num_sleepers = 0;
 
     // Chunked so that each group's virtual references share one `regions` acquisition. The body is
@@ -1088,8 +1090,8 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
                         Ok(se) => {
                             num_sleepers += 1;
                             *result = Ok(if se.did_sleep { 0 } else { 1 });
-                            if se.did_sleep && !unsleeps.is_full() {
-                                unsafe { unsleeps.push_unchecked(se) };
+                            if se.did_sleep {
+                                unsleeps.push(se);
                             } else {
                                 ready_count += 1;
                             }

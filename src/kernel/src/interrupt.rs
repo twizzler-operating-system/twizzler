@@ -201,11 +201,21 @@ const MAX_DEVICE_VECTORS: usize = 16;
 /// two waiters, and those take a single pass.
 const WAKE_BATCH: usize = 16;
 
+type DeviceVectors =
+    [Spinlock<heapless::Vec<DeviceInterrupter, MAX_DEVICE_VECTORS>>; MAX_VECTOR + 1];
+type DeviceWaiters = [Spinlock<RBTree<ThreadSleepAdapter>>; MAX_VECTOR + 1];
+
+/// Statics rather than fields built in `get_global_interrupts`: the closure put both arrays on the
+/// calling thread's stack, over 256 KiB, before moving them into the `Once`.
+static DEVICE_VECTORS: DeviceVectors =
+    [const { Spinlock::new(heapless::Vec::new()) }; MAX_VECTOR + 1];
+static DEVICE_WAITERS: DeviceWaiters =
+    [const { Spinlock::new(RBTree::new(ThreadSleepAdapter::NEW)) }; MAX_VECTOR + 1];
+
 struct GlobalInterruptState {
     ints: Vec<Interrupt>,
-    device_vectors:
-        [Spinlock<heapless::Vec<DeviceInterrupter, MAX_DEVICE_VECTORS>>; MAX_VECTOR + 1],
-    device_waiters: [Spinlock<RBTree<ThreadSleepAdapter>>; MAX_VECTOR + 1],
+    device_vectors: &'static DeviceVectors,
+    device_waiters: &'static DeviceWaiters,
 }
 
 impl GlobalInterruptState {
@@ -326,9 +336,8 @@ fn get_global_interrupts() -> &'static GlobalInterruptState {
         }
         GlobalInterruptState {
             ints: v,
-            device_vectors: [const { Spinlock::new(heapless::Vec::new()) }; MAX_VECTOR + 1],
-            device_waiters: [const { Spinlock::new(RBTree::new(ThreadSleepAdapter::NEW)) };
-                MAX_VECTOR + 1],
+            device_vectors: &DEVICE_VECTORS,
+            device_waiters: &DEVICE_WAITERS,
         }
     })
 }

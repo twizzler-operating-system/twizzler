@@ -406,6 +406,17 @@ fn assert_valid(addr: VirtAddr, cause: MemoryAccessKind, flags: PageFaultFlags, 
     }
     if !flags.contains(PageFaultFlags::USER) && addr.is_kernel() && !addr.is_kernel_object_memory()
     {
+        if let Some(t) = crate::thread::current_thread_ref() {
+            let guard = crate::thread::kstack::guard_below(t.kernel_stack.as_ptr());
+            if guard.contains(&addr.raw()) {
+                panic!(
+                    "kernel stack overflow: {:?} at IP {:?} is the guard below the stack of thread {}",
+                    addr,
+                    ip,
+                    t.id()
+                );
+            }
+        }
         panic!(
             "kernel page-fault at IP {:?} caused by {:?} to/from {:?} with flags {:?}",
             ip, cause, addr, flags

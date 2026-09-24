@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 
 use twizzler_abi::{
     aux::{KernelInitInfo, KernelInitName},
@@ -26,11 +26,13 @@ pub fn create_blank_object() -> ObjectRef {
 fn create_name_object() -> ObjectRef {
     let boot_objects = get_boot_objects();
     let obj = create_blank_object();
-    let mut init_info = KernelInitInfo::new();
+    // ~74 KB, so on the heap: zeroed is exactly `KernelInitInfo::new()`, and building that on the
+    // stack overran a thread's kernel stack.
+    let mut init_info: Box<KernelInitInfo> = unsafe { Box::new_zeroed().assume_init() };
     for (name, obj) in &boot_objects.name_map {
         init_info.add_name(KernelInitName::new(name, obj.id()));
     }
-    obj.write_base(&init_info).unwrap();
+    obj.write_base(&*init_info).unwrap();
     obj
 }
 

@@ -218,6 +218,9 @@ pub struct TraceMgr {
     map: Mutex<BTreeMap<ObjID, TraceSink>>,
     quick_enabled: [AtomicU64; MAX_QUICK_ENABLED],
     async_buffer: UnsafeCell<[Option<(TraceEntryHead, BufferedTraceData)>; MAX_PENDING_ASYNC]>,
+    /// [`TraceMgr::drain_async`]'s scratch, guarded by `map`: as a local it put ~270 KiB on the
+    /// stack of every caller.
+    drain_buffer: UnsafeCell<[Option<(TraceEntryHead, BufferedTraceData)>; MAX_PENDING_ASYNC]>,
     async_idx: AtomicUsize,
     async_overflow: AtomicBool,
     has_work: Spinlock<bool>,
@@ -233,6 +236,7 @@ pub static TRACE_MGR: TraceMgr = TraceMgr {
     map: Mutex::new(BTreeMap::new()),
     quick_enabled: [_Z; MAX_QUICK_ENABLED],
     async_buffer: UnsafeCell::new([__Z; MAX_PENDING_ASYNC]),
+    drain_buffer: UnsafeCell::new([__Z; MAX_PENDING_ASYNC]),
     async_idx: AtomicUsize::new(0),
     has_work: Spinlock::new(false),
     async_overflow: AtomicBool::new(false),
@@ -385,9 +389,9 @@ impl TraceMgr {
         }
     }
 
+    /// Every caller holds `map`, which is what guards `drain_buffer`.
     pub fn drain_async(&self, mut f: impl FnMut(TraceEntryHead, BufferedTraceData)) {
-        const MU: Option<(TraceEntryHead, BufferedTraceData)> = None;
-        let mut buf = [MU; MAX_PENDING_ASYNC];
+        let buf = unsafe { &mut *self.drain_buffer.get() };
         loop {
             let idx = self.async_idx.load(SeqCst);
             if idx == 0 {

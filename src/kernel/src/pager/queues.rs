@@ -53,7 +53,7 @@ struct SentRequestInfo {
 struct RequestSender {
     ids: IdCounter,
     queue: QueueObject<RequestFromKernel, CompletionToKernel>,
-    idmap: Spinlock<heapless::index_map::FnvIndexMap<u32, SentRequestInfo, NR_REQUESTS>>,
+    idmap: &'static Spinlock<SentRequests>,
     /// Signalled when a completion frees an `idmap` slot.
     ///
     /// `idmap` is fixed at `NR_REQUESTS` while `ids` hands out ids without regard to it, so a
@@ -69,6 +69,11 @@ struct RequestSender {
 }
 
 static SENDER: Once<RequestSender> = Once::new();
+
+type SentRequests = FnvIndexMap<u32, SentRequestInfo, NR_REQUESTS>;
+/// A static, not built in `SENDER`'s initializer: that put the whole map (~69 KiB) on the boot
+/// thread's stack.
+static SENT_REQUESTS: Spinlock<SentRequests> = Spinlock::new(SentRequests::new());
 
 /// The two pager queue objects, for diagnostics that must fire only for them.
 /// The two pager queue object ids, as [out.lo, out.hi, in.lo, in.hi] u64 halves.
@@ -881,7 +886,7 @@ pub fn init_pager_queue(id: ObjID, outgoing: bool) {
             ids: IdCounter::new(),
             idmap_space: CondVar::new(),
             queue,
-            idmap: Spinlock::new(FnvIndexMap::new()),
+            idmap: &SENT_REQUESTS,
         });
     } else {
         let queue = QueueObject::<RequestFromPager, CompletionToPager>::from_object(obj);
