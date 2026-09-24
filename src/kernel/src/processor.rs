@@ -470,6 +470,31 @@ pub fn tls_ready() -> bool {
 
 pub const KERNEL_STACK_SIZE: usize = 2 * 1024 * 1024; // 2M
 
+/// A thread's kernel stack. [`KERNEL_STACK_SIZE`] stays for the boot and per-cpu stacks, which
+/// have no guard page. On x86, `TWZ_THREAD_STACK_KB` at build time overrides it, for sizing
+/// against the guard page (thread/kstack.rs).
+#[cfg(target_arch = "x86_64")]
+pub const THREAD_STACK_SIZE: usize = match option_env!("TWZ_THREAD_STACK_KB") {
+    Some(kb) => parse_kb(kb) * 1024,
+    None => KERNEL_STACK_SIZE,
+};
+#[cfg(not(target_arch = "x86_64"))]
+pub const THREAD_STACK_SIZE: usize = KERNEL_STACK_SIZE;
+const _: () = assert!(THREAD_STACK_SIZE >= 0x2000 && THREAD_STACK_SIZE % 0x1000 == 0);
+
+#[cfg(target_arch = "x86_64")]
+const fn parse_kb(s: &str) -> usize {
+    let b = s.as_bytes();
+    let mut i = 0;
+    let mut n = 0;
+    while i < b.len() {
+        assert!(b[i].is_ascii_digit(), "TWZ_THREAD_STACK_KB must be decimal");
+        n = n * 10 + (b[i] - b'0') as usize;
+        i += 1;
+    }
+    n
+}
+
 /// Spin waits while a condition (cond) is true, regularly running architecture-dependent spin-wait
 /// code along with the provided pause function. The cond function should not mutate state, and it
 /// should be fast (ideally reading a single, perhaps atomic, memory value + a comparison). The

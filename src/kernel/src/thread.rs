@@ -1280,6 +1280,7 @@ pub fn exit(code: u64) -> ! {
     // prevent an IPI from rescheduling this thread between cleanup and context switch.
     crate::interrupt::with_disabled(|| {
         crate::syscall::sync::remove_from_requeue(&th);
+        th.set_exit_final();
         schedule(SchedFlags::PREEMPT);
     });
     unreachable!()

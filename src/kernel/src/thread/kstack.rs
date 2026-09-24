@@ -3,7 +3,7 @@
 //! Stacks are carved from chunks taken straight from the kernel memory context, the way ferroc's
 //! base allocator takes its, rather than from the heap. A stack is a fixed-size, page-aligned,
 //! long-lived object, so a general-purpose allocator has nothing to contribute -- and routing it
-//! through `alloc_zeroed` cost a full [`KERNEL_STACK_SIZE`] memset on every thread creation, which
+//! through `alloc_zeroed` cost a full [`THREAD_STACK_SIZE`] memset on every thread creation, which
 //! measured as ~87% of the in-kernel half of a spawn.
 //!
 //! Freed stacks go on a free list and are handed back out as-is. That is the point: a recycled
@@ -17,7 +17,7 @@ use core::{
 
 use crate::{
     memory::context::{KernelMemoryContext, kernel_context},
-    processor::KERNEL_STACK_SIZE,
+    processor::{KERNEL_STACK_SIZE, THREAD_STACK_SIZE},
     spinlock::Spinlock,
 };
 
@@ -43,7 +43,7 @@ const STACK_ALIGN: usize = 0x1000;
 const GUARD: usize = 0x1000;
 #[cfg(not(target_arch = "x86_64"))]
 const GUARD: usize = 0;
-const STRIDE: usize = GUARD + KERNEL_STACK_SIZE;
+const STRIDE: usize = GUARD + THREAD_STACK_SIZE;
 
 struct FreeList {
     /// Head of a list threaded through the free stacks themselves: the first word of a free stack
@@ -76,7 +76,7 @@ impl KernelStack {
         // Safety: `base` names a whole stack that nothing else holds.
         unsafe {
             core::ptr::write_bytes(
-                base.as_ptr().add(KERNEL_STACK_SIZE - STACK_TOP_ZERO),
+                base.as_ptr().add(THREAD_STACK_SIZE - STACK_TOP_ZERO),
                 0,
                 STACK_TOP_ZERO,
             );
@@ -87,7 +87,7 @@ impl KernelStack {
     }
 
     /// The low address of the stack, or null once detached. It grows down from
-    /// `as_ptr() + KERNEL_STACK_SIZE`.
+    /// `as_ptr() + THREAD_STACK_SIZE`.
     pub fn as_ptr(&self) -> *mut u8 {
         self.base.load(Ordering::Acquire)
     }
@@ -170,9 +170,14 @@ pub fn guard_below(stack: *mut u8) -> core::ops::Range<u64> {
     base.saturating_sub(GUARD as u64)..base
 }
 
-/// Take a stack and never give it back, for the per-cpu stacks that live as long as the kernel.
+/// A [`KERNEL_STACK_SIZE`] stack that is never given back, for the per-cpu stacks that live as
+/// long as the kernel. Carved during bring-up, so unguarded, and kept at full size for that.
 pub fn leak_one() -> *mut u8 {
-    core::mem::ManuallyDrop::new(KernelStack::new()).as_ptr()
+    let layout = Layout::from_size_align(KERNEL_STACK_SIZE, STACK_ALIGN).unwrap();
+    kernel_context()
+        .allocate_chunk(layout)
+        .expect("failed to allocate a per-cpu kernel stack")
+        .as_ptr()
 }
 
 #[cfg(all(test, target_arch = "x86_64"))]
@@ -193,6 +198,7 @@ mod test {
     #[kernel_test]
     fn stack_guard_is_unmapped() {
         assert!(crate::processor::mp::secondaries_released());
+        logln!("thread kernel stack: {} KiB", THREAD_STACK_SIZE / 1024);
         let stack = refill();
         let guard = guard_below(stack.as_ptr());
         assert_eq!(mapped_pages(guard.start), 0);

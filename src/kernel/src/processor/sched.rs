@@ -1365,8 +1365,7 @@ fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
     // `Box<ThreadRef>` self-reference -- installed in schedule_new_thread/create_idle_thread and
     // reclaimed only by Processor::cleanup_exited once the thread has exited -- always holds
     // another strong ref.
-    // Its final switch: an exiting thread is never reinserted, so it will not run again.
-    if old.is_exiting() && !flags.contains(SchedFlags::REINSERT) {
+    if old.is_exit_final() {
         cp.park_exited_stack(old);
     }
 
@@ -1409,7 +1408,9 @@ fn do_schedule(flags: SchedFlags) {
         &processor.stats.switch_yield
     };
 
-    if cur.is_exiting() {
+    // Not merely exiting: exit's cleanup can block, and a thread pushed then was reaped while it
+    // slept and would resume.
+    if cur.is_exit_final() {
         processor.push_exited(cur.clone());
     }
 

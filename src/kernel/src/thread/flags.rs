@@ -63,6 +63,9 @@ pub(crate) const THREAD_ACTIVE_RUNNING: u32 = 4096;
 /// cannot say this: `soft_advance` dequeues the entry before the callback runs, and the callback
 /// can still lose the sleep to a real wake.
 pub(crate) const THREAD_SYNC_TIMED_OUT: u32 = 8192;
+/// Set by `exit` for its last `schedule`. `THREAD_IS_EXITING` goes up earlier, and the cleanup
+/// between can still block on a mutex and be resumed, so it does not mean "never runs again".
+pub(crate) const THREAD_EXIT_FINAL: u32 = 16384;
 
 pub fn enter_kernel() {
     if let Some(thread) = current_thread_ref() {
@@ -181,6 +184,15 @@ impl Thread {
 
     pub fn is_exiting(&self) -> bool {
         self.flags.load(Ordering::SeqCst) & THREAD_IS_EXITING != 0
+    }
+
+    pub fn set_exit_final(&self) {
+        self.flags.fetch_or(THREAD_EXIT_FINAL, Ordering::SeqCst);
+    }
+
+    /// In its last switch away: it will not run again. See [`THREAD_EXIT_FINAL`].
+    pub fn is_exit_final(&self) -> bool {
+        self.flags.load(Ordering::SeqCst) & THREAD_EXIT_FINAL != 0
     }
 
     /// A force-exit is pending against this thread. Sticky: once set, only the thread's own exit

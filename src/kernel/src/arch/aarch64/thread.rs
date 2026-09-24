@@ -22,7 +22,7 @@ use twizzler_abi::{
 use twizzler_rt_abi::error::TwzError;
 
 use super::{exception::ExceptionContext, interrupt::DAIFMaskBits, syscall::Armv8SyscallContext};
-use crate::{memory::VirtAddr, processor::KERNEL_STACK_SIZE, thread::Thread};
+use crate::{memory::VirtAddr, processor::THREAD_STACK_SIZE, thread::Thread};
 
 /// Registers that need to be saved between context switches.
 ///
@@ -189,7 +189,7 @@ impl Thread {
         if base == 0 {
             return false;
         }
-        let size = KERNEL_STACK_SIZE as u64;
+        let size = THREAD_STACK_SIZE as u64;
         let own = self.arch.context.sp;
         own >= base && own < base + size && sp < base && sp + size > base
     }
@@ -243,7 +243,7 @@ impl Thread {
     }
 
     pub unsafe fn init(&mut self, entry: extern "C" fn()) {
-        let stack = new_stack_top(self.kernel_stack.as_ptr() as usize, KERNEL_STACK_SIZE);
+        let stack = new_stack_top(self.kernel_stack.as_ptr() as usize, THREAD_STACK_SIZE);
         // set the stack pointer as the last thing context (x30 + 1)
         self.arch.context.sp = stack.into();
         // set the link register as the second to last entry (x30)

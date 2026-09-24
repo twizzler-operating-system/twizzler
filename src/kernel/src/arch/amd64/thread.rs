@@ -17,7 +17,7 @@ use super::{interrupt::IsrContext, syscall::X86SyscallContext};
 use crate::{
     arch::amd64::gdt::set_kernel_stack,
     memory::VirtAddr,
-    processor::KERNEL_STACK_SIZE,
+    processor::THREAD_STACK_SIZE,
     thread::{Thread, current_thread_ref},
 };
 
@@ -619,7 +619,7 @@ impl Thread {
             set_kernel_stack(
                 VirtAddr::new(self.kernel_stack.as_ptr() as u64)
                     .unwrap()
-                    .offset(KERNEL_STACK_SIZE)
+                    .offset(THREAD_STACK_SIZE)
                     .unwrap(),
             );
         }
@@ -659,16 +659,16 @@ impl Thread {
         let stack = self.kernel_stack.as_ptr() as *mut u64;
         assert!(jmptarget != 0);
         unsafe {
-            stack.add((KERNEL_STACK_SIZE / 8) - 2).write(jmptarget);
-            stack.add((KERNEL_STACK_SIZE / 8) - 3).write(0);
-            stack.add((KERNEL_STACK_SIZE / 8) - 4).write(42);
-            stack.add((KERNEL_STACK_SIZE / 8) - 5).write(0);
-            stack.add((KERNEL_STACK_SIZE / 8) - 6).write(0);
-            stack.add((KERNEL_STACK_SIZE / 8) - 7).write(0);
-            stack.add((KERNEL_STACK_SIZE / 8) - 8).write(0);
-            stack.add((KERNEL_STACK_SIZE / 8) - 9).write(0x202); //initial rflags: int-enabled, and reserved bit
+            stack.add((THREAD_STACK_SIZE / 8) - 2).write(jmptarget);
+            stack.add((THREAD_STACK_SIZE / 8) - 3).write(0);
+            stack.add((THREAD_STACK_SIZE / 8) - 4).write(42);
+            stack.add((THREAD_STACK_SIZE / 8) - 5).write(0);
+            stack.add((THREAD_STACK_SIZE / 8) - 6).write(0);
+            stack.add((THREAD_STACK_SIZE / 8) - 7).write(0);
+            stack.add((THREAD_STACK_SIZE / 8) - 8).write(0);
+            stack.add((THREAD_STACK_SIZE / 8) - 9).write(0x202); //initial rflags: int-enabled, and reserved bit
             self.arch.rsp =
-                core::cell::UnsafeCell::new(stack.add((KERNEL_STACK_SIZE / 8) - 9) as u64);
+                core::cell::UnsafeCell::new(stack.add((THREAD_STACK_SIZE / 8) - 9) as u64);
         }
     }
 
