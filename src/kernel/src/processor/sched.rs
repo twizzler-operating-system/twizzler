@@ -811,6 +811,54 @@ fn balance_node(node: &CPUTopoNode, steps: &mut usize) {
 }
 
 fn select_cpu(thread: &ThreadRef, try_avoid: Option<u32>, is_wake: bool) -> u32 {
+    // Taken on every placement, so a hint cannot outlive the wake that set it.
+    let irq_cpu = thread.sched.take_irq_hint().filter(|_| is_wake);
+    let by_rule = irq_cpu.filter(|&cpu| irq_affine_allows(thread, cpu, try_avoid));
+    let cpu = by_rule.unwrap_or_else(|| select_cpu_placed(thread, try_avoid, is_wake));
+    if let Some(irq_cpu) = irq_cpu {
+        crate::interrupt::routestats::note_device_wake(cpu == irq_cpu, by_rule.is_some());
+    }
+    cpu
+}
+
+/// The `--irq-affine` rule: a device wake goes to the cpu that took the interrupt when that cpu is
+/// idle and loses it nothing cached. A pinned thread keeps its pin. Idle only: taking a busy cpu
+/// preempts whatever runs there, often the thread waiting on this very I/O
+/// (`--irq-affine-preempt` restores that for the A/B).
+fn irq_affine_allows(thread: &ThreadRef, cpu: u32, try_avoid: Option<u32>) -> bool {
+    if !crate::irq_affine()
+        || crate::flat_placement()
+        || thread.sched.pinned_to().is_some()
+        || !thread.sched.affinity.allows(cpu)
+        || try_avoid == Some(cpu)
+    {
+        return false;
+    }
+    let processor = get_processor(cpu);
+    let preempt =
+        crate::irq_affine_preempt() && thread.effective_priority() > processor.current_priority();
+    if !(processor.is_idle() || preempt) {
+        return false;
+    }
+    match thread.sched.preferred_cpu() {
+        Some((last, _)) if thread.sched.is_warm() => last == cpu || shares_cache(last, cpu),
+        _ => true,
+    }
+}
+
+/// Whether some node above `a` that contains `b` has a cache its cpus share.
+fn shares_cache(a: u32, b: u32) -> bool {
+    let mut node = get_cpu_topology().find_cpu(a);
+    while let Some(n) = node {
+        if n.cpuset.contains(b) && !n.caches.is_empty() {
+            return true;
+        }
+        node = n.parent();
+    }
+    false
+}
+
+fn select_cpu_placed(thread: &ThreadRef, try_avoid: Option<u32>, is_wake: bool) -> u32 {
     /* TODO: take SMT into acount */
     let affinity = &thread.sched.affinity;
     let stats = &current_processor().stats;

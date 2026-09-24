@@ -82,6 +82,11 @@ pub struct ThreadSched {
     /// Derived, never set on its own: it is the placement fast path and the run queues' notion
     /// of "movable".
     pub pinned_cpu: AtomicI32,
+    /// The cpu that took the device interrupt waking this thread, for [select_cpu]'s irq-affine
+    /// rule; -1 when the pending wake is not a device wake. Taken (cleared) by the next placement.
+    ///
+    /// [select_cpu]: crate::processor::sched
+    irq_hint: AtomicI32,
     pub affinity: Affinity,
     /// Whether this thread was counted in its run queue's `movable` when inserted. Latched at
     /// insert and read at take, so an affinity change while queued cannot desync the count.
@@ -146,6 +151,7 @@ impl Default for ThreadSched {
         Self {
             last_cpu: AtomicI32::new(-1),
             pinned_cpu: AtomicI32::new(-1),
+            irq_hint: AtomicI32::new(-1),
             affinity: Affinity::all(),
             queued_movable: AtomicBool::new(false),
             deadline: AtomicU64::new(0),
@@ -168,6 +174,19 @@ impl ThreadSched {
     /// put briefly. [ThreadSched::set_affinity] re-derives the pin, so the two do not compose.
     pub fn pin_cpu(&self, cpu: u32) {
         self.pinned_cpu.store(cpu as i32, Ordering::Release);
+    }
+
+    pub fn set_irq_hint(&self, cpu: u32) {
+        self.irq_hint.store(cpu as i32, Ordering::Release);
+    }
+
+    pub fn take_irq_hint(&self) -> Option<u32> {
+        // Read first: most placements have no hint, and a swap would write this line every time.
+        if self.irq_hint.load(Ordering::Acquire) < 0 {
+            return None;
+        }
+        let cpu = self.irq_hint.swap(-1, Ordering::AcqRel);
+        (cpu >= 0).then_some(cpu as u32)
     }
 
     pub fn unpin_cpu(&self) {

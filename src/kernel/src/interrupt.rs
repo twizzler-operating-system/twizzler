@@ -317,6 +317,11 @@ impl GlobalInterruptState {
                 break;
             }
             for thread in batch {
+                if !unlink_claimed {
+                    thread
+                        .sched
+                        .set_irq_hint(crate::processor::mp::current_processor().id);
+                }
                 add_to_requeue(thread);
             }
             if !full {
@@ -505,6 +510,21 @@ pub mod routestats {
     use crate::{arch::interrupt::NUM_VECTORS, processor::mp::current_processor};
 
     static COUNT: [AtomicU64; NUM_VECTORS] = [const { AtomicU64::new(0) }; NUM_VECTORS];
+    /// Device-interrupt wakes placed, how many landed on the interrupt's cpu, and how many of
+    /// those the irq-affine rule chose.
+    static DEV_WAKES: AtomicU64 = AtomicU64::new(0);
+    static DEV_WAKES_LOCAL: AtomicU64 = AtomicU64::new(0);
+    static DEV_WAKES_RULE: AtomicU64 = AtomicU64::new(0);
+
+    pub fn note_device_wake(local: bool, by_rule: bool) {
+        DEV_WAKES.fetch_add(1, Ordering::Relaxed);
+        if local {
+            DEV_WAKES_LOCAL.fetch_add(1, Ordering::Relaxed);
+        }
+        if by_rule {
+            DEV_WAKES_RULE.fetch_add(1, Ordering::Relaxed);
+        }
+    }
     /// Bit `n` for cpu id `n`; ids past 63 fold onto bit 63.
     static CPUS: [AtomicU64; NUM_VECTORS] = [const { AtomicU64::new(0) }; NUM_VECTORS];
 
@@ -515,6 +535,13 @@ pub mod routestats {
     }
 
     pub fn print() {
+        emerglogln!(
+            "irqwake: device wakes {} on irq cpu {} by rule {} (irq_affine {})",
+            DEV_WAKES.load(Ordering::Relaxed),
+            DEV_WAKES_LOCAL.load(Ordering::Relaxed),
+            DEV_WAKES_RULE.load(Ordering::Relaxed),
+            crate::irq_affine()
+        );
         for v in 0..NUM_VECTORS {
             let n = COUNT[v].load(Ordering::Relaxed);
             if n != 0 {

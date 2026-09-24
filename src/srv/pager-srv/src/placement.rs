@@ -15,6 +15,9 @@ use twizzler_abi::{
 pub enum PinMode {
     /// Interrupts to the BSP, workers unconstrained.
     None,
+    /// Queue interrupts spread one per cpu, workers unconstrained. The default: with the kernel's
+    /// `--irq-affine`, a woken worker follows its interrupt without a hard rule.
+    Spread,
     /// Worker and its queue interrupt on one cpu.
     Hard,
     /// Interrupt on the worker's home cpu; the worker may run anywhere sharing its last-level
@@ -25,9 +28,10 @@ pub enum PinMode {
 pub fn pin_mode() -> PinMode {
     static MODE: OnceLock<PinMode> = OnceLock::new();
     *MODE.get_or_init(|| match std::env::var("TWZ_PAGER_PIN").as_deref() {
+        Ok("none") => PinMode::None,
         Ok("hard") => PinMode::Hard,
         Ok("soft") => PinMode::Soft,
-        _ => PinMode::None,
+        _ => PinMode::Spread,
     })
 }
 
@@ -51,7 +55,7 @@ pub fn worker_cpu(index: usize) -> Option<u32> {
 fn worker_mask(index: usize) -> Option<CpuMask> {
     let home = cpus().get(index % cpus().len().max(1))?;
     match pin_mode() {
-        PinMode::None => None,
+        PinMode::None | PinMode::Spread => None,
         PinMode::Hard => Some(CpuMask::single(home.id)),
         PinMode::Soft => {
             let llc = home.caches().last()?.id;

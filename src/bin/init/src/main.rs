@@ -318,8 +318,8 @@ fn main() {
             a if a.starts_with("--diag=") => {
                 std::env::set_var("TWZ_DIAG", &a["--diag=".len()..]);
             }
-            // Pager worker and nvme interrupt placement: `none`, `hard` or `soft`. See
-            // pager-srv's `placement`.
+            // Pager worker and nvme interrupt placement: `spread` (default), `none`, `hard` or
+            // `soft`. See pager-srv's `placement`.
             a if a.starts_with("--pager-pin=") => {
                 std::env::set_var("TWZ_PAGER_PIN", &a["--pager-pin=".len()..]);
             }
