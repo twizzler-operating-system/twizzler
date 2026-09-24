@@ -1284,7 +1284,8 @@ fn trace_switch(from: &ThreadRef, to: &ThreadRef, sflags: SchedFlags) {
 
 fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
     let cp = current_processor();
-    let now_ns = crate::instant::current_ns();
+    let now = crate::instant::Instant::now();
+    let now_ns = now.as_nanos();
     // The outgoing thread owns this cpu's llc misses up to here.
     crate::thread::cachemiss::charge_switch_out(old, now_ns);
     // Close out the wake stamp: this is the one place a thread becomes the running thread, so the
@@ -1294,7 +1295,7 @@ fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
     let wake_ticks = thread.sched.wake_ticks.swap(0, Ordering::Relaxed);
     if wake_ticks != 0 {
         let kind = thread.sched.wake_kind.swap(0, Ordering::Relaxed);
-        let lat = crate::instant::Instant::now().ns_since_ticks(wake_ticks);
+        let lat = now.ns_since_ticks(wake_ticks);
         wakestats::wake_to_run(kind, lat);
         if lat > wakestats::SLOW_WAKE_NS {
             wakestats::slow_wake(
@@ -1325,10 +1326,9 @@ fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
     if !old.is_idle_thread() {
         old.interact.pctcpu_update(now_ns / 1_000_000, true);
         set_deadline(old, cp);
-        old.sched.left_tick.store(
-            crate::instant::Instant::now().raw_ticks().max(1),
-            Ordering::Relaxed,
-        );
+        old.sched
+            .left_tick
+            .store(now.raw_ticks().max(1), Ordering::Relaxed);
     }
     if !thread.is_idle_thread() {
         thread.interact.pctcpu_update(now_ns / 1_000_000, false);
@@ -1343,7 +1343,9 @@ fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
         cp.enter_idle();
         cp.current_priority.store(0, Ordering::Release);
     }
-    cp.reset_rebalance();
+    if cp.must_rebalance() {
+        cp.reset_rebalance();
+    }
     // Do NOT publish `thread` as current here. `do_schedule`'s REINSERT branch can already have
     // queued it on another cpu, so publishing before this cpu owns it makes two cpus report the
     // same current thread for the whole prologue -- the cross-cpu producer behind the stale lock

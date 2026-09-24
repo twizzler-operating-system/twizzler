@@ -98,6 +98,15 @@ impl Instant {
         self.ticks
     }
 
+    /// The same value as [`current_ns`] read at this instant.
+    pub fn as_nanos(&self) -> u64 {
+        Ticks {
+            value: self.ticks,
+            rate: self.rate,
+        }
+        .as_nanos() as u64
+    }
+
     /// Nanoseconds from a stamp taken by [`Instant::raw_ticks`] to this reading, saturating at
     /// zero. One conversion for the interval, rather than one per endpoint.
     pub fn ns_since_ticks(&self, ticks: u64) -> u64 {

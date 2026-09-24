@@ -385,6 +385,9 @@ pub(super) fn pcid_enabled() -> bool {
 
 pub struct ArchProcessor {
     wait_word: AtomicU64,
+    /// Set while idle and polling or in mwait, both of which re-check `has_work` before sleeping
+    /// and are ended by the `wait_word` store alone, so a waker that sees it skips the IPI.
+    idle_waiting: AtomicBool,
     pub(super) tlb_shootdown_info: TlbShootdownInfo,
     /// The CR3 this processor last switched to. Used by TLB shootdown to skip IPIing
     /// processors whose active address space can't have stale entries for the target
@@ -444,6 +447,7 @@ impl Default for ArchProcessor {
     fn default() -> Self {
         Self {
             wait_word: Default::default(),
+            idle_waiting: AtomicBool::new(false),
             tlb_shootdown_info: TlbShootdownInfo::new(),
             active_cr3: AtomicU64::new(0),
             pcid_valid: [const { AtomicU64::new(0) }; PCID_BITMAP_WORDS],
@@ -492,10 +496,14 @@ const IDLE_POLL_NS: u64 = 50_000;
 pub fn halt_and_wait() {
     /* TODO: parse cstates and actually put the cpu into deeper and deeper sleep */
     let proc = current_processor();
+    // SeqCst on both sides: a waker that reads this true inserted its work before the read, so
+    // the has_work checks after this store see it.
+    proc.arch.idle_waiting.store(true, Ordering::SeqCst);
     if crate::idle_poll() {
         let until = crate::instant::current_ns() + IDLE_POLL_NS;
         while crate::instant::current_ns() < until {
             if proc.has_work() {
+                proc.arch.idle_waiting.store(false, Ordering::SeqCst);
                 return;
             }
             core::hint::spin_loop();
@@ -517,6 +525,7 @@ pub fn halt_and_wait() {
                 core::arch::asm!("mwait", in("rax") 0, in("rcx") 1);
             }
         }
+        proc.arch.idle_waiting.store(false, Ordering::SeqCst);
         // Every path out of here must re-enable interrupts. Whatever broke us out of mwait is
         // still only *pending* while masked, so returning with cli set leaves this processor
         // deaf for the rest of the idle loop -- it never takes the timer, and never runs the
@@ -525,6 +534,8 @@ pub fn halt_and_wait() {
             unsafe { core::arch::asm!("sti") };
         }
     } else {
+        // Only an interrupt ends hlt: cleared before the last check so a waker from here on IPIs.
+        proc.arch.idle_waiting.store(false, Ordering::SeqCst);
         if proc.has_work() {
             return;
         }
@@ -541,7 +552,7 @@ impl Processor {
     pub fn wakeup(&self, signal: bool) {
         if has_mwait().is_some() {
             self.arch.wait_word.store(1, Ordering::SeqCst);
-            if !signal {
+            if !signal || self.arch.idle_waiting.load(Ordering::SeqCst) {
                 return;
             }
         }

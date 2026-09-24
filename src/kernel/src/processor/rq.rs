@@ -184,15 +184,17 @@ impl<const N: usize> PriorityQueue<N> {
             // interactive by inheritance for their first second, and a sleeper filed behind them
             // waited that second out.
             Self::note(&th, wakestats::NOTE_RT_ORDERED, 0);
-            let mut cursor = self.queues[0].front_mut();
+            // From the back: the lower-valued User threads are a suffix, and the usual arrival
+            // (FIFO behind its equals, or the lowest) stops at once.
+            let mut cursor = self.queues[0].back_mut();
             while let Some(t) = cursor.get() {
                 let tp = t.get_stable_effective_priority();
-                if tp.class == PriorityClass::User && tp.value < priority.value {
+                if tp.class != PriorityClass::User || tp.value >= priority.value {
                     break;
                 }
-                cursor.move_next();
+                cursor.move_prev();
             }
-            cursor.insert_before(th);
+            cursor.insert_after(th);
             return;
         }
         let q = priority.value as usize / (MAX_PRIORITY as usize / N);

@@ -186,42 +186,28 @@ impl SleepQueue {
     /// equal-priority waiters keep FIFO behavior, together with the highest priority left behind it
     /// -- which is what `pri` must become.
     ///
-    /// The leftover priority is accumulated during the removal walk rather than by a third pass
-    /// over the list. Every pass costs two SeqCst loads per waiter (`effective_priority`) and all
-    /// of them run under the queue spinlock, so the one that can be folded in is worth folding
-    /// in.
+    /// One pass: every read costs two SeqCst loads per waiter (`effective_priority`) under the
+    /// queue spinlock, and each priority is read once, so the pick and the leftover cannot
+    /// disagree about a donation that lands mid-walk.
     fn pop_highest_priority(&mut self) -> Option<(ThreadRef, Option<Priority>)> {
         // Recomputed from the list rather than read from `pri`: a donation can raise a waiter's
         // effective priority after `pri` was last written.
-        let best = self.queue.iter().map(|t| t.effective_priority()).max()?;
-        let mut cursor = self.queue.front_mut();
-        let mut taken = None;
+        let mut best: Option<(Priority, *const Thread)> = None;
         let mut rest = None;
-        loop {
-            let pri = match cursor.get() {
-                Some(t) => t.effective_priority(),
-                None => break,
-            };
-            if taken.is_none() && pri >= best {
-                // `remove` leaves the cursor on the following element, so don't advance as well.
-                taken = cursor.remove();
-                continue;
-            }
-            rest = rest.max(Some(pri));
-            cursor.move_next();
-        }
-        match taken {
-            Some(thread) => Some((thread, rest)),
-            // A donation raced the scan above, so nothing matched the snapshot. Fall back to FIFO:
-            // returning None here would mark the mutex unowned while waiters are still queued,
-            // stranding them asleep forever. `rest` counted the element this arm removes, so it has
-            // to be recomputed rather than reused.
-            None => {
-                let thread = self.queue.pop_front()?;
-                let rest = self.queue.iter().map(|t| t.effective_priority()).max();
-                Some((thread, rest))
+        for t in self.queue.iter() {
+            let pri = t.effective_priority();
+            match best {
+                Some((b, _)) if pri <= b => rest = rest.max(Some(pri)),
+                _ => {
+                    rest = rest.max(best.map(|(b, _)| b));
+                    best = Some((pri, t as *const Thread));
+                }
             }
         }
+        let (_, ptr) = best?;
+        // Safety: read from this list under the same `&mut self`, so it is still linked here.
+        let thread = unsafe { self.queue.cursor_mut_from_ptr(ptr) }.remove()?;
+        Some((thread, rest))
     }
 }
 
