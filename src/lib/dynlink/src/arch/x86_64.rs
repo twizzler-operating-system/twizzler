@@ -57,8 +57,11 @@ pub fn get_tls_variant() -> TlsVariant {
 /// # Safety
 /// The TCB must actually contain runtime data of type T, and be initialized.
 pub unsafe fn get_current_thread_control_block<T>() -> *mut Tcb<T> {
+    // `rdfsbase`, not `mov fs:0`: the self pointer at fs:0 is the fs base itself, and reading it
+    // through memory turns a thread pointer of zero into a read of address 0. Callers test for
+    // null to mean "no TLS yet". FSGSBASE is already required (secgate reads it the same way).
     let mut val: usize;
-    core::arch::asm!("mov {}, fs:0", out(reg) val);
+    core::arch::asm!("rdfsbase {}", out(reg) val, options(nomem, nostack, preserves_flags));
     val as *mut _
 }
 

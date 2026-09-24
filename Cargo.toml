@@ -30,6 +30,7 @@ members = [
     "src/srv/logboi-srv",
     "src/srv/pager-srv",
     "src/test/logboi-test",
+    "src/test/nulljump",
     "src/test/signal-test",
     "src/test/simdtest",
     "src/lib/naming/naming-core",

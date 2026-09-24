@@ -1033,9 +1033,7 @@ impl UserContext for VirtContext {
         if info.start_vaddr().is_kernel_object_memory() && !self.is_kernel {
             kernel_context().lookup_object_ref(info)
         } else {
-            self.regions
-                .lookup_region(info)
-                .map(|region| region.object().clone())
+            self.regions.lookup_object(info)
         }
     }
 

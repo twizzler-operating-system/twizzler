@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use intrusive_collections::{LinkedList, intrusive_adapter};
 
 use super::{
-    sched::{DEFAULT_TIMESLICE_TICKS, MAX_TIMESLICE_TICKS, MIN_TIMESLICE_TICKS},
+    sched::{DEFAULT_TIMESLICE_TICKS, MAX_TIMESLICE_TICKS, MIN_TIMESLICE_TICKS, wakestats},
     timeshare::TimeshareQueue,
 };
 use crate::{
@@ -11,6 +11,7 @@ use crate::{
     spinlock::{GenericSpinlock, LockGuard},
     thread::{
         Thread, ThreadRef, current_thread_ref,
+        interact::BATCH_MAX,
         priority::{MAX_PRIORITY, Priority, PriorityClass},
     },
 };
@@ -172,16 +173,54 @@ impl<const N: usize> PriorityQueue<N> {
 
     fn insert(&mut self, th: ThreadRef) {
         let priority = th.get_stable_effective_priority();
-        let q = if priority.class == PriorityClass::User {
-            // A user thread getting a deadline boost: lowest realtime slot, so it beats
-            // timeshare/idle without cutting ahead of genuine realtime work.
-            0
-        } else {
-            priority.value as usize / (MAX_PRIORITY as usize / N)
-        };
-        assert!(q < N, "priority value {} out of range", priority.value);
-        self.queues[q].push_back(th);
         self.count += 1;
+        if priority.class == PriorityClass::User {
+            // Boosted User threads share the lowest realtime slot, so they beat the calendar
+            // without cutting ahead of genuine realtime work. Within it they are ordered by value
+            // and FIFO within a value, a preempted thread included: the wake rotation preempts a
+            // runner so a queued equal can run, and a runner re-entering ahead of that equal is
+            // taken straight back (pingpong at 12 threads on 4 cpus wedged on it). A front insert
+            // for every interactive arrival made the slot a LIFO: freshly spawned spinners are
+            // interactive by inheritance for their first second, and a sleeper filed behind them
+            // waited that second out.
+            Self::note(&th, wakestats::NOTE_RT_ORDERED, 0);
+            let mut cursor = self.queues[0].front_mut();
+            while let Some(t) = cursor.get() {
+                let tp = t.get_stable_effective_priority();
+                if tp.class == PriorityClass::User && tp.value < priority.value {
+                    break;
+                }
+                cursor.move_next();
+            }
+            cursor.insert_before(th);
+            return;
+        }
+        let q = priority.value as usize / (MAX_PRIORITY as usize / N);
+        assert!(q < N, "priority value {} out of range", priority.value);
+        Self::note(&th, wakestats::NOTE_RT_CLASS, q);
+        if q == 0 {
+            // Realtime values 0..16 share the slot with boosted User threads: ahead of all of
+            // them, FIFO among themselves.
+            let mut cursor = self.queues[0].front_mut();
+            while let Some(t) = cursor.get() {
+                if t.get_stable_effective_priority().class == PriorityClass::User {
+                    break;
+                }
+                cursor.move_next();
+            }
+            cursor.insert_before(th);
+            return;
+        }
+        self.queues[q].push_back(th);
+    }
+
+    fn note(th: &Thread, kind: u8, idx: usize) {
+        if crate::kdiag_wake() {
+            th.sched.queue_note.store(
+                wakestats::queue_note(kind, th, 0, 0, idx),
+                Ordering::Relaxed,
+            );
+        }
     }
 
     fn take(&mut self) -> Option<ThreadRef> {
@@ -312,15 +351,16 @@ impl<const N: usize> RunQueue<N> {
         }
         self.load.fetch_add(1, Ordering::SeqCst);
         let th_pri = th.stable_effective_priority();
-        let cur_pri = self.current_priority.load(Ordering::Acquire);
-        if Priority::from_raw(cur_pri) < th_pri {
-            self.current_priority.store(th_pri.raw(), Ordering::Release);
-        }
+        // `raw` is class-major, so its integer max is the priority max; a load and a store let a
+        // concurrent insert of a lower priority overwrite a higher one.
+        self.current_priority
+            .fetch_max(th_pri.raw(), Ordering::AcqRel);
 
         match th_pri.class {
             PriorityClass::Realtime => {
                 self.note_realtime_class(&th, 1);
-                self.realtime.lock().insert(th);
+                let mut realtime = self.realtime.lock();
+                realtime.insert(th);
                 self.flags.fetch_or(RQ_HAS_RT, Ordering::SeqCst);
                 true
             }
@@ -330,7 +370,8 @@ impl<const N: usize> RunQueue<N> {
                         th.sched.set_woken();
                         self.pending_wakes.fetch_add(1, Ordering::AcqRel);
                     }
-                    self.realtime.lock().insert(th);
+                    let mut realtime = self.realtime.lock();
+                    realtime.insert(th);
                     self.flags.fetch_or(RQ_HAS_RT, Ordering::SeqCst);
                 } else {
                     self.timeshare_load.fetch_add(1, Ordering::Release);
@@ -347,7 +388,8 @@ impl<const N: usize> RunQueue<N> {
                 true
             }
             _ => {
-                self.idle.lock().insert(th);
+                let mut idle = self.idle.lock();
+                idle.insert(th);
                 self.flags.fetch_or(RQ_HAS_IL, Ordering::SeqCst);
                 false
             }
@@ -356,6 +398,10 @@ impl<const N: usize> RunQueue<N> {
 
     fn recalc_priority_timeshare(&self, queue: SchedLockGuard<TimeshareQueue>) {
         if self.current_priority().class == PriorityClass::User {
+            // Boosted User threads still queued in the realtime queue keep what they advertised.
+            if queue.is_empty() && self.flags.load(Ordering::Acquire) & RQ_HAS_RT != 0 {
+                return;
+            }
             if queue.is_empty() {
                 let priority = self
                     .idle
@@ -380,7 +426,12 @@ impl<const N: usize> RunQueue<N> {
             return None;
         }
         let mut realtime = self.realtime.lock();
-        let th = realtime.take()?;
+        // Set and cleared only under the queue lock; a flag left on an empty queue made every
+        // tick preempt the batch runner for nothing.
+        let Some(th) = realtime.take() else {
+            self.flags.fetch_and(!RQ_HAS_RT, Ordering::Release);
+            return None;
+        };
         self.note_realtime_class(&th, -1);
         if realtime.is_empty() {
             self.flags.fetch_and(!RQ_HAS_RT, Ordering::Release);
@@ -390,7 +441,9 @@ impl<const N: usize> RunQueue<N> {
             assert!(old > 0);
         }
         self.load.fetch_sub(1, Ordering::Release);
-        if self.current_priority().class == PriorityClass::Realtime {
+        // Boosted User threads come off this queue too, and taking the last one must not leave
+        // its value advertised.
+        {
             if realtime.is_empty() {
                 // Fall back to whatever the other queues actually hold, rather than always
                 // claiming User priority -- otherwise an empty CPU keeps reporting itself busy
@@ -399,8 +452,9 @@ impl<const N: usize> RunQueue<N> {
                 // timeshare/idle from here, which isn't worth it on this path.
                 let f = self.flags.load(Ordering::Acquire);
                 let priority = if f & RQ_HAS_TS != 0 {
+                    // The calendar only holds batch values.
                     Priority {
-                        value: MAX_PRIORITY - 1,
+                        value: BATCH_MAX,
                         class: PriorityClass::User,
                     }
                 } else if f & RQ_HAS_IL != 0 {
@@ -448,7 +502,10 @@ impl<const N: usize> RunQueue<N> {
             return None;
         }
         let mut idle = self.idle.lock();
-        let th = idle.take()?;
+        let Some(th) = idle.take() else {
+            self.flags.fetch_and(!RQ_HAS_IL, Ordering::Release);
+            return None;
+        };
         if idle.is_empty() {
             self.flags.fetch_and(!RQ_HAS_IL, Ordering::Release);
         }
@@ -557,7 +614,10 @@ impl<const N: usize> RunQueue<N> {
     pub fn timeslice(&self, class: PriorityClass) -> u64 {
         match class {
             PriorityClass::User => {
-                let load = self.timeshare_load.load(Ordering::Acquire);
+                // Every queued thread, not the calendar alone: a spinner boosted into the realtime
+                // slot competes for this cpu as much as one in the calendar, and counting only the
+                // calendar gave the running thread the maximum slice whenever all were boosted.
+                let load = self.load.load(Ordering::Acquire);
                 if load == 0 {
                     return MAX_TIMESLICE_TICKS as u64;
                 }
@@ -645,7 +705,10 @@ mod test {
         for b in insert_order {
             pq.insert(thread_at(PriorityClass::Realtime, b * BUCKET_WIDTH));
         }
-        assert_eq!(pq.highest_priority().map(|p| p.value), Some(7 * BUCKET_WIDTH));
+        assert_eq!(
+            pq.highest_priority().map(|p| p.value),
+            Some(7 * BUCKET_WIDTH)
+        );
 
         let got: Vec<u16> = drain(&mut pq).iter().map(|p| p.value).collect();
         let expected: Vec<u16> = (0..NR_QUEUES as u16)
@@ -743,6 +806,26 @@ mod test {
 
         assert_eq!(pq.take().unwrap().id(), first_id);
         assert_eq!(pq.take().unwrap().id(), second_id);
+        assert!(pq.take().is_none());
+    }
+
+    #[kernel_test]
+    fn test_user_slot_orders_by_value_fifo_within() {
+        let mut pq = PriorityQueue::<NR_QUEUES>::new();
+        let a = thread_at(PriorityClass::User, 126);
+        let b = thread_at(PriorityClass::User, 126);
+        let sleeper = thread_at(PriorityClass::User, 127);
+        let c = thread_at(PriorityClass::User, 126);
+        let (a_id, b_id, s_id, c_id) = (a.id(), b.id(), sleeper.id(), c.id());
+        pq.insert(a);
+        pq.insert(b);
+        pq.insert(sleeper);
+        pq.insert(c);
+        assert_eq!(pq.highest_priority().map(|p| p.value), Some(127));
+        assert_eq!(pq.take().unwrap().id(), s_id);
+        assert_eq!(pq.take().unwrap().id(), a_id);
+        assert_eq!(pq.take().unwrap().id(), b_id);
+        assert_eq!(pq.take().unwrap().id(), c_id);
         assert!(pq.take().is_none());
     }
 }

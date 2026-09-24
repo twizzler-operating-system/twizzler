@@ -106,9 +106,10 @@ pub fn write(data: &[u8], _flags: crate::log::KernelConsoleWriteFlags) {
 }
 
 pub fn serial_interrupt_handler() {
-    let byte = SERIAL.rx_byte();
-    if let Some(x) = byte {
-        crate::log::push_input_byte(x);
-    }
+    // Clear before draining: a clear after the read can drop the interrupt for a byte that arrived
+    // meanwhile, stranding it (and all input after it).
     SERIAL.clear_rx_interrupt();
+    while let Some(x) = SERIAL.rx_byte() {
+        crate::log::push_input_byte(x, false);
+    }
 }

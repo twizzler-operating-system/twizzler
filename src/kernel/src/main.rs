@@ -124,6 +124,8 @@ pub fn no_pcid() -> bool {
 }
 
 static FLAT_PLACEMENT: AtomicBool = AtomicBool::new(false);
+static WAKE_AFFINE: AtomicBool = AtomicBool::new(true);
+static IDLE_POLL: AtomicBool = AtomicBool::new(true);
 static MUTEX_STEP_BOOST: AtomicBool = AtomicBool::new(false);
 
 /// `--mutex-step-boost`: a same-class mutex waiter lifts the owner one step above its own
@@ -138,6 +140,17 @@ pub fn mutex_step_boost() -> bool {
 /// binary.
 pub fn flat_placement() -> bool {
     FLAT_PLACEMENT.load(Ordering::Relaxed)
+}
+
+/// A wake from a cpu with an empty queue stays on that cpu when the wakee's last cpu is busy;
+/// off with `--no-wake-affine`.
+pub fn wake_affine() -> bool {
+    WAKE_AFFINE.load(Ordering::Relaxed)
+}
+
+/// The idle loop polls its queue for a while before halting; off with `--no-idle-poll`.
+pub fn idle_poll() -> bool {
+    IDLE_POLL.load(Ordering::Relaxed)
 }
 
 /// The reaper thread, on unless `--reap=legacy`.
@@ -322,6 +335,12 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
         }
         if opt == "--no-pcid" {
             NO_PCID.store(true, Ordering::SeqCst);
+        }
+        if opt == "--no-wake-affine" {
+            WAKE_AFFINE.store(false, Ordering::SeqCst);
+        }
+        if opt == "--no-idle-poll" {
+            IDLE_POLL.store(false, Ordering::SeqCst);
         }
         if opt == "--flat-placement" {
             FLAT_PLACEMENT.store(true, Ordering::SeqCst);
@@ -549,6 +568,9 @@ pub fn idle_main() -> ! {
         // Covers the case the stattick safe-point reap structurally cannot: a cpu with nothing in
         // user mode to interrupt. One relaxed load when there is nothing to do.
         crate::thread::reaper::notify();
+        // Still needed with the reaper running: one reaper thread cannot keep up with an smp8 spawn
+        // storm (backlog ~5000 kernel stacks, then kstack refill panicked), and the idle loops reap
+        // in parallel. A drop here can take a sleeping mutex, which is the hazard reaper.rs names.
         if iter % 100 == 0 {
             current_processor().cleanup_exited();
         }

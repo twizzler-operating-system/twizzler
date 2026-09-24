@@ -112,6 +112,16 @@ pub(super) fn set_interrupt(
     }
 }
 
+/// One past the highest GSI any IOAPIC decodes. GSI `n` is wired to vector `32 + n`.
+pub(super) fn gsi_end() -> u32 {
+    IOAPICS
+        .lock()
+        .iter()
+        .map(|ioapic| ioapic.gsi_base + 24)
+        .max()
+        .unwrap_or(24)
+}
+
 pub fn init() {
     let acpi = get_acpi_root();
 

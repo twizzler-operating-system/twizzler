@@ -93,9 +93,10 @@ impl Entry {
         todo!("set_avail_bit")
     }
 
-    /// Is this a huge page (a block descriptor)?
+    /// Is this a huge page (a block descriptor)? A zeroed entry has bit 1 clear too, so it
+    /// would read as `HUGE` without the present check.
     pub fn is_huge(&self) -> bool {
-        self.flags().contains(EntryFlags::HUGE)
+        self.is_present() && self.flags().contains(EntryFlags::HUGE)
     }
 
     /// Is the entry mapped Present?

@@ -9,6 +9,7 @@ use crate::{
         frame::{Frame, FrameRef, PHYS_LEVEL_LAYOUTS},
         tracker::{FrameAllocFlags, alloc_frame, free_frame, try_alloc_frame},
     },
+    obj::ObjectRef,
     spinlock::Spinlock,
 };
 
@@ -153,6 +154,21 @@ impl SlotMgr {
         assert!(!state.is_null(), "slot state vanished under a guard");
         let _guard = self.locks[idx % NR_LOCKS].lock();
         core::mem::replace(unsafe { &mut *state }, new)
+    }
+
+    /// The object mapped at `slot`, cloned under the shard lock so the region's own refcount --
+    /// one line shared by every thread using the slot -- is not touched.
+    pub fn lookup_object(&self, slot: usize) -> Option<ObjectRef> {
+        let idx = self.index(slot)?;
+        let state = self.populate(idx, true);
+        if state.is_null() {
+            return None;
+        }
+        let _guard = self.locks[idx % NR_LOCKS].lock();
+        match unsafe { &*state } {
+            SlotState::Present(region) => Some(region.object().clone()),
+            _ => None,
+        }
     }
 
     pub fn lookup(&self, slot: usize) -> Option<Arc<MapRegion>> {

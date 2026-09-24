@@ -1,0 +1,116 @@
+Wiring for elephance via the existing third-party mechanism, presence-conditionally.
+
+STATUS: APPLIED to the tree on 2026-08-19 (verified: cargo check-all exit 0, elephance
+compiled in the third-party collection). This file is regenerated from the live diff and
+serves as the revert reference: git apply -R third-party/elephance/wire.patch
+
+What it does:
+- Root Cargo.toml: registers elephance in [workspace.metadata.third-party] (built as
+  its own ephemeral workspace over twz/'s manifest, like kibi) and adds
+  "third-party:elephance" to the initrd list.
+- xtask build: a third-party entry whose local path is absent is skipped with a note
+  naming the package and path, so trees without third-party/elephance/ build exactly
+  as before — presence of this directory toggles elephance in and out.
+- xtask image: searches all third-party compilations for an initrd crate instead of
+  requiring every compilation to contain it (pre-existing bug that only bites with a
+  second third-party package), and skips a third-party initrd entry only when its
+  metadata path is genuinely absent (note names the path looked for) — a build that
+  should have produced the binary still errors.
+
+diff --git i/Cargo.toml w/Cargo.toml
+index e9fa152e..866e389c 100644
+--- i/Cargo.toml
++++ w/Cargo.toml
+@@ -153,6 +153,7 @@ initrd = [
+     #"crate:st",
+     #"crate:stdnet_test",
+     "third-party:kibi",
++    "third-party:elephance",
+     #"crate:async-test",
+ 
+     #"third-party:hello-world-rs"
+@@ -171,6 +172,7 @@ initrd = [
+ 
+ [workspace.metadata.third-party]
+ kibi = { path = "src/ports/kibi", version = "0.3.3" }
++elephance = { path = "third-party/elephance/twz" }
+ 
+ [workspace.dependencies]
+ addr2line = { version = "0.25", default-features = false }
+diff --git i/tools/xtask/src/build.rs w/tools/xtask/src/build.rs
+index f3be9570..d7eb6e5e 100644
+--- i/tools/xtask/src/build.rs
++++ w/tools/xtask/src/build.rs
+@@ -143,6 +143,13 @@ fn build_third_party<'a>(
+                 let mut cd = current_dir()?;
+                 cd.push(path);
+                 cd.push("Cargo.toml");
++                if !cd.is_file() {
++                    eprintln!(
++                        "note: skipping third-party package {} (local path {} not present)",
++                        item.0, path
++                    );
++                    return Ok(None);
++                }
+                 let package = user_workspace.load(&cd)?;
+                 overrides.push(package);
+                 None
+diff --git i/tools/xtask/src/image.rs w/tools/xtask/src/image.rs
+index 3336e5b7..44e5398f 100644
+--- i/tools/xtask/src/image.rs
++++ w/tools/xtask/src/image.rs
+@@ -54,16 +54,45 @@ fn get_third_party_initrd_files(
+     comp: &TwizzlerCompilation,
+     crate_name: &str,
+ ) -> anyhow::Result<Vec<PathBuf>> {
+-    comp.borrow_third_party_compilation()
++    // Each third-party package compiles as its own ephemeral workspace; search all of
++    // them rather than requiring every compilation to contain the crate.
++    let found: Vec<PathBuf> = comp
++        .borrow_third_party_compilation()
+         .iter()
+-        .map(|c| {
+-            c.binaries
+-                .iter()
+-                .find(|item| item.unit.pkg.name() == crate_name)
+-                .with_context(|| format!("failed to find initrd third-party crate {}", crate_name))
+-                .map(|x| x.path.clone())
+-        })
+-        .collect()
++        .flat_map(|c| c.binaries.iter())
++        .filter(|item| item.unit.pkg.name() == crate_name)
++        .map(|x| x.path.clone())
++        .collect();
++    if !found.is_empty() {
++        return Ok(found);
++    }
++    if let Some(path) = third_party_absent_path(comp, crate_name) {
++        eprintln!(
++            "note: skipping initrd entry third-party:{} (looked for {}/Cargo.toml, not present)",
++            crate_name, path
++        );
++        return Ok(vec![]);
++    }
++    anyhow::bail!("failed to find initrd third-party crate {}", crate_name)
++}
++
++/// When the third-party metadata entry for `crate_name` names a local path that is
++/// not present (i.e. the build legitimately skipped it), returns that path.
++fn third_party_absent_path(comp: &TwizzlerCompilation, crate_name: &str) -> Option<String> {
++    let path = comp
++        .borrow_user_workspace()
++        .custom_metadata()?
++        .get("third-party")?
++        .as_table()?
++        .get(crate_name)?
++        .as_table()?
++        .get("path")?
++        .as_str()?;
++    if std::path::Path::new(path).join("Cargo.toml").is_file() {
++        None
++    } else {
++        Some(path.to_string())
++    }
+ }
+ 
+ fn get_lib_initrd_files(

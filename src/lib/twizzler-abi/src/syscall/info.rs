@@ -331,6 +331,8 @@ pub struct KernelStats {
     pub pick_lowest: u64,
     pub pick_fallback: u64,
     pub pick_migrate: u64,
+    /// Wakes kept on the waking cpu because its queue was empty and the wakee's last cpu busy.
+    pub pick_affine: u64,
 }
 
 pub fn sys_kernel_stats() -> KernelStats {

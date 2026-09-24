@@ -68,3 +68,7 @@
 [submodule "src/ports/coreutils"]
 	path = src/ports/coreutils
 	url = ../../twizzler-operating-system/coreutils.git
+[submodule "src/ports/brush"]
+	path = src/ports/brush
+	url = ../../twizzler-operating-system/brush.git
+	branch = twizzler

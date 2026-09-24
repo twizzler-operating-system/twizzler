@@ -516,8 +516,7 @@ fn sleeper_count_wakes_and_drains() {
     // Every park must have been released. Nonzero here means the fast path is dead for this
     // object -- safe, but silently pointless, which is the failure this half exists to catch.
     assert_eq!(
-        // `tests` is a child of `obj`, so the private field is in scope here.
-        obj.sleepers.load(Ordering::SeqCst),
+        obj.sleeper_count(),
         0,
         "sleeper count did not drain after {} rounds",
         ROUNDS

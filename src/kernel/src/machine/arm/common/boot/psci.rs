@@ -156,7 +156,8 @@ pub unsafe fn boot_core(core: &mut Processor, tcb_base: VirtAddr, kernel_stack: 
     // we should check if this is different
     let boot_result = match method {
         "hvc" => cpu_on::<smccc::Hvc>(cpu_id, entry_pa.into(), ctx_pa.into()),
-        _ => todo!("SMCCC calling convention needed by PSCI"),
+        "smc" => cpu_on::<smccc::Smc>(cpu_id, entry_pa.into(), ctx_pa.into()),
+        m => panic!("unknown PSCI conduit {:?}", m),
     };
     // Booting up the core is asynchronous and the call only returns OK if the signal was sent
     if boot_result.is_err() {

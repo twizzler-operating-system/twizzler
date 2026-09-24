@@ -1,0 +1,48 @@
+diff -ruN -x .cargo-ok -x Cargo.toml.orig -x Cargo.lock -x .cargo_vcs_info.json /home/dbittman/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.1/src/socket.rs src/ports/socket2/src/socket.rs
+--- /home/dbittman/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.1/src/socket.rs	2006-07-24 01:21:28.000000000 +0000
++++ src/ports/socket2/src/socket.rs	2026-08-29 03:00:20.945412281 +0000
+@@ -1359,6 +1359,7 @@
+         target_os = "nto",
+         target_os = "espidf",
+         target_os = "vita",
++        target_os = "twizzler",
+     )))]
+     pub fn join_ssm_v4(
+         &self,
+@@ -1397,6 +1398,7 @@
+         target_os = "nto",
+         target_os = "espidf",
+         target_os = "vita",
++        target_os = "twizzler",
+     )))]
+     pub fn leave_ssm_v4(
+         &self,
+diff -ruN -x .cargo-ok -x Cargo.toml.orig -x Cargo.lock -x .cargo_vcs_info.json /home/dbittman/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.1/src/sys/unix.rs src/ports/socket2/src/sys/unix.rs
+--- /home/dbittman/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.1/src/sys/unix.rs	2006-07-24 01:21:28.000000000 +0000
++++ src/ports/socket2/src/sys/unix.rs	2026-08-29 03:00:20.945412281 +0000
+@@ -214,6 +214,7 @@
+     target_os = "nto",
+     target_os = "espidf",
+     target_os = "vita",
++    target_os = "twizzler",
+ )))]
+ pub(crate) use libc::{
+     ip_mreq_source as IpMreqSource, IP_ADD_SOURCE_MEMBERSHIP, IP_DROP_SOURCE_MEMBERSHIP,
+@@ -382,6 +383,7 @@
+     target_os = "espidf",
+     target_os = "vita",
+     target_os = "cygwin",
++    target_os = "twizzler",
+ ))]
+ type IovLen = c_int;
+ 
+@@ -821,6 +823,9 @@
+ 
+     /// Returns this address as Unix `SocketAddr` if it is an `AF_UNIX` pathname
+     /// address, otherwise returns `None`.
++    // std::os::unix::net is configured out on twizzler, so this cannot exist here. Nothing in
++    // cargo's graph calls it; socket2 is present only because curl depends on it.
++    #[cfg(not(target_os = "twizzler"))]
+     pub fn as_unix(&self) -> Option<std::os::unix::net::SocketAddr> {
+         let path = self.as_pathname()?;
+         // SAFETY: we can represent this as a valid pathname, then so can the

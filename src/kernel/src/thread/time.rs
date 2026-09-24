@@ -111,6 +111,8 @@ pub struct ThreadSched {
     /// conversion in total.
     pub wake_ticks: AtomicU64,
     pub wake_kind: AtomicU32,
+    /// Where the last insert filed this thread (`wakestats::queue_note`), under `--diag=wake`.
+    pub queue_note: AtomicU64,
     /// Bench-clock stamp (`Instant::raw_ticks`) of when this thread last left a cpu
     /// (`switch_to`), for [ThreadSched::is_warm]. Not the scheduler tick: that advances in
     /// bursts when the bsp idles, so a 3-tick window read as 0 or as 10 and an 8 us ping-pong
@@ -155,6 +157,7 @@ impl Default for ThreadSched {
             switched_in_ns: AtomicU64::new(0),
             wake_ticks: AtomicU64::new(0),
             wake_kind: AtomicU32::new(0),
+            queue_note: AtomicU64::new(0),
             left_tick: AtomicU64::new(0),
         }
     }

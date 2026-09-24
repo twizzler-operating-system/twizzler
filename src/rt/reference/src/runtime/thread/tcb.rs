@@ -101,6 +101,16 @@ pub(super) extern "C" fn trampoline(arg: usize) -> ! {
 /// control block rather than as null. `with_current_thread`'s null check is correspondingly less
 /// likely to catch a use-after-free of a thread pointer -- but `dealloc` hands the same memory to
 /// the allocator for arbitrary reuse, which that check does not reliably catch either.
+/// Frees a TLS region to the allocator it came from: `get_next_tls_info` allocates from the early
+/// talc, and the pool hands regions of either origin to any thread.
+pub(in crate::runtime) fn free_tls_region(base: *mut u8, layout: Layout) {
+    if LOCAL_ALLOCATOR.is_ptr_early_alloc(base) {
+        LOCAL_ALLOCATOR.dealloc_early(base, layout);
+    } else {
+        unsafe { LOCAL_ALLOCATOR.dealloc(base, layout) };
+    }
+}
+
 pub(super) mod tlspool {
     use std::alloc::Layout;
 
@@ -199,7 +209,7 @@ impl TlsGenMgr {
         // grows through the monitor's own direct-map path, never a gate, so it stays TLS-free. The
         // `tlspool` fast path already avoids allocating at all; this only bounds the fallback.
         let new = tlspool::take(template.layout)
-            .unwrap_or_else(|| unsafe { LOCAL_ALLOCATOR.alloc(template.layout) });
+            .unwrap_or_else(|| LOCAL_ALLOCATOR.alloc_early(template.layout));
         let tlsgen = self.map.entry(template.gen).or_insert_with(|| TlsGen {
             template: *template,
             thread_count: 0,

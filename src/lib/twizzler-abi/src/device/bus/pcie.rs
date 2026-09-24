@@ -44,6 +44,8 @@ pub enum PcieKactionSpecific {
     RegisterDevice = 0,
     /// Allocate an interrupt for a device.
     AllocateInterrupt = 1,
+    /// Free an allocated interrupt. The device must no longer be able to raise it.
+    FreeInterrupt = 2,
 }
 
 impl From<PcieKactionSpecific> for u32 {
@@ -59,6 +61,7 @@ impl TryFrom<u32> for PcieKactionSpecific {
         Ok(match value {
             0 => PcieKactionSpecific::RegisterDevice,
             1 => PcieKactionSpecific::AllocateInterrupt,
+            2 => PcieKactionSpecific::FreeInterrupt,
             _ => return Err(ArgumentError::InvalidArgument.into()),
         })
     }

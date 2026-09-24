@@ -715,6 +715,10 @@ impl RegionManager {
         self.mgr_for(slot)?.lookup(slot.raw())
     }
 
+    pub fn lookup_object(&self, slot: Slot) -> Option<ObjectRef> {
+        self.mgr_for(slot)?.lookup_object(slot.raw())
+    }
+
     /// Claim `slot` for a mapping that is about to be built. See [SlotMgr::begin_insert].
     pub fn begin_insert(&self, slot: Slot) -> Result<InsertGuard<'_>, TwzError> {
         self.mgr_for(slot)

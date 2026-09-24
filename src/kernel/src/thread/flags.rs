@@ -2,7 +2,7 @@ use core::sync::atomic::Ordering;
 
 use twizzler_abi::upcall::UpcallInfo;
 
-use super::{Thread, current_thread_ref, locktrack::diag};
+use super::{Thread, current_thread_ref, locktrack::diag, priority::Priority};
 
 /// A thread crossing the user/kernel boundary must not hold a critical count: user code cannot be
 /// in a critical section, so a nonzero count at either edge is a leak from some earlier kernel
@@ -59,6 +59,10 @@ pub(crate) const THREAD_REPR_USER_OWNED: u32 = 2048;
 /// precisely what `check_orphan_threads` looks for. Only the cpu running a thread knows it is
 /// running it, and `CURRENT_THREAD` is `#[thread_local]`, so a scan on another cpu cannot ask.
 pub(crate) const THREAD_ACTIVE_RUNNING: u32 = 4096;
+/// The timeout callback, not a waker, ended this thread's current sync sleep. A released key
+/// cannot say this: `soft_advance` dequeues the entry before the callback runs, and the callback
+/// can still lose the sleep to a real wake.
+pub(crate) const THREAD_SYNC_TIMED_OUT: u32 = 8192;
 
 pub fn enter_kernel() {
     if let Some(thread) = current_thread_ref() {
@@ -296,8 +300,25 @@ impl Thread {
         self.flags.load(Ordering::SeqCst) & THREAD_TIMED_WAIT != 0
     }
 
+    pub fn set_sync_timed_out(&self) {
+        self.flags.fetch_or(THREAD_SYNC_TIMED_OUT, Ordering::SeqCst);
+    }
+
+    pub fn take_sync_timed_out(&self) -> bool {
+        self.flags
+            .fetch_and(!THREAD_SYNC_TIMED_OUT, Ordering::SeqCst)
+            & THREAD_SYNC_TIMED_OUT
+            != 0
+    }
+
     pub fn inc_mutex_count(&self) {
         let r = self.mutex_count.fetch_add(1, Ordering::SeqCst);
+        if r == 0 {
+            self.mutex_base_donation.store(
+                self.get_donated_priority().map_or(u32::MAX, |p| p.raw()),
+                Ordering::SeqCst,
+            );
+        }
         if r > 1000 {
             panic!("mutex count exceeded 1000");
         }
@@ -312,6 +333,12 @@ impl Thread {
         {
             emerglogln!("mutex count decremented at zero on thread {}", self.id());
         }
+    }
+
+    /// The donation to restore once this thread holds no mutex. See `LockGuard::drop`.
+    pub fn mutex_base_donation(&self) -> Option<Priority> {
+        let raw = self.mutex_base_donation.load(Ordering::SeqCst);
+        (raw != u32::MAX).then(|| Priority::from_raw(raw))
     }
 
     pub fn get_mutex_count(&self) -> u32 {

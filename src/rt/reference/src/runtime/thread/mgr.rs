@@ -28,7 +28,7 @@ use crate::{
         alloc::{LocalAllocator, LOCAL_ALLOCATOR},
         thread::{
             libc_init_tcb,
-            tcb::{trampoline, TLS_GEN_MGR},
+            tcb::{free_tls_region, trampoline, TLS_GEN_MGR},
             with_current_thread, MIN_STACK_ALIGN, THREAD_MGR,
         },
         ReferenceRuntime, OUR_RUNTIME,
@@ -273,7 +273,7 @@ impl Drop for CrossThread {
         unsafe {
             std_handle_thread_exit(self.id, my_tp, self.tls.cast::<u8>());
             __mlibc_handle_thread_exit(self.tls.cast(), 0);
-            LOCAL_ALLOCATOR.dealloc(self.alloc_base, self.layout);
+            free_tls_region(self.alloc_base, self.layout);
         }
     }
 }

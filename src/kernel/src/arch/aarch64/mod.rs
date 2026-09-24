@@ -30,12 +30,25 @@ fn enable_el0_counters() {
     unsafe { core::arch::asm!("msr cntkctl_el1, {}", in(reg) 0b11u64) };
 }
 
+/// CPACR_EL1.FPEN = 0b11: FP/SIMD untrapped at EL0 and EL1. Userspace is built with NEON, and the
+/// switch path saves v0-v31 unconditionally, so neither may depend on what firmware left here.
+fn enable_fpsimd() {
+    unsafe {
+        core::arch::asm!(
+            "mrs {t}, cpacr_el1",
+            "orr {t}, {t}, #0x300000",
+            "msr cpacr_el1, {t}",
+            "isb",
+            t = out(reg) _,
+        )
+    };
+}
+
 pub fn init() {
     // initialize exceptions by setting up our exception vectors
     exception::init();
     enable_el0_counters();
-    // configure registers needed by the memory management system
-    // TODO: configure MAIR
+    enable_fpsimd();
 
     // On reset, TPIDR_EL1 is initialized to some unknown value.
     // we set it to zero so that we know it is not initialized.
@@ -51,6 +64,7 @@ pub fn init_secondary() {
     // initialize exceptions by setting up our exception vectors
     exception::init();
     enable_el0_counters();
+    enable_fpsimd();
 
     // check if SPSel is already set to use SP_EL1
     let spsel: InMemoryRegister<u64, SPSel::Register> = InMemoryRegister::new(SPSel.get());
@@ -117,10 +131,22 @@ pub unsafe fn jump_to_user(
     syscall::return_to_user(&ctx);
 }
 
-/// QEMU exits 0 on PSCI SYSTEM_OFF; there is no isa-debug-exit here, so the code only reaches
-/// the log and xtask judges the run by the test report.
+/// Exits QEMU through semihosting `SYS_EXIT_EXTENDED` with status `(code << 1) | 1`, the value
+/// amd64's isa-debug-exit produces, so xtask decodes both the same way. Without `-semihosting`
+/// the `hlt` is undefined; `exception::sync_handler` skips it and PSCI SYSTEM_OFF (which exits 0)
+/// takes over.
 pub fn debug_shutdown(code: u32) {
     log::info!("performing debug shutdown with code {}", code);
+    const SYS_EXIT_EXTENDED: u64 = 0x20;
+    const ADP_STOPPED_APPLICATION_EXIT: u64 = 0x20026;
+    let block = [ADP_STOPPED_APPLICATION_EXIT, ((code as u64) << 1) | 1];
+    unsafe {
+        core::arch::asm!(
+            "hlt #0xf000",
+            inout("x0") SYS_EXIT_EXTENDED => _,
+            in("x1") block.as_ptr(),
+        );
+    }
     let method = crate::machine::info::devicetree()
         .find_node("/psci")
         .and_then(|n| n.property("method"))

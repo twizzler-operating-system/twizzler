@@ -448,6 +448,7 @@ impl WorkerThread {
                     } else {
                         BULK_LANE_PRIORITY
                     });
+                    crate::placement::pin_current_worker(index);
                     // Clamped rather than trusted: `nr_workers` follows `nr_queues`, so a lane
                     // index is in range today, but the two are derived in different places and a
                     // divergence here would index past the end of `data_requesters` -- or silently

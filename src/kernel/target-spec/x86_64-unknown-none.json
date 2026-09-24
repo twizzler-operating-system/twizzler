@@ -11,6 +11,7 @@
   "linker": "rust-lld",
   "panic-strategy": "abort",
   "disable-redzone": true,
+  "cpu": "x86-64-v3",
   "features": "-mmx,-sse,+soft-float",
   "rustc-abi": "x86-softfloat"
 }

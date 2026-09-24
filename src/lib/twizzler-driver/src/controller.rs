@@ -39,6 +39,11 @@ impl DeviceController {
         self.events.allocate_interrupt()
     }
 
+    /// Allocate a new interrupt on this device, delivered to kernel cpu `cpu`.
+    pub fn allocate_interrupt_on(&self, cpu: u32) -> Result<InterruptInfo> {
+        self.events.allocate_interrupt_on(Some(cpu))
+    }
+
     /// Poll a single mailbox. If there are no messages, returns None.
     pub fn check_mailbox(&self, pri: MailboxPriority) -> Option<u64> {
         self.events.check_mailbox(pri)

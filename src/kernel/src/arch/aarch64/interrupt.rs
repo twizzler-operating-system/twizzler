@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Handling of external interrupt sources (e.g, IRQ).
 ///
@@ -112,7 +112,14 @@ exception_handler!(interrupt_request_handler_el0, irq_exception_handler, false);
 /// handler for a given IRQ number. This handler manages state
 /// in the interrupt controller.
 pub(super) fn irq_exception_handler(ctx: &mut ExceptionContext) {
-    if ctx.spsr & 0xf != 0 {
+    // As in `sync_handler`: an interrupt from EL0 is a user entry, and an upcall queued while
+    // handling it (a sample, a suspend) needs these registers.
+    let from_user = ctx.spsr & 0xf == 0;
+    if from_user {
+        if let Some(t) = crate::thread::current_thread_ref() {
+            t.set_entry_registers(Some(ctx as *mut ExceptionContext));
+        }
+    } else {
         super::exception::check_kernel_stack(ctx.sp);
     }
     // Get pending IRQ number from GIC CPU Interface
@@ -139,7 +146,11 @@ pub(super) fn irq_exception_handler(ctx: &mut ExceptionContext) {
     interrupt_controller().finish_active_interrupt(irq_number, sender_core);
 
     crate::interrupt::count_interrupt();
-    crate::interrupt::post_interrupt()
+    crate::interrupt::post_interrupt();
+
+    if from_user && let Some(t) = crate::thread::current_thread_ref() {
+        t.set_entry_registers(None);
+    }
 }
 
 //----------------------------
@@ -151,25 +162,36 @@ pub fn send_ipi(dest: Destination, vector: u32) {
     interrupt_controller().send_interrupt(vector, dest);
 }
 
+/// One bit per SPI of the GICv2m frame, set while allocated.
+static MSI_USED: [AtomicU64; MSI_WORDS] = [const { AtomicU64::new(0) }; MSI_WORDS];
+// The frame's MSI_TYPER field is 10 bits wide.
+const MSI_WORDS: usize = 1024 / 64;
+
 // like register, used by generic code
 pub fn allocate_interrupt_vector(
     _pri: InterruptPriority,
     _opts: InterruptAllocateOptions,
+    destination: Destination,
 ) -> Option<DynamicInterrupt> {
-    // MSI only: one SPI from the GICv2m frame's range, never returned (as on x86).
-    static NEXT: AtomicU32 = AtomicU32::new(0);
-    let (_, base, count) = crate::machine::interrupt::msi_frame()?;
-    let i = NEXT.fetch_add(1, Ordering::SeqCst);
-    if i >= count {
+    // GICv2 names at most 8 cpu interfaces; `set_interrupt` asserts it.
+    if let Destination::Single(id) = destination
+        && id >= 8
+    {
         return None;
     }
-    let spi = base + i;
+    // MSI only: one SPI from the GICv2m frame's range.
+    let (_, base, count) = crate::machine::interrupt::msi_frame()?;
+    let i = (0..count as usize).find(|&i| {
+        let bit = 1 << (i % 64);
+        MSI_USED[i / 64].fetch_or(bit, Ordering::SeqCst) & bit == 0
+    })?;
+    let spi = base + i as u32;
     set_interrupt(
         spi,
         false,
         TriggerMode::Edge,
         PinPolarity::ActiveHigh,
-        Destination::Bsp,
+        destination,
     );
     Some(DynamicInterrupt::new(spi as usize))
 }
@@ -182,7 +204,16 @@ pub enum InterProcessorInterrupt {
 
 impl Drop for DynamicInterrupt {
     fn drop(&mut self) {
-        // TODO
+        let Some((_, base, count)) = crate::machine::interrupt::msi_frame() else {
+            return;
+        };
+        let spi = self.num() as u32;
+        if !(base..base + count).contains(&spi) {
+            return;
+        }
+        interrupt_controller().disable_interrupt(spi);
+        let i = (spi - base) as usize;
+        MSI_USED[i / 64].fetch_and(!(1 << (i % 64)), Ordering::SeqCst);
     }
 }
 
@@ -215,11 +246,28 @@ pub fn set_interrupt(
     destination: Destination,
 ) {
     interrupt_controller().set_edge_triggered(num, matches!(trigger, TriggerMode::Edge));
-    match destination {
-        Destination::Bsp => {
-            interrupt_controller().route_interrupt(num, current_processor().bsp_id())
-        }
-        _ => todo!("routing interrupt: {:?}", destination),
-    }
+    // GICv2 names at most 8 cpu interfaces, one target bit each.
+    let bit = |id: u32| {
+        1u8.checked_shl(id)
+            .expect("cpu id beyond GICv2's 8 targets")
+    };
+    let cpus = |skip: Option<u32>| {
+        let mut mask = 0u8;
+        crate::processor::mp::with_each_active_processor(|p| {
+            if Some(p.id) != skip {
+                mask |= bit(p.id);
+            }
+        });
+        mask
+    };
+    // A GICv2 SPI with several targets is delivered to one of them (the 1-N model), which is the
+    // closest this controller comes to LowestPriority.
+    let targets = match destination {
+        Destination::Bsp => bit(current_processor().bsp_id()),
+        Destination::Single(id) => bit(id),
+        Destination::LowestPriority | Destination::All => cpus(None),
+        Destination::AllButSelf => cpus(Some(current_processor().id)),
+    };
+    interrupt_controller().route_interrupt_to(num, targets);
     interrupt_controller().enable_interrupt(num);
 }

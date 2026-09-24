@@ -177,6 +177,12 @@ fn panic(info: &PanicInfo) -> ! {
     }
 
     crate::thread::locktrack::diag::print_counters(false);
+    emerglogln!(
+        "[reap] backlog={} max={} reaped={}",
+        crate::processor::EXITED_BACKLOG.load(core::sync::atomic::Ordering::Relaxed),
+        crate::processor::EXITED_BACKLOG_MAX.load(core::sync::atomic::Ordering::Relaxed),
+        crate::processor::REAPED.load(core::sync::atomic::Ordering::Relaxed),
+    );
 
     emerglogln!("starting backtrace...");
 

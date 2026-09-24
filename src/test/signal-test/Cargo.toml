@@ -1,0 +1,16 @@
+[package]
+name = "signal-test"
+version = "0.1.0"
+edition = "2021"
+
+# Covers per-thread signal delivery: that a signal aimed at one thread runs its handler *there*,
+# and that it breaks that thread out of a blocking read. Both used to be impossible -- see the
+# comments in src/main.rs.
+[dependencies]
+libc = { workspace = true }
+twizzler-runtime = { workspace = true }
+twizzler-rt-abi = { path = "../../abi/rt-abi" }
+twizzler-abi = { path = "../../lib/twizzler-abi" }
+
+[package.metadata]
+twizzler-build = "test"

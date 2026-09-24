@@ -197,6 +197,7 @@ pub fn write_sys_info_values(ptr: *mut u8, kind: InfoKind, arg: u64) -> Result<(
                 stats.pick_lowest += p.stats.pick_lowest.load(Ordering::Relaxed);
                 stats.pick_fallback += p.stats.pick_fallback.load(Ordering::Relaxed);
                 stats.pick_migrate += p.stats.pick_migrate.load(Ordering::Relaxed);
+                stats.pick_affine += p.stats.pick_affine.load(Ordering::Relaxed);
             });
             // Global, not per-cpu: charged at the wake site rather than to a cpu, so it is read
             // once outside the fold above.

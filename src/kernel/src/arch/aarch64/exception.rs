@@ -653,6 +653,13 @@ exception_handler!(sync_exception_handler_el0, sync_handler, false);
 /// Exception handler deals with synchronous exceptions
 /// such as Data Aborts (i.e. page faults)
 fn sync_handler(ctx: &mut ExceptionContext) {
+    // A semihosting call (`debug_shutdown`'s) on a QEMU without `-semihosting` is undefined:
+    // skip it, and the PSCI fallback after it runs.
+    const HLT_SEMIHOSTING: u32 = 0xd45e_0000;
+    if ctx.spsr & 0xf != 0 && unsafe { (ctx.elr as *const u32).read() } == HLT_SEMIHOSTING {
+        ctx.elr += 4;
+        return;
+    }
     // read of raw value for ESR
     let esr = ctx.esr;
     let esr_reg: InMemoryRegister<u64, ESR_EL1::Register> = InMemoryRegister::new(esr);
@@ -675,76 +682,10 @@ fn sync_handler(ctx: &mut ExceptionContext) {
     }
 
     match esr_reg.read_as_enum(ESR_EL1::EC) {
-        // TODO: reorganize data abort handling between user and kernel
         Some(ESR_EL1::EC::Value::DataAbortCurrentEL)
-        | Some(ESR_EL1::EC::Value::DataAbortLowerEL) => {
-            // iss: syndrome
-            let iss = esr_reg.read(ESR_EL1::ISS);
-            // is the fault address register valid?
-            let far_valid = iss & (1 << 10) == 0;
-            // print faulting address (ELR/FAR)
-            let far = ctx.far;
-            if !far_valid {
-                panic!("FAR is not valid!!");
-            }
-
-            // was fault caused by a write to memory or a read?
-            let write_fault = iss & (1 << 6) != 0;
-            let cause = if write_fault {
-                MemoryAccessKind::Write
-            } else {
-                MemoryAccessKind::Read
-            };
-
-            // TODO: support for the INVALID flag
-            let mut flags = PageFaultFlags::empty();
-            if matches!(
-                esr_reg.read_as_enum(ESR_EL1::EC),
-                Some(ESR_EL1::EC::Value::DataAbortLowerEL)
-            ) {
-                flags.insert(PageFaultFlags::USER);
-            }
-
-            let far_va = match VirtAddr::new(far as u64) {
-                Ok(v) => Some(v),
-                Err(_) if flags.contains(PageFaultFlags::USER) => {
-                    let t = current_thread_ref().unwrap();
-                    t.send_upcall(UpcallInfo::Exception(ExceptionInfo::new(esr, far)));
-                    None
-                }
-                Err(_) => panic!("non canonical address {:#x} at {:#x}", far, ctx.elr),
-            };
-
-            if let Some(far_va) = far_va {
-                // DFSC bits[5:0] indicate the type of fault
-                let dfsc = iss & 0b111111;
-                let mut handled = false;
-                if dfsc & 0b111100 == 0b001000 {
-                    // we have an access fault
-                    let level = dfsc & 0b11;
-                    todo!("Access flag fault, level {}", level);
-                    // TODO: set the access flag
-                } else if dfsc & 0b111100 == 0b001100 {
-                    handled = write_fault && handle_dirty_fault(far_va);
-                    flags.insert(PageFaultFlags::PRESENT);
-                }
-                if !handled {
-                    crate::thread::enter_kernel();
-                    crate::interrupt::set(true);
-                    let elr = ctx.elr;
-                    if let Ok(elr_va) = VirtAddr::new(elr) {
-                        crate::memory::context::virtmem::page_fault(far_va, cause, flags, elr_va);
-                    } else {
-                        todo!("send upcall exception info");
-                    }
-                    crate::interrupt::set(false);
-                    crate::thread::exit_kernel();
-                }
-            }
-        }
-        Some(ESR_EL1::EC::Value::InstrAbortLowerEL) => {
-            handle_inst_abort(ctx, &esr_reg);
-        }
+        | Some(ESR_EL1::EC::Value::DataAbortLowerEL) => handle_abort(ctx, false, from_user),
+        Some(ESR_EL1::EC::Value::InstrAbortCurrentEL)
+        | Some(ESR_EL1::EC::Value::InstrAbortLowerEL) => handle_abort(ctx, true, from_user),
         Some(ESR_EL1::EC::Value::SVC64) => {
             // iss: syndrome, contains passed to SVC
             let iss = esr_reg.read(ESR_EL1::ISS);
@@ -770,9 +711,90 @@ fn sync_handler(ctx: &mut ExceptionContext) {
     crate::interrupt::post_interrupt();
 }
 
-/// Without FEAT_HAFDBS the first write to a writable-clean entry (DBM set, AP[2] set) is a
-/// permission fault; mark the entry dirty as the hardware would have. False when the entry is not
-/// one of those, i.e. the fault is a real protection violation.
+/// A fault that paging cannot resolve: the thread's problem from EL0, a kernel bug from EL1.
+fn unhandled_abort(ctx: &ExceptionContext, from_user: bool, what: &str) {
+    if from_user {
+        let t = current_thread_ref().unwrap();
+        t.send_upcall(UpcallInfo::Exception(ExceptionInfo::new(ctx.esr, ctx.far)));
+    } else {
+        panic!(
+            "{} in the kernel: esr {:#x} far {:#x} elr {:#x}",
+            what, ctx.esr, ctx.far, ctx.elr
+        );
+    }
+}
+
+/// Data and instruction aborts from either exception level, decoded by the full 6-bit fault
+/// status code (ESR ISS[5:0], same encoding for DFSC and IFSC).
+fn handle_abort(ctx: &mut ExceptionContext, is_instruction: bool, from_user: bool) {
+    const FNV: u64 = 1 << 10;
+    const CM: u64 = 1 << 8;
+    const S1PTW: u64 = 1 << 7;
+    const WNR: u64 = 1 << 6;
+    let iss = ctx.esr & 0x1ff_ffff;
+    let fsc = iss & 0x3f;
+
+    match fsc {
+        // Address size, translation, access flag and permission faults, levels 0-3.
+        0x00..=0x0f => {}
+        // TLB conflict: two overlapping entries, left by a block/table change. Flush and retry.
+        0x30 => {
+            unsafe { core::arch::asm!("tlbi vmalle1is", "dsb ish", "isb") };
+            return;
+        }
+        // Synchronous external abort / ECC error (0x10-0x1f), alignment (0x21), atomic hardware
+        // update (0x31), IMPLEMENTATION DEFINED (0x34-0x35), ...
+        _ => return unhandled_abort(ctx, from_user, "unhandled abort"),
+    }
+    if iss & FNV != 0 {
+        return unhandled_abort(ctx, from_user, "abort with no valid FAR");
+    }
+    let Ok(far) = VirtAddr::new(ctx.far) else {
+        return unhandled_abort(ctx, from_user, "abort at a non-canonical address");
+    };
+    let Ok(elr) = VirtAddr::new(ctx.elr) else {
+        return unhandled_abort(ctx, from_user, "abort at a non-canonical pc");
+    };
+    // WnR is UNKNOWN for cache maintenance and for a fault on the stage 1 walk itself. Calling
+    // those a read at worst costs a second fault once the page is in.
+    let cause = if is_instruction {
+        MemoryAccessKind::InstructionFetch
+    } else if iss & WNR != 0 && iss & (CM | S1PTW) == 0 {
+        MemoryAccessKind::Write
+    } else {
+        MemoryAccessKind::Read
+    };
+    let mut flags = if from_user {
+        PageFaultFlags::USER
+    } else {
+        PageFaultFlags::empty()
+    };
+    match fsc >> 2 {
+        // Address size fault: the tables hold an output address the hardware cannot take.
+        0 => flags.insert(PageFaultFlags::INVALID),
+        1 => {}
+        // Access flag fault. Entries are installed with AF set, so this is a mapping someone
+        // else wrote; set it and retry. Not present by now means it was unmapped in between:
+        // that is a translation fault, and page_fault must not be told PRESENT.
+        2 => {
+            if set_access_flag(far) {
+                return;
+            }
+        }
+        _ => {
+            if cause == MemoryAccessKind::Write && handle_dirty_fault(far) {
+                return;
+            }
+            flags.insert(PageFaultFlags::PRESENT);
+        }
+    }
+    crate::thread::enter_kernel();
+    crate::interrupt::set(true);
+    crate::memory::context::virtmem::page_fault(far, cause, flags, elr);
+    crate::interrupt::set(false);
+    crate::thread::exit_kernel();
+}
+
 /// An EL1 entry after the current thread's sp ran off its stack: the frame about to be pushed
 /// would surface as garbage in a neighbour's registers, not here.
 pub(super) fn check_kernel_stack(sp: u64) {
@@ -788,8 +810,10 @@ pub(super) fn check_kernel_stack(sp: u64) {
     }
 }
 
-fn handle_dirty_fault(far: VirtAddr) -> bool {
-    let root = if far.is_kernel() {
+/// Apply `f` to the leaf entry mapping `va` in the live tables and, if it changed the entry,
+/// invalidate `va` everywhere. False when there is no present leaf or `f` declines.
+fn update_live_leaf(va: VirtAddr, f: impl FnOnce(EntryFlags, &AtomicU64) -> bool) -> bool {
+    let root = if va.is_kernel() {
         TTBR1_EL1.get_baddr()
     } else {
         TTBR0_EL1.get_baddr()
@@ -801,21 +825,17 @@ fn handle_dirty_fault(far: VirtAddr) -> bool {
     };
     let mut level = Table::top_level();
     loop {
-        let entry = &mut table[Table::get_index(far, level)];
+        let entry = &mut table[Table::get_index(va, level)];
         if !entry.is_present() {
             return false;
         }
         if level == Table::last_level() || entry.is_huge() {
-            let flags = entry.flags();
-            if !flags.contains(EntryFlags::WRITE) || flags.contains(EntryFlags::DIRTY) {
+            let raw = unsafe { AtomicU64::from_ptr(entry as *mut Entry as *mut u64) };
+            if !f(entry.flags(), raw) {
                 return false;
             }
-            let raw = unsafe { AtomicU64::from_ptr(entry as *mut Entry as *mut u64) };
-            let _ = raw.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
-                Some((v & !EntryFlags::AP2_READ_OR_RW.bits()) | EntryFlags::DIRTY.bits())
-            });
             unsafe {
-                core::arch::asm!("dsb ishst", "tlbi vae1is, {}", "dsb ish", "isb", in(reg) far.raw() >> 12);
+                core::arch::asm!("dsb ishst", "tlbi vae1is, {}", "dsb ish", "isb", in(reg) va.raw() >> 12);
             }
             return true;
         }
@@ -824,57 +844,26 @@ fn handle_dirty_fault(far: VirtAddr) -> bool {
     }
 }
 
-fn handle_inst_abort(
-    ctx: &mut ExceptionContext,
-    esr_reg: &InMemoryRegister<u64, ESR_EL1::Register>,
-) {
-    // decoding ISS for instruction fault.
-    // iss: syndrome
-    let iss = esr_reg.read(ESR_EL1::ISS);
-    // is the fault address register valid? ... use bit 10
-    let far_valid = iss & (1 << 10) == 0;
-    if !far_valid {
-        panic!("FAR is not valid!!");
-    }
-    let far = ctx.far;
+/// Without FEAT_HAFDBS the first write to a writable-clean entry (DBM set, AP[2] set) is a
+/// permission fault; mark the entry dirty as the hardware would have. False when the entry is not
+/// one of those, i.e. the fault is a real protection violation.
+fn handle_dirty_fault(far: VirtAddr) -> bool {
+    update_live_leaf(far, |flags, raw| {
+        if !flags.contains(EntryFlags::WRITE) || flags.contains(EntryFlags::DIRTY) {
+            return false;
+        }
+        let _ = raw.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+            Some((v & !EntryFlags::AP2_READ_OR_RW.bits()) | EntryFlags::DIRTY.bits())
+        });
+        true
+    })
+}
 
-    // The cause is from an instruction fetch
-    let cause = MemoryAccessKind::InstructionFetch;
-
-    // TODO: support for PRESENT and INVALID flags
-
-    // NOTE: currently, only instruciton aborts are handled when coming from
-    // user space, so we know that the page fault is user
-    let flags = PageFaultFlags::USER;
-
-    let far_va = VirtAddr::new(far as u64).unwrap();
-
-    // IFSC bits[5:0] indicate the type of fault
-    let ifsc = iss & 0b111111;
-    if ifsc & 0b111100 == 0b001000 {
-        // we have an access fault
-        let level = ifsc & 0b11;
-        todo!("Access flag fault, level {}", level);
-        // TODO: set the access flag
-    } else if ifsc & 0b001100 == 0b001100 {
-        let level = ifsc & 0b11;
-        todo!("Permission fault, level {}", level);
-    } else if ifsc & 0b0000100 == 0b0000100 {
-        // translation fault
-        let _level = ifsc & 0b11;
-    }
-
-    crate::thread::enter_kernel();
-    crate::interrupt::set(true);
-    let elr = ctx.elr;
-    if let Ok(elr_va) = VirtAddr::new(elr) {
-        // logln!("fault {:?} from {:?}", far_va, elr_va);
-        crate::memory::context::virtmem::page_fault(far_va, cause, flags, elr_va);
-    } else {
-        todo!("send upcall exception info");
-    }
-    crate::interrupt::set(false);
-    crate::thread::exit_kernel();
+fn set_access_flag(far: VirtAddr) -> bool {
+    update_live_leaf(far, |_, raw| {
+        raw.fetch_or(EntryFlags::ACCESS.bits(), Ordering::SeqCst);
+        true
+    })
 }
 
 /// Initializes the exception vector table by writing the address of

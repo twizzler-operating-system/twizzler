@@ -5,7 +5,10 @@ use std::ptr::NonNull;
 pub use twizzler_abi::device::bus::pcie::*;
 use twizzler_abi::{
     device::InterruptVector,
-    kso::{KactionCmd, KactionFlags},
+    kso::{
+        pack_kaction_int_alloc, InterruptAllocateOptions, InterruptPriority, KactionCmd,
+        KactionFlags,
+    },
 };
 use twizzler_rt_abi::{error::TwzError, Result};
 use volatile::{
@@ -104,20 +107,22 @@ impl<'a> Iterator for PcieCapabilityIterator<'a> {
     }
 }
 
-// TODO: allow for dest-ID and other options, and propegate all this stuff through the API.
 impl Device {
-    /// The MSI message (address, data) that raises `vec`.
-    fn msi_msg(&self, vec: InterruptVector, level: bool) -> Result<(u64, u32)> {
+    /// The MSI message (address, data) that raises `vec` on kernel cpu `cpu` (the BSP if `None`).
+    fn msi_msg(&self, vec: InterruptVector, level: bool, cpu: Option<u32>) -> Result<(u64, u32)> {
         let data: u32 = vec.into();
         #[cfg(target_arch = "x86_64")]
         {
-            let addr = (0xfee << 20) | (0 << 12);
+            // A kernel cpu id is the LAPIC id on x86. The BSP is not necessarily 0, but the
+            // kernel validated `cpu`, and without one it programs nothing and expects 0 here.
+            let addr = (0xfee << 20) | ((cpu.unwrap_or(0) as u64) << 12);
             Ok((addr, data | if level { 1 << 15 } else { 0 }))
         }
         #[cfg(not(target_arch = "x86_64"))]
         {
-            // GICv2m: the INTID written to the frame's doorbell, which the kernel reports.
-            let _ = level;
+            // GICv2m: the INTID written to the frame's doorbell, which the kernel reports. The
+            // kernel routes the SPI, so the message does not name a cpu.
+            let _ = (level, cpu);
             let info =
                 unsafe { self.get_info::<PcieDeviceInfo>(0) }.ok_or(TwzError::NOT_SUPPORTED)?;
             Ok((info.get_data().msi_addr, data))
@@ -155,32 +160,47 @@ impl Device {
         None
     }
 
-    fn allocate_msix_interrupt(
+    /// Run `f` on entry `inum` of the MSI-X table `msix` describes.
+    fn with_msix_entry<R>(
         &self,
         msix: volatile::VolatilePtr<'_, MsixCapability, ReadWrite>,
-        vec: InterruptVector,
         inum: usize,
-    ) -> Result<u32> {
+        f: impl FnOnce(VolatilePtr<'_, MsixTableEntry, ReadWrite>) -> R,
+    ) -> Result<R> {
         let (bar, offset) = MsixCapability::get_table_info(msix);
-        map_field!(msix.msg_ctrl).write(1 << 15);
         let mmio = self
             .find_mmio_bar(bar.into())
             .ok_or(TwzError::NOT_SUPPORTED)?;
+        let len = MsixCapability::table_len(msix);
+        if inum >= len {
+            return Err(TwzError::INVALID_ARGUMENT);
+        }
         let table = unsafe {
             let start = mmio
                 .get_mmio_offset::<MsixTableEntry>(offset)
                 .as_ptr()
                 .as_raw_ptr()
                 .as_ptr();
-            let len = MsixCapability::table_len(msix);
             VolatilePtr::new(NonNull::from(core::slice::from_raw_parts_mut(start, len)))
         };
-        let (msg_addr, msg_data) = self.msi_msg(vec, false)?;
-        let entry = table.index(inum);
-        map_field!(entry.msg_addr_lo).write(msg_addr as u32);
-        map_field!(entry.msg_addr_hi).write((msg_addr >> 32) as u32);
-        map_field!(entry.msg_data).write(msg_data);
-        map_field!(entry.vec_ctrl).write(0);
+        Ok(f(table.index(inum)))
+    }
+
+    fn allocate_msix_interrupt(
+        &self,
+        msix: volatile::VolatilePtr<'_, MsixCapability, ReadWrite>,
+        vec: InterruptVector,
+        inum: usize,
+        cpu: Option<u32>,
+    ) -> Result<u32> {
+        map_field!(msix.msg_ctrl).write(1 << 15);
+        let (msg_addr, msg_data) = self.msi_msg(vec, false, cpu)?;
+        self.with_msix_entry(msix, inum, |entry| {
+            map_field!(entry.msg_addr_lo).write(msg_addr as u32);
+            map_field!(entry.msg_addr_hi).write((msg_addr >> 32) as u32);
+            map_field!(entry.msg_data).write(msg_data);
+            map_field!(entry.vec_ctrl).write(0);
+        })?;
         Ok(inum as u32)
     }
 
@@ -192,7 +212,12 @@ impl Device {
         todo!()
     }
 
-    fn allocate_pcie_interrupt(&self, vec: InterruptVector, inum: usize) -> Result<u32> {
+    fn allocate_pcie_interrupt(
+        &self,
+        vec: InterruptVector,
+        inum: usize,
+        cpu: Option<u32>,
+    ) -> Result<u32> {
         // Prefer MSI-X
         let mm = self.find_mmio_bar(0xff).unwrap();
         for cap in self.pcie_capabilities(&mm).ok_or(TwzError::NOT_SUPPORTED)? {
@@ -203,7 +228,7 @@ impl Device {
                         map_field!(msi.msg_ctrl).write(0);
                     }
                 }
-                return self.allocate_msix_interrupt(m.as_mut_ptr(), vec, inum);
+                return self.allocate_msix_interrupt(m.as_mut_ptr(), vec, inum, cpu);
             }
         }
         for cap in self.pcie_capabilities(&mm).ok_or(TwzError::NOT_SUPPORTED)? {
@@ -214,15 +239,68 @@ impl Device {
         Err(TwzError::NOT_SUPPORTED)
     }
 
+    /// Stop the device raising MSI-X entry `inum`. Only MSI-X is ever allocated.
+    fn mask_pcie_interrupt(&self, inum: usize) -> Result<()> {
+        let mm = self.find_mmio_bar(0xff).ok_or(TwzError::NOT_SUPPORTED)?;
+        for cap in self.pcie_capabilities(&mm).ok_or(TwzError::NOT_SUPPORTED)? {
+            if let PcieCapability::MsiX(mut m) = cap {
+                return self.with_msix_entry(m.as_mut_ptr(), inum, |entry| {
+                    map_field!(entry.vec_ctrl).write(1);
+                    // A read flushes the posted write, so the mask is in effect on return.
+                    let _ = map_field!(entry.vec_ctrl).read();
+                });
+            }
+        }
+        Err(TwzError::NOT_SUPPORTED)
+    }
+
     pub fn allocate_interrupt(&self, inum: usize) -> Result<(InterruptVector, u32)> {
+        self.allocate_interrupt_on(inum, None)
+    }
+
+    /// Allocate device interrupt slot `inum`, delivered to kernel cpu `cpu` (the kernel's choice
+    /// if `None`).
+    pub fn allocate_interrupt_on(
+        &self,
+        inum: usize,
+        cpu: Option<u32>,
+    ) -> Result<(InterruptVector, u32)> {
+        let arg = pack_kaction_int_alloc(
+            InterruptPriority::Normal,
+            InterruptAllocateOptions::empty(),
+            cpu,
+        )
+        .ok_or(TwzError::INVALID_ARGUMENT)?;
         let vec = self.kaction(
             KactionCmd::Specific(PcieKactionSpecific::AllocateInterrupt.into()),
-            0,
+            arg,
             KactionFlags::empty(),
             inum as u64,
         )?;
         let vec = vec.unwrap_u64().try_into()?;
-        let int = self.allocate_pcie_interrupt(vec, inum)?;
-        Ok((vec, int))
+        match self.allocate_pcie_interrupt(vec, inum, cpu) {
+            Ok(int) => Ok((vec, int)),
+            Err(e) => {
+                let _ = self.free_kernel_interrupt(inum);
+                Err(e)
+            }
+        }
+    }
+
+    /// Free slot `inum`: masked at the device first, so a vector the kernel hands out again is
+    /// never raised by this one.
+    pub fn free_interrupt(&self, inum: usize) -> Result<()> {
+        self.mask_pcie_interrupt(inum)?;
+        self.free_kernel_interrupt(inum)
+    }
+
+    fn free_kernel_interrupt(&self, inum: usize) -> Result<()> {
+        self.kaction(
+            KactionCmd::Specific(PcieKactionSpecific::FreeInterrupt.into()),
+            0,
+            KactionFlags::empty(),
+            inum as u64,
+        )?;
+        Ok(())
     }
 }

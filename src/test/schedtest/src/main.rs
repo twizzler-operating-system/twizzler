@@ -383,11 +383,18 @@ fn sleeper(threads: usize, secs: f64) {
 }
 
 const LINE: usize = 8; // u64s per cache line
-const SIZES: &[usize] = &[16 << 10, 256 << 10, 4 << 20, 64 << 20];
-const PATTERNS: &[&str] = &["seq_read", "seq_write", "rand_read", "chase"];
+const SIZES: &[usize] = &[16 << 10, 256 << 10, 4 << 20, 64 << 20, 512 << 20];
+/// `cold` allocates, first-touches and frees a fresh buffer per pass, so its rate is the page-fault
+/// path; the others run over a buffer touched before timing.
+const PATTERNS: &[&str] = &["seq_read", "seq_write", "rand_read", "chase", "cold"];
+/// The guests have 12 GB; a `threads * size` past this is skipped.
+const MEM_BUDGET: usize = 6 << 30;
 
 fn memory(threads: usize, secs: f64) {
     for &size in SIZES {
+        if threads * size > MEM_BUDGET {
+            continue;
+        }
         for &pat in PATTERNS {
             let steal0 = steal_ms();
             let k0 = KernelSnapshot::take();
@@ -395,7 +402,11 @@ fn memory(threads: usize, secs: f64) {
             let res = run(threads, move |i, b| {
                 let n = size / 8;
                 let lines = n / LINE;
-                let mut buf: Vec<u64> = (0..n as u64).collect();
+                let mut buf: Vec<u64> = if pat == "cold" {
+                    Vec::new()
+                } else {
+                    (0..n as u64).collect()
+                };
                 let mut rng = Rng::new(i as u64 + 1);
                 if pat == "chase" {
                     // Sattolo: one cycle through every line, in a random order.
@@ -440,6 +451,15 @@ fn memory(threads: usize, secs: f64) {
                                 acc = acc.wrapping_add(buf[(r as usize % lines) * LINE]);
                             }
                             bytes += BATCH * 64;
+                            probe.tick();
+                        }
+                        "cold" => {
+                            let mut fresh: Vec<u64> = vec![0u64; n];
+                            for k in 0..lines {
+                                fresh[k * LINE] = acc;
+                            }
+                            acc = acc.wrapping_add(std::hint::black_box(&fresh)[LINE]);
+                            bytes += size as u64;
                             probe.tick();
                         }
                         _ => {
@@ -746,7 +766,8 @@ mod os {
             "k_ticks={} k_switches={} k_preempts={} k_steals={} steal_ms={:.1} mhz={} \
              k_sw_exit={} k_sw_block={} k_sw_yield={} k_sw_preempt={} k_sw_idle={} k_sw_to_idle={} \
              k_noop={} k_pre_slice={} k_pre_pri={} k_pick_pinned={} k_pick_warm={} k_pick_near={} \
-             k_pick_far={} k_pick_cold={} k_pick_lowest={} k_pick_fallback={} k_pick_migrate={}",
+             k_pick_far={} k_pick_cold={} k_pick_lowest={} k_pick_fallback={} k_pick_migrate={} \
+             k_pick_affine={}",
             d!(hardticks),
             d!(ctx_switches),
             d!(preempts),
@@ -770,6 +791,7 @@ mod os {
             d!(pick_lowest),
             d!(pick_fallback),
             d!(pick_migrate),
+            d!(pick_affine),
         )
     }
 

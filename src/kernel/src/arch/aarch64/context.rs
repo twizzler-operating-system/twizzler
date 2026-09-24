@@ -64,6 +64,25 @@ fn kernel_mapper() -> &'static (Spinlock<Mapper>, PhysAddr) {
     })
 }
 
+/// Cross-check the MMU against the software walk of the shared kernel tables, over the kernel
+/// image and the 1 GiB of the physical map holding a freshly allocated frame. Pages checked.
+#[cfg(test)]
+pub fn check_kernel_map(samples: usize) -> usize {
+    let frame = alloc_frame(FrameAllocFlags::KERNEL);
+    let gib = 1u64 << 30;
+    let ram = PhysAddr::new(frame.start_address().raw() & !(gib - 1)).unwrap();
+    free_frame(frame);
+    let text = VirtAddr::new((check_kernel_map as fn(usize) -> usize) as u64 & !0xfff).unwrap();
+    let mapper = kernel_mapper().0.lock();
+    [
+        MappingCursor::new(text, 16 << 20),
+        MappingCursor::new(ram.kernel_vaddr(), gib as usize),
+    ]
+    .into_iter()
+    .map(|c| super::memory::check_map(&mapper, c, samples / 2))
+    .sum()
+}
+
 fn new_table_frame() -> FrameRef {
     let frame = alloc_frame(FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL);
     frame.set_pt(true);
@@ -107,8 +126,13 @@ impl ArchContext {
     /// # Safety
     /// `tgt` must come from an `ArchContext` that outlives the switch.
     pub unsafe fn switch_to_target(tgt: &ArchContextTarget, _proc: Option<&Processor>) {
-        // TODO: skip the TTBR1 write and the flush when the target is already loaded.
-        TTBR1_EL1.set_baddr(kernel_mapper().1.raw());
+        // Same tables, same TLB contents: changes to them are invalidated by broadcast `tlbi`
+        // when made, so only a real change of root needs the local flush (there are no ASIDs).
+        let kroot = kernel_mapper().1.raw();
+        if TTBR0_EL1.get_baddr() == tgt.0.raw() && TTBR1_EL1.get_baddr() == kroot {
+            return;
+        }
+        TTBR1_EL1.set_baddr(kroot);
         TTBR0_EL1.set_baddr(tgt.0.raw());
         unsafe {
             core::arch::asm!("isb", "tlbi vmalle1", "dsb nsh", "isb");

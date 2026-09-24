@@ -1,0 +1,46 @@
+diff -ruN -x .cargo-ok -x Cargo.toml.orig -x Cargo.lock -x .cargo_vcs_info.json /home/dbittman/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.3.4/src/backends/twizzler.rs src/ports/getrandom03/src/backends/twizzler.rs
+--- /home/dbittman/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.3.4/src/backends/twizzler.rs	1970-01-01 00:00:00.000000000 +0000
++++ src/ports/getrandom03/src/backends/twizzler.rs	2026-08-29 03:00:01.683634086 +0000
+@@ -0,0 +1,29 @@
++//! Implementation for Twizzler, over the runtime ABI's entropy call.
++use core::mem::MaybeUninit;
++
++use crate::Error;
++
++pub use crate::util::{inner_u32, inner_u64};
++
++// `size_t twz_rt_get_random(char *buf, size_t len, uint32_t flags)`, from
++// src/abi/include/twizzler/rt/random.h. Declared directly rather than through
++// twizzler-rt-abi: that crate needs six nightly features, and bootstrap builds tools with a
++// restricted -Zallow-features, so depending on it makes this crate unbuildable inside cargo.
++// Declaring the extern is also what upstream's own backends do -- hermit declares
++// `sys_read_entropy` exactly this way.
++extern "C" {
++    fn twz_rt_get_random(buf: *mut u8, len: usize, flags: u32) -> usize;
++}
++
++#[inline]
++pub fn fill_inner(dest: &mut [MaybeUninit<u8>]) -> Result<(), Error> {
++    // Returns the number of bytes filled. A short read means the runtime could not satisfy the
++    // request; for a blocking call that is a failure, not a partial-fill retry case. Returning
++    // Ok here would hand back uninitialised bytes as entropy.
++    let len = unsafe { twz_rt_get_random(dest.as_mut_ptr().cast::<u8>(), dest.len(), 0) };
++    if len == dest.len() {
++        Ok(())
++    } else {
++        Err(Error::UNEXPECTED)
++    }
++}
+diff -ruN -x .cargo-ok -x Cargo.toml.orig -x Cargo.lock -x .cargo_vcs_info.json /home/dbittman/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.3.4/src/backends.rs src/ports/getrandom03/src/backends.rs
+--- /home/dbittman/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.3.4/src/backends.rs	2006-07-24 01:21:28.000000000 +0000
++++ src/ports/getrandom03/src/backends.rs	2026-08-29 02:28:18.019866053 +0000
+@@ -170,6 +170,9 @@
+     } else if #[cfg(target_os = "hermit")] {
+         mod hermit;
+         pub use hermit::*;
++    } else if #[cfg(target_os = "twizzler")] {
++        mod twizzler;
++        pub use twizzler::*;
+     } else if #[cfg(target_os = "vxworks")] {
+         mod vxworks;
+         pub use vxworks::*;

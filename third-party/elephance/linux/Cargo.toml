@@ -1,0 +1,18 @@
+[package]
+name = "elephance-linux"
+version = "0.1.0"
+edition = "2021"
+description = "Linux baseline arms (flat-file hydrate, LMDB mmap) for the elephance experiments"
+
+# Deliberately standalone: this crate builds with plain host cargo on Linux and must
+# never join the Twizzler workspace.
+[workspace]
+
+[dependencies]
+elephance-core = { path = "../core" }
+clap = { version = "4.5", features = ["derive"] }
+# danburkert lmdb: stable API, vendors and builds liblmdb C via lmdb-sys (needs cc).
+lmdb = "0.8"
+
+[profile.release]
+debug = true

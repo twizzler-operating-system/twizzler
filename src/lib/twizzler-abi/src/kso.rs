@@ -245,21 +245,39 @@ bitflags::bitflags! {
     }
 }
 
-pub fn pack_kaction_int_pri_and_opts(
+const KACTION_INT_CPU_SHIFT: u64 = 16;
+const KACTION_INT_OPTS_MASK: u64 = 0xffff;
+
+/// Pack an interrupt allocation request: `cpu` is the kernel cpu id to deliver to, `None` for
+/// the kernel's choice. Priority 0 must stay `Normal`: a bare 0 means "defaults".
+pub fn pack_kaction_int_alloc(
     pri: InterruptPriority,
     opts: InterruptAllocateOptions,
-) -> u64 {
-    ((pri as u64) << KACTION_PACK_BITS) | opts.bits() as u64
+    cpu: Option<u32>,
+) -> Option<u64> {
+    let pri: u64 = match pri {
+        InterruptPriority::Normal => 0,
+        InterruptPriority::Low => 1,
+        InterruptPriority::High => 2,
+    };
+    // Stored as cpu + 1 in 16 bits, 0 meaning none.
+    let cpu = match cpu {
+        Some(cpu) if cpu < 0xffff => cpu as u64 + 1,
+        Some(_) => return None,
+        None => 0,
+    };
+    Some(pri << KACTION_PACK_BITS | cpu << KACTION_INT_CPU_SHIFT | opts.bits() as u64)
 }
 
-pub fn unpack_kaction_int_pri_and_opts(
+pub fn unpack_kaction_int_alloc(
     val: u64,
-) -> Option<(InterruptPriority, InterruptAllocateOptions)> {
+) -> Option<(InterruptPriority, InterruptAllocateOptions, Option<u32>)> {
     let pri = match val >> KACTION_PACK_BITS {
         1 => InterruptPriority::Low,
         2 => InterruptPriority::High,
         _ => InterruptPriority::Normal,
     };
-    let opts = InterruptAllocateOptions::from_bits(val as u32)?;
-    Some((pri, opts))
+    let cpu = ((val & KACTION_PACK_MASK) >> KACTION_INT_CPU_SHIFT) as u32;
+    let opts = InterruptAllocateOptions::from_bits((val & KACTION_INT_OPTS_MASK) as u32)?;
+    Some((pri, opts, cpu.checked_sub(1)))
 }

@@ -1,0 +1,13 @@
+[package]
+name = "pipestat"
+version = "0.1.0"
+edition = "2021"
+
+# Reports the file type fstat() gives for fd 0. Exists because there is no /dev/fd on this
+# system, so a shell's `[[ -p ]]` has no path to test and cannot answer the question at all.
+[dependencies]
+libc = { workspace = true }
+twizzler-runtime = { workspace = true }
+
+[package.metadata]
+twizzler-build = "test"

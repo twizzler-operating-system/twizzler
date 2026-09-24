@@ -29,7 +29,7 @@ use crate::{
     obj::{LookupFlags, ObjectRef},
     processor::sched::{SchedFlags, schedule},
     spinlock::Spinlock,
-    thread::{CriticalGuard, Thread, ThreadRef, current_memory_context, current_thread_ref},
+    thread::{CriticalGuard, Thread, ThreadRef, current_memory_context_ref, current_thread_ref},
     trace::{
         mgr::{TRACE_MGR, TraceEvent},
         new_trace_entry,
@@ -636,14 +636,16 @@ pub fn finish_blocking(guard: CriticalGuard) {
         .then(Instant::now);
     trace_block(&thread, "thread-sync");
     crate::interrupt::with_disabled(|| {
-        if must_not_block(thread) {
-            let _timeout_key = crate::clock::register_timeout_callback(
+        // Released after the wake: an entry left to fire later holds a reference that can be the
+        // last one by then, and it fires in the timer interrupt, where `Thread::drop` may not run.
+        let timeout_key = must_not_block(thread).then(|| {
+            crate::clock::register_timeout_callback(
                 force_exit_wake_ns(thread),
                 thread_sync_cb_timeout,
                 thread.clone(),
                 thread.sync_sleep_gen(),
-            );
-        }
+            )
+        });
         drop(guard);
         // No claim_own_wakeup here, deliberately. A wakeup parked on the requeue list while we held
         // the guard is real and blocking on it does cost a lost wake, but this is the wrong place
@@ -655,8 +657,17 @@ pub fn finish_blocking(guard: CriticalGuard) {
         // where the link is known: sys_thread_sync, setup_wait, and CondVar::wait each do their own
         // just before calling us.
         thread.set_state(ExecutionState::Sleeping);
+        // A waker that won our token between `drop(guard)` and the store above read Running,
+        // parked an entry instead of scheduling us, and its own drain skipped us for the same
+        // reason. Nothing else drains before this cpu idles or the bsp ticks. `set_state` fences
+        // after the store and every inserter drains after inserting, so one of the two drains
+        // sees Sleeping; claiming our own entry here is the ordinary mid-deschedule wake.
+        requeue_all();
         schedule(SchedFlags::YIELD | SchedFlags::PREEMPT);
         thread.set_state(ExecutionState::Running);
+        if let Some(key) = timeout_key {
+            key.release();
+        }
         assert!(!thread.mutex_link.is_linked());
     });
     // A sink that appeared while we were blocked still gets its event, with a zero duration --
@@ -671,11 +682,7 @@ pub fn finish_blocking(guard: CriticalGuard) {
 fn get_obj_and_offset(addr: VirtAddr) -> Result<(ObjectRef, usize, Option<*const u8>)> {
     // let t = current_thread_ref().unwrap();
     // TODO: prevent user from waiting on kernel object memory
-    let user_vmc = current_memory_context();
-    let vmc = user_vmc
-        .as_ref()
-        .map(|x| &**x)
-        .unwrap_or_else(|| &kernel_context());
+    let vmc = current_memory_context_ref().unwrap_or_else(|| kernel_context());
     let object = vmc
         .lookup_object_ref(addr.try_into().map_err(|_| ArgumentError::InvalidAddress)?)
         .ok_or(ArgumentError::InvalidAddress)?;
@@ -795,11 +802,7 @@ fn wakeup_with(wake: &ThreadSyncWake, resolved: Resolved) -> Result<usize> {
 /// the mapping against the use before either -- this widens an existing window rather than opening
 /// a new kind.
 fn resolve_ops(ops: &[ThreadSync]) -> heapless::Vec<Resolved, RESOLVE_CHUNK> {
-    let user_vmc = current_memory_context();
-    let vmc = user_vmc
-        .as_ref()
-        .map(|x| &**x)
-        .unwrap_or_else(|| &kernel_context());
+    let vmc = current_memory_context_ref().unwrap_or_else(|| kernel_context());
 
     let reference_of = |op: &ThreadSync| match op {
         ThreadSync::Sleep(sleep, _) => sleep.reference,
@@ -867,6 +870,7 @@ pub(crate) fn thread_sync_cb_timeout(thread: ThreadRef, sleep_gen: u64) {
         return;
     }
     if thread.reset_sync_sleep() {
+        thread.set_sync_timed_out();
         add_to_requeue(thread);
     }
     requeue_all();
@@ -961,6 +965,7 @@ fn optimized_single_sleep_timed(
     let thread = current_thread_ref().unwrap();
     assert!(!thread.mutex_link.is_linked());
     let guard = thread.enter_critical();
+    thread.take_sync_timed_out();
     let timeout_key = crate::clock::register_timeout_callback(
         // TODO: fix all our time types
         timeout.as_nanos() as u64,
@@ -981,8 +986,8 @@ fn optimized_single_sleep_timed(
     drop(_guard);
     undo_sleep(&se);
     remove_from_requeue(&thread);
-    // If we don't find the key during release, the timeout fired.
-    if !timeout_key.release() {
+    timeout_key.release();
+    if thread.take_sync_timed_out() {
         (Ok(0), Err(GenericError::TimedOut.into()))
     } else {
         (Ok(0), Ok(0))
@@ -1113,6 +1118,7 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
     let should_sleep = unsleeps.len() == num_sleepers && num_sleepers > 0;
     let (timeout_key, _guard) = {
         let guard = thread.enter_critical();
+        thread.take_sync_timed_out();
         let timeout_key = if should_sleep {
             let timeout_key = timeout.map(|timeout| {
                 crate::clock::register_timeout_callback(
@@ -1192,8 +1198,10 @@ fn do_sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) ->
     remove_from_requeue(&thread);
     drop(unsleeps);
 
-    // If we have a timeout key, AND we don't find it during release, the timeout fired.
-    let was_timedout = timeout_key.map(|tk| !tk.release()).unwrap_or(false);
+    if let Some(tk) = timeout_key {
+        tk.release();
+    }
+    let was_timedout = thread.take_sync_timed_out();
     let done = trace_now();
     log::trace!(
         "ts[0]: {} {:7?} {:7?} {:7?}",
@@ -1397,7 +1405,9 @@ fn ready_before_round(ops: &mut [ThreadSync]) -> Option<usize> {
 
 pub fn sys_thread_sync(ops: &mut [ThreadSync], timeout: Option<&mut Duration>) -> Result<usize> {
     let thread = current_thread_ref().unwrap();
-    syncbatch::note_call(ops);
+    if crate::is_diag_mode() {
+        syncbatch::note_call(ops);
+    }
     // Recursion: a second `sys_thread_sync` entered from inside the first one's round. The way in
     // is a fault on a pager-backed page the outer round touched, which reaches the pager's queue
     // wait -- see `ready_before_round`, which exists to make that rarer.

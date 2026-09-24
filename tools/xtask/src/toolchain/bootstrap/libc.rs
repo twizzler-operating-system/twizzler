@@ -10,7 +10,7 @@ use crate::{
         bootstrap::llvm::{setup_cmake, setup_cmake_twizzler},
         BootstrapOptions,
     },
-    triple::Triple,
+    triple::{Arch, Triple},
 };
 
 /// The meson installed by `install_build_tools`, run through its own shebang so that it uses the
@@ -329,6 +329,10 @@ fn write_cross_file(
             mlibc_sysroot.display(),
             triple,
         )?;
+        // Same baseline as the rust target spec.
+        if triple.arch == Arch::X86_64 && (tool == "c_args" || tool == "cpp_args") {
+            write!(&mut cf, "'-march=x86-64-v3', ")?;
+        }
         if tool == "c_link_args" || tool == "cpp_link_args" {
             // -Bsymbolic-non-weak-functions binds libc's calls to its own non-weak functions at
             // link time. 323 of libc.so's 410 symbolic relocations resolve within libc itself, and

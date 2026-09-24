@@ -1,9 +1,4 @@
-use core::{
-    arch::naked_asm,
-    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
-};
-
-use twizzler_abi::object::Protections;
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::{
     arch::{
@@ -15,8 +10,7 @@ use crate::{
         VirtAddr,
         frame::{PHYS_LEVEL_LAYOUTS, get_frame},
         pagetables::{
-            Consistency, ContiguousProvider, MapReader, Mapper, MappingCursor, MappingFlags,
-            MappingSettings, PhysAddrProvider,
+            Consistency, MapReader, Mapper, MappingCursor, MappingSettings, PhysAddrProvider,
         },
         tracker::{FrameAllocFlags, FrameAllocator, alloc_frame, free_frame},
     },
@@ -290,6 +284,25 @@ impl ArchContext {
         (consist, guard)
     }
 
+    /// Unmap the one page at `addr`, splitting any larger mapping around it first -- a plain
+    /// `unmap` drops a whole huge page that the range only touches.
+    pub fn unmap_page(&self, addr: VirtAddr, fa: &mut FrameAllocator) {
+        let cursor = MappingCursor::new(addr, crate::arch::memory::frame::FRAME_SIZE);
+        let (mut consist, mut guard) = self.lock_with_consist(cursor);
+        guard
+            .split_to_level(
+                addr,
+                crate::arch::memory::pagetables::Table::last_level(),
+                &mut consist,
+                fa,
+            )
+            .unwrap();
+        guard.unmap(cursor, &mut consist, fa, &mut None).unwrap();
+        consist.finish_send();
+        drop(guard);
+        consist.into_deferred().run_all();
+    }
+
     pub fn map(
         &self,
         cursor: MappingCursor,
@@ -437,63 +450,11 @@ impl ArchContext {
     }
 }
 
-#[unsafe(naked)]
-#[allow(named_asm_labels)]
-unsafe extern "C" fn trampoline_trap() {
-    naked_asm!(
-        "push rbp",
-        "mov rbp, rsp",
-        "xor rdi, rdi",
-        "xor rsi, rsi",
-        "xor rax, rax",
-        "syscall",
-        "__here:",
-        "jmp __here",
-        "pop rbp",
-        "ret"
-    );
-}
-
-#[unsafe(no_mangle)]
-unsafe extern "C-unwind" fn trap_entry() {
-    panic!("hit trap entry");
-}
-
 fn setup_mapper_with_kpages(mapper: &mut Mapper) {
     let km = kernel_mapper().lock();
-    let mut fa = FrameAllocator::new(
-        FrameAllocFlags::ZEROED | FrameAllocFlags::KERNEL,
-        PHYS_LEVEL_LAYOUTS[0],
-    );
     for idx in 256..512 {
         mapper.set_top_level_table(idx, km.get_top_level_table(idx));
     }
-    let frame = fa.try_allocate().unwrap();
-    let mut z = ContiguousProvider::new(
-        frame.start_address(),
-        0x1000,
-        MappingSettings::new(
-            Protections::READ | Protections::EXEC,
-            twizzler_abi::device::CacheType::WriteBack,
-            MappingFlags::USER,
-        ),
-    );
-    let mut consist = Consistency::new_full_global();
-    mapper
-        .map(
-            MappingCursor::new(VirtAddr::new(0).unwrap(), 0x1000),
-            &mut z,
-            &mut consist,
-            &mut fa,
-        )
-        .unwrap();
-    consist.tlb_mut().finish();
-    consist.into_deferred().run_all();
-    let start = trampoline_trap as *const u8;
-    let len = 0x100;
-    #[allow(invalid_null_arguments)]
-    let dest = frame.start_address().kernel_vaddr().as_mut_ptr::<u8>();
-    unsafe { dest.copy_from(start, len) };
 }
 
 /// Report if any processor is still running `target`, whose page tables are about to be freed and

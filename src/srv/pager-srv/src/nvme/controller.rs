@@ -1,19 +1,23 @@
 use std::{
     io::ErrorKind,
     mem::size_of,
+    ptr::NonNull,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, OnceLock,
     },
     thread::JoinHandle,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use nvme::{
     admin::{CreateIOCompletionQueue, CreateIOSubmissionQueue},
     ds::{
         cmd::admin::{features::FeatureId, AdminCommand},
-        controller::properties::config::ControllerConfig,
+        controller::properties::{
+            aqa::AdminQueueAttributes, capabilities::ControllerCap, config::ControllerConfig,
+            status::ControllerStatus,
+        },
         identify::{
             controller::IdentifyControllerDataStructure, namespace::IdentifyNamespaceDataStructure,
         },
@@ -106,6 +110,38 @@ const PIPELINE_DEPTH: usize = 4;
 /// the ceiling we clamp a reported limit to.
 const MAX_TRANSFER_PAGES: usize = 512;
 
+// The property bitfields are byte arrays, so a volatile access through them is one MMIO access per
+// byte. NVMe requires aligned 32/64-bit property accesses (§3.1).
+unsafe fn read32(p: NonNull<impl Sized>) -> [u8; 4] {
+    unsafe { p.cast::<u32>().read_volatile() }.to_le_bytes()
+}
+
+unsafe fn read64(p: NonNull<impl Sized>) -> [u8; 8] {
+    unsafe { p.cast::<u64>().read_volatile() }.to_le_bytes()
+}
+
+unsafe fn write32(p: NonNull<impl Sized>, v: [u8; 4]) {
+    unsafe { p.cast::<u32>().write_volatile(u32::from_le_bytes(v)) }
+}
+
+fn wait_ready(
+    csts: NonNull<ControllerStatus>,
+    ready: bool,
+    cap: ControllerCap,
+) -> std::io::Result<()> {
+    let deadline = Instant::now() + Duration::from(cap.timeout());
+    while ControllerStatus::from_bytes(unsafe { read32(csts) }).ready() != ready {
+        if Instant::now() > deadline {
+            return Err(std::io::Error::new(
+                ErrorKind::TimedOut,
+                format!("NVMe CSTS.RDY did not become {}", ready),
+            ));
+        }
+        core::hint::spin_loop();
+    }
+    Ok(())
+}
+
 fn init_controller(mut device: Device, dma_pool: DmaPool) -> std::io::Result<NvmeController> {
     let dma_pool = Arc::new(CachedDmaPool::new(dma_pool));
     let bar = device.get_mmio(1).unwrap();
@@ -117,17 +153,22 @@ fn init_controller(mut device: Device, dma_pool: DmaPool) -> std::io::Result<Nvm
     let _int = device
         .allocate_interrupt(0)
         .expect("failed to allocate interrupt");
-    let config = ControllerConfig::new();
-    map_field!(reg.configuration).write(config);
+    let cap =
+        ControllerCap::from_bytes(unsafe { read64(map_field!(reg.capabilities).as_raw_ptr()) });
+    let cc = map_field!(reg.configuration).as_raw_ptr();
+    let csts = map_field!(reg.status).as_raw_ptr();
+    unsafe { write32(cc, ControllerConfig::new().into_bytes()) };
+    wait_ready(csts, false, cap)?;
 
-    while map_field!(reg.status).read().ready() {
-        core::hint::spin_loop();
-    }
-
-    let aqa = nvme::ds::controller::properties::aqa::AdminQueueAttributes::new()
+    let aqa = AdminQueueAttributes::new()
         .with_completion_queue_size(ADMIN_QUEUE_LEN - 1)
         .with_submission_queue_size(ADMIN_QUEUE_LEN - 1);
-    map_field!(reg.admin_queue_attr).write(aqa);
+    unsafe {
+        write32(
+            map_field!(reg.admin_queue_attr).as_raw_ptr(),
+            aqa.into_bytes(),
+        )
+    };
 
     let saq = dma_pool
         .dma
@@ -180,10 +221,8 @@ fn init_controller(mut device: Device, dma_pool: DmaPool) -> std::io::Result<Nvm
                 .unwrap(),
         );
 
-    map_field!(reg.configuration).write(config);
-    while !map_field!(reg.status).read().ready() {
-        core::hint::spin_loop();
-    }
+    unsafe { write32(cc, config.into_bytes()) };
+    wait_ready(csts, true, cap)?;
 
     let smem = unsafe {
         core::slice::from_raw_parts_mut(
@@ -203,18 +242,13 @@ fn init_controller(mut device: Device, dma_pool: DmaPool) -> std::io::Result<Nvm
     };
     let cq = nvme::queue::CompletionQueue::new(cmem, ADMIN_QUEUE_LEN, C_STRIDE).unwrap();
 
-    // Read before `bar` is handed to the requester, which ends the borrow `reg` holds on it.
-    let cap = map_field!(reg.capabilities).read();
     // MQES is 0-based.
     let data_queue_len = (cap.max_queue_entries() as u32 + 1).min(MAX_DATA_QUEUE_LEN) as usize;
     let mps_min = cap.memory_page_sz_min_bytes();
 
     let mut saq_bell = unsafe { bar.get_mmio_offset::<u32>(0x1000) };
-    let mut caq_bell = unsafe {
-        bar.get_mmio_offset::<u32>(
-            0x1000 + 1 * map_field!(reg.capabilities).read().doorbell_stride_bytes(),
-        )
-    };
+    let mut caq_bell =
+        unsafe { bar.get_mmio_offset::<u32>(0x1000 + 1 * cap.doorbell_stride_bytes()) };
 
     let mut admin_requester = NvmeRequester::new(
         sq,
@@ -235,7 +269,7 @@ fn init_controller(mut device: Device, dma_pool: DmaPool) -> std::io::Result<Nvm
         let id = ((DATA_QUEUE_ID as usize + i) as u16).into();
         let ivec = (DATA_QUEUE_ID as usize + i) as u16;
         device
-            .allocate_interrupt(ivec as usize)
+            .allocate_interrupt_on(ivec as usize, crate::placement::worker_cpu(i))
             .expect("failed to allocate nvme interrupt");
         data_requesters.push(NvmeController::create_queue_pair(
             &mut admin_requester,
@@ -576,7 +610,9 @@ impl NvmeController {
             bar.get_mmio_offset::<nvme::ds::controller::properties::ControllerProperties>(0)
         };
         let reg = reg.into_ptr();
-        let bell_stride: usize = map_field!(reg.capabilities).read().doorbell_stride_bytes();
+        let bell_stride: usize =
+            ControllerCap::from_bytes(unsafe { read64(map_field!(reg.capabilities).as_raw_ptr()) })
+                .doorbell_stride_bytes();
         let mut saq_bell = unsafe {
             bar.get_mmio_offset::<u32>(0x1000 + (u16::from(sqid) as usize) * 2 * bell_stride)
         };

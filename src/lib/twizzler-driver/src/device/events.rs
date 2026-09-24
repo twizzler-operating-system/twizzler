@@ -145,12 +145,32 @@ impl Drop for InterruptInfo {
 }
 
 impl DeviceEventStream {
-    pub(crate) fn free_interrupt(&self, _ii: &InterruptInfo) {
-        // TODO
+    pub(crate) fn free_interrupt(&self, ii: &InterruptInfo) {
+        match self.device.bus_type() {
+            BusType::Pcie => {
+                // On failure the slot stays taken: a vector the kernel still holds for it must not
+                // be bound twice.
+                if self.device.free_interrupt(ii.inum).is_err() {
+                    return;
+                }
+            }
+            _ => return,
+        }
+        self.device.repr().interrupts[ii.inum]
+            .taken
+            .store(0, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Allocate a new interrupt on this device.
     pub(crate) fn allocate_interrupt(self: &Arc<Self>) -> Result<InterruptInfo> {
+        self.allocate_interrupt_on(None)
+    }
+
+    /// Allocate a new interrupt on this device, delivered to kernel cpu `cpu`.
+    pub(crate) fn allocate_interrupt_on(
+        self: &Arc<Self>,
+        cpu: Option<u32>,
+    ) -> Result<InterruptInfo> {
         // SAFETY: We grab ownership of the interrupt repr data via the atomic swap.
         for i in 0..NUM_DEVICE_INTERRUPTS {
             if self.device.repr().interrupts[i]
@@ -158,9 +178,18 @@ impl DeviceEventStream {
                 .swap(1, std::sync::atomic::Ordering::SeqCst)
                 == 0
             {
-                let (vec, devint) = match self.device.bus_type() {
-                    BusType::Pcie => self.device.allocate_interrupt(i)?,
-                    _ => return Err(TwzError::NOT_SUPPORTED),
+                let res = match self.device.bus_type() {
+                    BusType::Pcie => self.device.allocate_interrupt_on(i, cpu),
+                    _ => Err(TwzError::NOT_SUPPORTED),
+                };
+                let (vec, devint) = match res {
+                    Ok(x) => x,
+                    Err(e) => {
+                        self.device.repr().interrupts[i]
+                            .taken
+                            .store(0, std::sync::atomic::Ordering::SeqCst);
+                        return Err(e);
+                    }
                 };
                 self.device
                     .repr_mut()

@@ -31,33 +31,13 @@ impl MemoryAttribute {
     }
 
     fn is_valid(&self) -> bool {
-        match self.attr.read_as_enum(MEM_ATTR::Normal_Outer) {
-            // is this device memory?
-            Some(MEM_ATTR::Normal_Outer::Value::Device) => {
-                // if bit 1 is not set then we have a valid device attribute
-                self.attr.get() & 0b10 == 0
-            }
-            // we have normal memory
-            Some(MEM_ATTR::Normal_Outer::Value::WriteThrough_Transient_WriteAlloc)
-            | Some(MEM_ATTR::Normal_Outer::Value::WriteThrough_Transient_ReadAlloc)
-            | Some(MEM_ATTR::Normal_Outer::Value::WriteThrough_Transient_ReadWriteAlloc)
-            | Some(MEM_ATTR::Normal_Outer::Value::WriteBack_Transient_WriteAlloc)
-            | Some(MEM_ATTR::Normal_Outer::Value::WriteBack_Transient_ReadAlloc)
-            | Some(MEM_ATTR::Normal_Outer::Value::WriteBack_Transient_ReadWriteAlloc)
-            | Some(MEM_ATTR::Normal_Outer::Value::WriteThrough_NonTransient)
-            | Some(MEM_ATTR::Normal_Outer::Value::WriteThrough_NonTransient_WriteAlloc)
-            | Some(MEM_ATTR::Normal_Outer::Value::WriteThrough_NonTransient_ReadWriteAlloc)
-            | Some(MEM_ATTR::Normal_Outer::Value::WriteBack_NonTransient)
-            | Some(MEM_ATTR::Normal_Outer::Value::WriteBack_NonTransient_WriteAlloc)
-            | Some(MEM_ATTR::Normal_Outer::Value::WriteBack_NonTransient_ReadAlloc) => {
-                // unpredictable if lower bits are not 0 (WriteThrough_Transient)
-                match self.attr.read_as_enum(MEM_ATTR::Normal_Inner) {
-                    Some(MEM_ATTR::Normal_Inner::Value::WriteThrough_Transient) => true,
-                    _ => false,
-                }
-            }
-            None => todo!("unrecognized cache type"),
-            Some(_) => true, // other memory attribute encodings are valid, e.g. noncacheable
+        let (outer, inner) = (self.raw() >> 4, self.raw() & 0xf);
+        if outer == 0 {
+            // Device memory: bits [1:0] must be zero.
+            inner & 0b11 == 0
+        } else {
+            // Normal memory: an inner 0 is UNPREDICTABLE (or FEAT_XS-specific).
+            inner != 0
         }
     }
 
@@ -80,32 +60,30 @@ pub struct MemoryAttributeManager {
 // TODO: in the future we might want a replace entry method
 
 impl MemoryAttributeManager {
+    /// Keeps the bootloader's attributes, which its tables (and so the kernel's copies of them)
+    /// index, and adds each [`CacheType`]'s attribute that is missing in a spare slot: one
+    /// repeating an earlier slot's value, which no table needs. Runs on the BSP before any
+    /// secondary copies MAIR_EL1.
     fn new() -> Self {
-        // TODO: make this init in the arch part of the kernel, not from existing mair
-        // read value stored in the MAIR register
-        let mair = MAIR_EL1.get();
-        // convert u64 MAIR value to a slice
-        const MAIR_LEN: u64 = 8;
-        const MAIR_MASK: u64 = 0xFF;
-        let attr0 = (mair >> (0 * MAIR_LEN)) & MAIR_MASK;
-        let attr1 = (mair >> (1 * MAIR_LEN)) & MAIR_MASK;
-        let attr2 = (mair >> (2 * MAIR_LEN)) & MAIR_MASK;
-        let attr3 = (mair >> (3 * MAIR_LEN)) & MAIR_MASK;
-        let attr4 = (mair >> (4 * MAIR_LEN)) & MAIR_MASK;
-        let attr5 = (mair >> (5 * MAIR_LEN)) & MAIR_MASK;
-        let attr6 = (mair >> (6 * MAIR_LEN)) & MAIR_MASK;
-        let attr7 = (mair >> (7 * MAIR_LEN)) & MAIR_MASK;
+        let mut mair = MAIR_EL1.get().to_le_bytes();
+        for cache in [
+            CacheType::WriteBack,
+            CacheType::Uncacheable,
+            CacheType::WriteThrough,
+            CacheType::MemoryMappedIO,
+        ] {
+            let want = MemoryAttribute::from(cache).raw();
+            if mair.contains(&want) {
+                continue;
+            }
+            if let Some(spare) = (1..mair.len()).find(|&i| mair[..i].contains(&mair[i])) {
+                mair[spare] = want;
+            }
+        }
+        MAIR_EL1.set(u64::from_le_bytes(mair));
+        unsafe { core::arch::asm!("isb") };
         Self {
-            mair: [
-                MemoryAttribute::new(attr0 as u8),
-                MemoryAttribute::new(attr1 as u8),
-                MemoryAttribute::new(attr2 as u8),
-                MemoryAttribute::new(attr3 as u8),
-                MemoryAttribute::new(attr4 as u8),
-                MemoryAttribute::new(attr5 as u8),
-                MemoryAttribute::new(attr6 as u8),
-                MemoryAttribute::new(attr7 as u8),
-            ],
+            mair: mair.map(MemoryAttribute::new),
         }
     }
 
@@ -175,19 +153,24 @@ impl MemoryAttributeManager {
 
 impl From<CacheType> for MemoryAttribute {
     fn from(memory: CacheType) -> Self {
+        // Both nibbles: the field values are unshifted, and a normal attribute with inner 0 is
+        // UNPREDICTABLE.
+        let normal = |v: u8| MemoryAttribute::new(v << 4 | v);
         match memory {
             // we map all device mmio as strict device memory
             CacheType::MemoryMappedIO => MemoryAttribute::new(
                 MEM_ATTR::Device::Value::nonGathering_nonReordering_noEarlyWriteAck as u8,
             ),
-            // map cache type to memory attribute
-            CacheType::Uncacheable => {
-                MemoryAttribute::new(MEM_ATTR::Normal_Outer::Value::NonCacheable as u8)
+            // Normal non-cacheable is also ARM's write-combining memory.
+            CacheType::Uncacheable | CacheType::WriteCombining => {
+                normal(MEM_ATTR::Normal_Outer::Value::NonCacheable as u8)
             }
-            // default all normal memory to write back
-            CacheType::WriteBack | _ => MemoryAttribute::new(
-                MEM_ATTR::Normal_Outer::Value::WriteBack_NonTransient_ReadWriteAlloc as u8,
+            CacheType::WriteThrough => normal(
+                MEM_ATTR::Normal_Outer::Value::WriteThrough_NonTransient_ReadWriteAlloc as u8,
             ),
+            CacheType::WriteBack => {
+                normal(MEM_ATTR::Normal_Outer::Value::WriteBack_NonTransient_ReadWriteAlloc as u8)
+            }
         }
     }
 }

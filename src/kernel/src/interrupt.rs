@@ -247,6 +247,74 @@ impl GlobalInterruptState {
         waiters.insert(thread);
         true
     }
+
+    /// Claim and requeue every waiter on `number`. With `unlink_claimed`, waiters someone else
+    /// already claimed are unlinked too rather than left for their own `remove_from_device_wait`,
+    /// which looks the vector up in a device table that a free has already cleared.
+    fn wake_device_waiters(&self, number: u32, unlink_claimed: bool) {
+        // Claim-then-remove per waiter, under the lock, exactly as `SleepEntry::claim_n` does.
+        //
+        // `take()` used to detach the whole tree and drain it after dropping the lock. Its nodes
+        // stayed linked while unreachable from `device_waiters`, so a concurrent
+        // `remove_from_device_wait` found nothing and silently did nothing -- the waiter then
+        // finished its round believing it was unlinked, `reset` zeroed its slot counter, and the
+        // next round handed out a slot whose link was still in the detached tree. Two trees, one
+        // link. Removing here means a node is either in this tree and removable, or gone and
+        // claimed, with no window in between.
+        //
+        // Claiming through `reset_sync_sleep` rather than `add_all_to_requeue`'s
+        // `reset_sync_sleep_done` matches the flag `setup_device_wait` arms above, so a waiter that
+        // someone else already claimed is left alone instead of woken twice.
+        //
+        // Claim under the lock, requeue outside it, exactly as `Object::wakeup_word` does. This
+        // runs in hard interrupt context, and `add_to_requeue`'s fast path is `schedule_thread` --
+        // a topology walk, a remote run queue lock and a wakeup IPI -- so per waiter under this
+        // spinlock it was all inside the interrupt, bounded only by the waiter count. Deferring it
+        // costs nothing here: `schedule_thread` does not switch from an interrupt, it inserts and
+        // either marks preempt or signals, and `post_interrupt` consumes the mark on the way out.
+        //
+        // Critical across the drain for the reason `Object::wakeup_word` gives: a claimed waiter
+        // sits in `batch` on this stack over a window the spinlock used to cover, and this thread
+        // exiting at a poll point in that window would take the stack and the wakeups with it.
+        let _critical = current_thread_ref().map(|ct| ct.enter_critical());
+        loop {
+            let mut batch = heapless::Vec::<ThreadRef, WAKE_BATCH>::new();
+            // Refs unlinked without a claim, dropped once the lock is released.
+            let mut unlinked = heapless::Vec::<ThreadRef, WAKE_BATCH>::new();
+            {
+                let mut waiters = self.device_waiters[number as usize].lock();
+                let mut cursor = waiters.front_mut();
+                while !batch.is_full() && !unlinked.is_full() && !cursor.is_null() {
+                    if cursor.get().is_some_and(|t| t.reset_sync_sleep()) {
+                        let thread = cursor.remove().unwrap();
+                        // Safety: not full, checked above.
+                        unsafe { batch.push_unchecked(thread) };
+                    } else if unlink_claimed {
+                        let thread = cursor.remove().unwrap();
+                        // Safety: not full, checked above.
+                        unsafe { unlinked.push_unchecked(thread) };
+                    } else {
+                        cursor.move_next();
+                    }
+                }
+            }
+            // Entries skipped for being already claimed stay in the tree and are re-walked, so a
+            // full batch says only that we ran out of room -- terminate on the empty one.
+            let full = batch.is_full() || unlinked.is_full();
+            let unlinked_any = !unlinked.is_empty();
+            drop(unlinked);
+            if batch.is_empty() && !unlinked_any {
+                break;
+            }
+            for thread in batch {
+                add_to_requeue(thread);
+            }
+            if !full {
+                break;
+            }
+        }
+        requeue_all();
+    }
 }
 
 static GLOBAL_INT: Once<GlobalInterruptState> = Once::new();
@@ -379,76 +447,77 @@ pub fn init() {
 }
 
 pub fn external_interrupt_entry(number: u32) {
+    routestats::note(number);
     let gi = get_global_interrupts();
     let vectors = gi.device_vectors[number as usize].lock();
-    if !vectors.is_empty() && !vectors.is_full() {
-        for di in vectors.iter() {
-            unsafe {
-                di.raw_word
-                    .as_ref_unchecked()
-                    .store(number as u64, Ordering::Release)
-            };
-        }
+    if vectors.is_empty() {
         drop(vectors);
-        // Claim-then-remove per waiter, under the lock, exactly as `SleepEntry::claim_n` does.
-        //
-        // `take()` used to detach the whole tree and drain it after dropping the lock. Its nodes
-        // stayed linked while unreachable from `device_waiters`, so a concurrent
-        // `remove_from_device_wait` found nothing and silently did nothing -- the waiter then
-        // finished its round believing it was unlinked, `reset` zeroed its slot counter, and the
-        // next round handed out a slot whose link was still in the detached tree. Two trees, one
-        // link. Removing here means a node is either in this tree and removable, or gone and
-        // claimed, with no window in between.
-        //
-        // Claiming through `reset_sync_sleep` rather than `add_all_to_requeue`'s
-        // `reset_sync_sleep_done` matches the flag `setup_device_wait` arms above, so a waiter that
-        // someone else already claimed is left alone instead of woken twice.
-        //
-        // Claim under the lock, requeue outside it, exactly as `Object::wakeup_word` does. This
-        // runs in hard interrupt context, and `add_to_requeue`'s fast path is `schedule_thread` --
-        // a topology walk, a remote run queue lock and a wakeup IPI -- so per waiter under this
-        // spinlock it was all inside the interrupt, bounded only by the waiter count. Deferring it
-        // costs nothing here: `schedule_thread` does not switch from an interrupt, it inserts and
-        // either marks preempt or signals, and `post_interrupt` consumes the mark on the way out.
-        //
-        // Critical across the drain for the reason `Object::wakeup_word` gives: a claimed waiter
-        // sits in `batch` on this stack over a window the spinlock used to cover, and this thread
-        // exiting at a poll point in that window would take the stack and the wakeups with it.
-        let _critical = current_thread_ref().map(|ct| ct.enter_critical());
-        loop {
-            let mut batch = heapless::Vec::<ThreadRef, WAKE_BATCH>::new();
-            {
-                let mut waiters = gi.device_waiters[number as usize].lock();
-                let mut cursor = waiters.front_mut();
-                while !batch.is_full() && !cursor.is_null() {
-                    if cursor.get().is_some_and(|t| t.reset_sync_sleep()) {
-                        let thread = cursor.remove().unwrap();
-                        // Safety: not full, checked above.
-                        unsafe { batch.push_unchecked(thread) };
-                    } else {
-                        cursor.move_next();
-                    }
-                }
-            }
-            // Entries skipped for being already claimed stay in the tree and are re-walked, so a
-            // full batch says only that we ran out of room -- terminate on the empty one.
-            let full = batch.is_full();
-            if batch.is_empty() {
-                break;
-            }
-            for thread in batch {
-                add_to_requeue(thread);
-            }
-            if !full {
-                break;
-            }
-        }
-        requeue_all();
+        soft_raise(number);
         return;
     }
+    for di in vectors.iter() {
+        unsafe {
+            di.raw_word
+                .as_ref_unchecked()
+                .store(number as u64, Ordering::Release)
+        };
+    }
+    // A full table may have spilled further wakers into `ints`, which only the soft path raises.
+    let overflowed = vectors.is_full();
+    drop(vectors);
+    gi.wake_device_waiters(number, false);
+    if overflowed {
+        soft_raise(number);
+    }
+}
+
+fn soft_raise(number: u32) {
     let mut iq = INT_QUEUE.lock();
     iq.enqueue(number);
     INT_THREAD_CONDVAR.signal();
+}
+
+/// Undo every [set_userspace_interrupt_wakeup] on `number` and release its waiters, ahead of the
+/// vector being freed. It can be handed to another device next, so nothing may stay linked on it.
+pub fn clear_userspace_interrupt_wakeup(number: u32) {
+    let gi = get_global_interrupts();
+    // Taken out under the locks, dropped outside them: both hold object references.
+    let interrupters = core::mem::take(&mut *gi.device_vectors[number as usize].lock());
+    let targets = core::mem::take(&mut gi.ints[number as usize].inner.lock().target);
+    drop((interrupters, targets));
+    gi.wake_device_waiters(number, true);
+}
+
+/// Which cpus each external vector was taken on, to check that a routed interrupt lands where
+/// it was sent. Printed at shutdown.
+pub mod routestats {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    use crate::{arch::interrupt::NUM_VECTORS, processor::mp::current_processor};
+
+    static COUNT: [AtomicU64; NUM_VECTORS] = [const { AtomicU64::new(0) }; NUM_VECTORS];
+    /// Bit `n` for cpu id `n`; ids past 63 fold onto bit 63.
+    static CPUS: [AtomicU64; NUM_VECTORS] = [const { AtomicU64::new(0) }; NUM_VECTORS];
+
+    pub(super) fn note(vector: u32) {
+        let v = vector as usize;
+        COUNT[v].fetch_add(1, Ordering::Relaxed);
+        CPUS[v].fetch_or(1 << current_processor().id.min(63), Ordering::Relaxed);
+    }
+
+    pub fn print() {
+        for v in 0..NUM_VECTORS {
+            let n = COUNT[v].load(Ordering::Relaxed);
+            if n != 0 {
+                emerglogln!(
+                    "irqroute: vector {} n={} cpus={:#x}",
+                    v,
+                    n,
+                    CPUS[v].load(Ordering::Relaxed)
+                );
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -459,8 +528,9 @@ pub struct DynamicInterrupt {
 pub fn allocate_interrupt(
     pri: InterruptPriority,
     opts: InterruptAllocateOptions,
+    destination: Destination,
 ) -> Option<DynamicInterrupt> {
-    crate::arch::interrupt::allocate_interrupt_vector(pri, opts)
+    crate::arch::interrupt::allocate_interrupt_vector(pri, opts, destination)
 }
 
 impl DynamicInterrupt {

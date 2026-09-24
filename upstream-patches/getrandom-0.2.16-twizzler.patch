@@ -1,0 +1,42 @@
+diff -ruN -x .cargo-ok -x Cargo.toml.orig -x Cargo.lock -x .cargo_vcs_info.json /home/dbittman/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.2.16/src/lib.rs src/ports/getrandom02/src/lib.rs
+--- /home/dbittman/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.2.16/src/lib.rs	2006-07-24 01:21:28.000000000 +0000
++++ src/ports/getrandom02/src/lib.rs	2026-08-29 03:00:01.763641472 +0000
+@@ -319,6 +319,8 @@
+         #[path = "wasi.rs"] mod imp;
+     } else if #[cfg(target_os = "hermit")] {
+         #[path = "hermit.rs"] mod imp;
++    } else if #[cfg(target_os = "twizzler")] {
++        #[path = "twizzler.rs"] mod imp;
+     } else if #[cfg(target_os = "vxworks")] {
+         mod util_libc;
+         #[path = "vxworks.rs"] mod imp;
+diff -ruN -x .cargo-ok -x Cargo.toml.orig -x Cargo.lock -x .cargo_vcs_info.json /home/dbittman/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.2.16/src/twizzler.rs src/ports/getrandom02/src/twizzler.rs
+--- /home/dbittman/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.2.16/src/twizzler.rs	1970-01-01 00:00:00.000000000 +0000
++++ src/ports/getrandom02/src/twizzler.rs	2026-08-29 03:00:01.735638887 +0000
+@@ -0,0 +1,26 @@
++//! Implementation for Twizzler, over the runtime ABI's entropy call.
++use core::mem::MaybeUninit;
++
++use crate::Error;
++
++// `size_t twz_rt_get_random(char *buf, size_t len, uint32_t flags)`, from
++// src/abi/include/twizzler/rt/random.h. Declared directly rather than through
++// twizzler-rt-abi: that crate needs six nightly features, and bootstrap builds tools with a
++// restricted -Zallow-features, so depending on it makes this crate unbuildable inside cargo.
++// Declaring the extern is also what upstream's own backends do -- hermit declares
++// `sys_read_entropy` exactly this way.
++extern "C" {
++    fn twz_rt_get_random(buf: *mut u8, len: usize, flags: u32) -> usize;
++}
++
++pub fn getrandom_inner(dest: &mut [MaybeUninit<u8>]) -> Result<(), Error> {
++    // See the 0.3 port: a short read is a failure, not a partial fill. The fork branch this
++    // replaces checked only `res == 0`, so it accepted short reads and returned uninitialised
++    // bytes as entropy.
++    let len = unsafe { twz_rt_get_random(dest.as_mut_ptr().cast::<u8>(), dest.len(), 0) };
++    if len == dest.len() {
++        Ok(())
++    } else {
++        Err(Error::UNEXPECTED)
++    }
++}

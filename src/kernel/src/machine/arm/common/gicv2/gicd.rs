@@ -99,7 +99,9 @@ register_structs! {
         (0x00C => _reserved1),
         /// Interrupt Set-Enable Registers
         (0x100 => ISENABLER: [ReadWrite<u32>; 32]),
-        (0x180 => _reserved2),
+        /// Interrupt Clear-Enable Registers: writing 1 disables, 0 is ignored
+        (0x180 => ICENABLER: [ReadWrite<u32>; 32]),
+        (0x200 => _reserved2),
         (0x400 => IPRIORITYR: [ReadWrite<u32, IPRIORITYR::Register>; 255]),
         (0x7FC => _reserved3),
         // skip the banked ITARGETSR registers, see 4.3.12
@@ -224,8 +226,12 @@ impl GICD {
         }
     }
 
-    /// configure routing of interrupts to particular cpu cores
-    pub fn set_interrupt_target(&self, int_id: u32, core: u32) {
+    pub fn disable_interrupt(&self, int_id: u32) {
+        self.registers.ICENABLER[(int_id / 32) as usize].set(1 << (int_id % 32));
+    }
+
+    /// Route an SPI to the cpu interfaces set in `targets`, replacing its previous targets.
+    pub fn set_interrupt_target(&self, int_id: u32, targets: u8) {
         // We skip the banked registers since according to 2.2.1
         // those map to interrupt IDs 0-31 which are local to
         // the processor.
@@ -244,12 +250,10 @@ impl GICD {
         // 2. byte offset required = int_id % 4
         let offset = int_id % 4;
 
-        // change ITARGETSR
-        //
         // Table 4-16: each bit in a CPU targets field refers to the corresponding processor
-        let mut state = self.registers.ITARGETSR[num].get();
-        state = state | (1 << core + offset * 8);
-        self.registers.ITARGETSR[num].set(state);
+        let shift = offset * 8;
+        let state = self.registers.ITARGETSR[num].get() & !(0xff << shift);
+        self.registers.ITARGETSR[num].set(state | (targets as u32) << shift);
     }
 
     /// configure the priority of an interrupt

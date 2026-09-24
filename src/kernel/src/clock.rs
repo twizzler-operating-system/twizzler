@@ -158,6 +158,8 @@ impl TimeoutEntry {
 }
 
 const NR_WINDOW_ENTRIES: usize = 32;
+/// Windows past a full one that an insert may spill into; see [`TimeoutQueue::push_spill`].
+const SPILL_WINDOWS: usize = 8;
 #[derive(Debug)]
 struct TimeoutQueue {
     queues: [heapless::Vec<TimeoutEntry, NR_WINDOW_ENTRIES>; NR_WINDOWS],
@@ -380,11 +382,15 @@ impl TimeoutQueue {
             expire_ns,
             key,
         };
-        if let Err(entry) = self.queues[window].push(entry) {
-            log::warn!("timeout queue overflow");
-            entry.call();
-        }
-        self.sync_occupied(window);
+        let window = match self.push_spill(window, entry) {
+            Ok(window) => window,
+            Err(entry) => {
+                // Every window within the probe is full: the old behaviour, fired early.
+                log::warn!("timeout queue overflow");
+                entry.call();
+                window
+            }
+        };
         (
             TimeoutKey {
                 key,
@@ -393,6 +399,30 @@ impl TimeoutQueue {
             },
             expire_ns,
         )
+    }
+
+    /// Push `entry` into `window`, or the first of the next [`SPILL_WINDOWS`] with room, a tick
+    /// later per window skipped. A full window used to fire the callback inline, early, under this
+    /// lock -- a spurious timeout, and `schedule_thread` nested under the timeout lock.
+    fn push_spill(
+        &mut self,
+        window: usize,
+        mut entry: TimeoutEntry,
+    ) -> core::result::Result<usize, TimeoutEntry> {
+        let Some(k) =
+            (0..SPILL_WINDOWS).find(|k| !self.queues[(window + k) % NR_WINDOWS].is_full())
+        else {
+            return Err(entry);
+        };
+        let w = (window + k) % NR_WINDOWS;
+        entry.expire_ticks += k as u64;
+        if k != 0 {
+            // The key names the window it was given, so a spill is found the way a rehome is.
+            self.rehomes += 1;
+        }
+        let _ = self.queues[w].push(entry);
+        self.sync_occupied(w);
+        Ok(w)
     }
 
     // Remove a timeout key. Returns true if the key was actually removed (timeout hasn't fired).
@@ -407,7 +437,8 @@ impl TimeoutQueue {
             // caller reads the miss as "the timeout fired" (`!release()`) and reports TIMED_OUT for
             // a sleep that was woken, and the key is retired below while an entry still carries it,
             // so a later reuse of that key can remove someone else's timeout.
-            let span = (self.current + 1)
+            // Rehomes land at `current + 1` or, spilled, up to `SPILL_WINDOWS` past it.
+            let span = (self.current + SPILL_WINDOWS)
                 .saturating_sub(self.soft_current)
                 .min(NR_WINDOWS - 1);
             for i in 0..=span {
@@ -415,6 +446,15 @@ impl TimeoutQueue {
                 if self.remove_from(window, key.key) {
                     removed = true;
                     break;
+                }
+            }
+            // An insert that spilled past its own full window.
+            if !removed {
+                for k in 1..SPILL_WINDOWS {
+                    if self.remove_from((key.window + k) % NR_WINDOWS, key.key) {
+                        removed = true;
+                        break;
+                    }
                 }
             }
         }
@@ -466,11 +506,10 @@ impl TimeoutQueue {
             self.rehomes += 1;
             entry.expire_ticks = (self.current + 1) as u64;
             let dest = (self.current + 1) % NR_WINDOWS;
-            if let Err(entry) = self.queues[dest].push(entry) {
+            if let Err(entry) = self.push_spill(dest, entry) {
                 log::warn!("timeout queue overflow");
                 entry.call();
             }
-            self.sync_occupied(dest);
         }
         self.sync_occupied(window);
     }
@@ -506,6 +545,71 @@ impl TimeoutQueue {
 }
 
 static TIMEOUT_QUEUE: Spinlock<TimeoutQueue> = Spinlock::new(TimeoutQueue::new());
+
+/// `--diag=wake`: where a timeout's lateness goes, deadline -> signalling interrupt -> the
+/// timeout thread reaching the callback. The irq stamp is one global, so the split is exact
+/// only with one timeout in flight (the lone-sleeper case it exists for).
+pub mod timerstats {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static IRQ_NS: AtomicU64 = AtomicU64::new(0);
+    // [count, sum, max] for deadline->irq and irq->callback.
+    static LATE: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+    static RUN: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+    static EARLY: AtomicU64 = AtomicU64::new(0);
+
+    fn acc(a: &[AtomicU64; 3], v: u64) {
+        a[0].fetch_add(1, Ordering::Relaxed);
+        a[1].fetch_add(v, Ordering::Relaxed);
+        a[2].fetch_max(v, Ordering::Relaxed);
+    }
+
+    pub fn signalled(now: u64) {
+        if crate::kdiag_wake() {
+            IRQ_NS.store(now, Ordering::Relaxed);
+        }
+    }
+
+    pub fn fired(expire_ns: u64, now: u64) {
+        if !crate::kdiag_wake() || expire_ns == 0 {
+            return;
+        }
+        let irq = IRQ_NS.load(Ordering::Relaxed);
+        if irq < expire_ns {
+            // Visited before its deadline (a whole-tick wheel visit), or no stamp.
+            EARLY.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        acc(&LATE, irq - expire_ns);
+        acc(&RUN, now.saturating_sub(irq));
+    }
+
+    fn line(name: &str, a: &[AtomicU64; 3]) {
+        let n = a[0].load(Ordering::Relaxed);
+        if n == 0 {
+            return;
+        }
+        logln!(
+            "  {}: n={} mean={}us max={}us",
+            name,
+            n,
+            a[1].load(Ordering::Relaxed) / n / 1000,
+            a[2].load(Ordering::Relaxed) / 1000
+        );
+    }
+
+    pub fn print() {
+        if LATE[0].load(Ordering::Relaxed) == 0 && EARLY.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        logln!(
+            "== timeouts: {} early visits (before deadline) ==",
+            EARLY.load(Ordering::Relaxed)
+        );
+        line("deadline->irq", &LATE);
+        line("irq->callback", &RUN);
+    }
+}
 static TIMEOUT_THREAD: Once<ThreadRef> = Once::new();
 static TIMEOUT_THREAD_CONDVAR: CondVar = CondVar::new();
 
@@ -559,13 +663,33 @@ pub fn register_timeout_callback(
     key
 }
 
+/// Due timeouts fire from the bsp's timer interrupt rather than on the timeout thread: the only
+/// callback registered anywhere is `thread_sync_cb_timeout`, which requeues, and this interrupt
+/// drains the requeue list right after. The thread hop cost every timed sleep a wake, a switch
+/// and a switch back (15-25 us when the bsp was idle, on KVM). Bounded; anything past the bound
+/// goes to the thread as before.
+const IRQ_TIMEOUT_DRAIN_MAX: usize = 32;
+
+fn fire_due_timeouts(now_ns: u64) {
+    for _ in 0..IRQ_TIMEOUT_DRAIN_MAX {
+        let Some(timeout) = TIMEOUT_QUEUE.lock().soft_advance(now_ns) else {
+            return;
+        };
+        timerstats::fired(timeout.expire_ns, now_ns);
+        timeout.call();
+    }
+    TIMEOUT_THREAD_CONDVAR.signal();
+}
+
 extern "C" fn soft_timeout_clock() {
     /* TODO: use some heuristic to decide if we need to spend more time handling timeouts */
     loop {
         let mut tq = TIMEOUT_QUEUE.lock();
-        let timeout = tq.soft_advance(crate::instant::current_ns());
+        let now = crate::instant::current_ns();
+        let timeout = tq.soft_advance(now);
         if let Some(timeout) = timeout {
             drop(tq);
+            timerstats::fired(timeout.expire_ns, now);
             timeout.call();
             requeue_all();
         } else {
@@ -781,7 +905,8 @@ pub fn oneshot_clock_hardtick() {
         // Outside the queue lock; see `check_reschedule_oneshot`.
         drop(timeout_queue);
         if wake {
-            TIMEOUT_THREAD_CONDVAR.signal();
+            timerstats::signalled(now);
+            fire_due_timeouts(now);
         }
         Some(programmed)
     } else {

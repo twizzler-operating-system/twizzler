@@ -45,9 +45,10 @@ jobs:
               run: RUST_BACKTRACE=1 cargo +nightly start-qemu --tests --qemu-options=--nographic
             - name: Test x86_64 Release
               run: RUST_BACKTRACE=1 cargo +nightly start-qemu --profile release --tests --qemu-options=--nographic --gdb 0
-            # aarch64 is compiled for QEMU virt, builds in debug mode
-            #- name: Build aarch64
-            #  run: cargo +nightly build-all -a aarch64 -m virt
+            - name: Build aarch64
+              run: RUST_BACKTRACE=1 cargo +nightly build-all --profile release -a aarch64 -m virt
+            - name: Test aarch64 Release
+              run: RUST_BACKTRACE=1 cargo +nightly start-qemu --profile release -a aarch64 -m virt --tests --qemu-options=--nographic --qemu-options=-smp --qemu-options=4
             # - name: Install mdbook
             #   run: |
             #     mkdir mdbook

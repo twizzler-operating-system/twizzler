@@ -9,7 +9,7 @@ use twizzler_abi::{
             PcieKactionSpecific, get_bar,
         },
     },
-    kso::{KactionValue, unpack_kaction_int_pri_and_opts},
+    kso::{KactionValue, unpack_kaction_int_alloc},
     object::{NULLPAGE_SIZE, ObjID},
 };
 use twizzler_rt_abi::error::{ArgumentError, GenericError, ObjectError, ResourceError};
@@ -17,10 +17,11 @@ use volatile::map_field;
 
 use crate::{
     device::DeviceRef,
-    interrupt::{DynamicInterrupt, WakeInfo},
+    interrupt::{Destination, DynamicInterrupt, WakeInfo},
     memory::{PhysAddr, VirtAddr},
     mutex::Mutex,
     once::Once,
+    processor::mp::with_each_active_processor,
 };
 
 /// Prefetchable BARs are device memory on aarch64; only x86 tolerates a cacheable mapping.
@@ -211,13 +212,10 @@ fn register_device(
     Some(dev)
 }
 
-struct InterruptState {
-    ints: Vec<DynamicInterrupt>,
-}
+/// Allocated vectors per device, by device interrupt slot.
+static INTMAP: Once<Mutex<BTreeMap<ObjID, BTreeMap<usize, DynamicInterrupt>>>> = Once::new();
 
-static INTMAP: Once<Mutex<BTreeMap<ObjID, InterruptState>>> = Once::new();
-
-fn get_int_map() -> &'static Mutex<BTreeMap<ObjID, InterruptState>> {
+fn get_int_map() -> &'static Mutex<BTreeMap<ObjID, BTreeMap<usize, DynamicInterrupt>>> {
     INTMAP.call_once(|| Mutex::new(BTreeMap::new()))
 }
 
@@ -238,28 +236,49 @@ fn allocate_interrupt(
     arg: u64,
     arg2: u64,
 ) -> twizzler_rt_abi::Result<KactionValue> {
-    let (pri, opts) = unpack_kaction_int_pri_and_opts(arg).ok_or(ArgumentError::InvalidArgument)?;
-    let vector =
-        crate::interrupt::allocate_interrupt(pri, opts).ok_or(ResourceError::OutOfResources)?;
-
-    let mut maps = get_int_map().lock();
-    let state = if let Some(x) = maps.get_mut(&device.objid()) {
-        x
-    } else {
-        maps.insert(device.objid(), InterruptState { ints: Vec::new() });
-        maps.get_mut(&device.objid()).unwrap()
+    let (pri, opts, cpu) = unpack_kaction_int_alloc(arg).ok_or(ArgumentError::InvalidArgument)?;
+    let inum = arg2 as usize;
+    let offset = pcie_calculate_int_sync_offset(inum).ok_or(ArgumentError::InvalidArgument)?;
+    let destination = match cpu {
+        Some(cpu) => {
+            let mut up = false;
+            with_each_active_processor(|p| up |= p.id == cpu);
+            if !up {
+                return Err(ArgumentError::InvalidArgument.into());
+            }
+            Destination::Single(cpu)
+        }
+        None => Destination::Bsp,
     };
 
+    let mut maps = get_int_map().lock();
+    let ints = maps.entry(device.objid()).or_default();
+    if ints.contains_key(&inum) {
+        return Err(ResourceError::Busy.into());
+    }
+    let vector = crate::interrupt::allocate_interrupt(pri, opts, destination)
+        .ok_or(ResourceError::OutOfResources)?;
     let num = vector.num();
-    let offset =
-        pcie_calculate_int_sync_offset(arg2 as usize).ok_or(ArgumentError::InvalidArgument)?;
     let object = device.object();
-    object.add_device_interrupt(num as u32, arg2 as usize, offset);
-    let wi = WakeInfo::new(object, offset);
-    crate::interrupt::set_userspace_interrupt_wakeup(num as u32, wi);
-    state.ints.push(vector);
+    object.add_device_interrupt(num as u32, inum, offset);
+    crate::interrupt::set_userspace_interrupt_wakeup(num as u32, WakeInfo::new(object, offset));
+    ints.insert(inum, vector);
 
     Ok(KactionValue::U64(num as u64))
+}
+
+fn free_interrupt(device: DeviceRef, inum: u64) -> twizzler_rt_abi::Result<KactionValue> {
+    let mut maps = get_int_map().lock();
+    let vector = maps
+        .get_mut(&device.objid())
+        .and_then(|ints| ints.remove(&(inum as usize)))
+        .ok_or(ArgumentError::InvalidArgument)?;
+    // Unbind the slot before releasing waiters, so a sleep that starts now cannot bind to the
+    // vector; free the vector last, once nothing refers to it.
+    device.object().remove_device_interrupt(inum as usize);
+    crate::interrupt::clear_userspace_interrupt_wakeup(vector.num() as u32);
+    drop(vector);
+    Ok(KactionValue::U64(0))
 }
 
 fn kaction(
@@ -298,6 +317,7 @@ fn kaction(
             Ok(KactionValue::ObjID(dev.objid()))
         }
         PcieKactionSpecific::AllocateInterrupt => allocate_interrupt(device, arg, arg2),
+        PcieKactionSpecific::FreeInterrupt => free_interrupt(device, arg2),
     }
 }
 

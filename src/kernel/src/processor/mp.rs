@@ -64,6 +64,12 @@ static MAX_REGISTERED_ID: AtomicUsize = AtomicUsize::new(0);
 
 static CPU_MAIN_BARRIER: AtomicBool = AtomicBool::new(false);
 
+/// Every secondary has been released from its bring-up wait, where it sits with interrupts off
+/// and cannot answer a TLB shootdown.
+pub fn secondaries_released() -> bool {
+    CPU_MAIN_BARRIER.load(core::sync::atomic::Ordering::SeqCst)
+}
+
 pub fn secondary_entry(id: u32, tcb_base: VirtAddr, kernel_stack_base: *mut u8) -> ! {
     crate::arch::processor::init(tcb_base);
     secondary_main(id, kernel_stack_base)
@@ -137,6 +143,7 @@ pub fn boot_all_secondaries(tls_template: TlsInfo) {
             level = next.unwrap();
         }
     }
+    cpu_topo_root.fix_parents();
     log_topology(&cpu_topo_root, 0);
     crate::processor::sched::set_cpu_topology(cpu_topo_root);
     // Every cpu waited for above has run `arch::processor::init`, so no cpu can be executing
@@ -184,7 +191,8 @@ fn log_topology(node: &CPUTopoNode, depth: usize) {
 }
 
 pub fn register(id: u32, bsp_id: u32) {
-    if id as usize >= all_processors().len() {
+    // `CpuSet` holds MAX_CPU_ID bits, one fewer than the slot table.
+    if id as usize >= MAX_CPU_ID {
         log::warn!("processor ID {} not supported (too large)", id);
         return;
     }

@@ -16,9 +16,8 @@ use twizzler_abi::{
 use twizzler_rt_abi::{object::ObjectHandle, thread::ThreadSpawnArgs};
 
 use crate::runtime::{
-    alloc::LOCAL_ALLOCATOR,
     core::run_mlibc_thread_dtors,
-    thread::{mgr::stackpool, tcb::tlspool, MIN_STACK_ALIGN},
+    thread::{mgr::stackpool, tcb::{free_tls_region, tlspool}, MIN_STACK_ALIGN},
     OUR_RUNTIME,
 };
 
@@ -190,7 +189,7 @@ impl Drop for InternalThread {
             // the pool is full. See `tcb::tlspool` for why recycling it needs nothing that freeing
             // it here did not already need.
             if !tlspool::put(self.tls_alloc_base, self.tls_layout) {
-                LOCAL_ALLOCATOR.dealloc(self.tls_alloc_base, self.tls_layout);
+                free_tls_region(self.tls_alloc_base, self.tls_layout);
             }
         }
     }

@@ -1,0 +1,29 @@
+[package]
+name = "elephance"
+version = "0.1.0"
+edition = "2021"
+description = "Twizzler arm of the elephance hydration/sharing experiments"
+
+# Standalone for now so this directory is inert for other sessions. To wire into the
+# build: delete this table, add "third-party/elephance/twz" and
+# "third-party/elephance/core" to the root Cargo.toml [workspace] members, and add
+# "elephance" to [workspace.metadata] initrd. See ../README.md.
+[workspace]
+
+[dependencies]
+elephance-core = { path = "../core" }
+twizzler = { path = "../../../src/lib/twizzler" }
+twizzler-abi = { path = "../../../src/lib/twizzler-abi" }
+twizzler-rt-abi = { path = "../../../src/abi/rt-abi" }
+twizzler-runtime = { path = "../../../src/rt" }
+naming = { path = "../../../src/lib/naming" }
+clap = { version = "4.5.26", features = ["derive"] }
+
+# This crate builds as its own ephemeral workspace (xtask third-party collection), so the
+# root workspace's [patch] tables don't apply here. Only the patches this graph actually
+# resolves through are listed; getrandom needs no fork because xtask passes
+# `--cfg getrandom_backend="custom"` to every twizzler target.
+[patch.crates-io]
+twizzler-abi = { path = "../../../src/lib/twizzler-abi" }
+twizzler-rt-abi = { path = "../../../src/abi/rt-abi" }
+libc = { path = "../../../src/ports/libc" }

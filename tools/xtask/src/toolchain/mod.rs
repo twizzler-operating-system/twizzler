@@ -321,14 +321,8 @@ pub fn set_dynamic(target: &Triple) -> anyhow::Result<()> {
     // --as-needed, which is what makes the record stick -- same pairing as set_static() and
     // toolchain/ports/rust.rs.
     // rust's linkage support.
-    let extra_rustflags = if target.arch == Arch::X86_64 {
-        "-C target-feature=+sse3,+avx,+avx2,+fma -C target-cpu=x86-64-v3"
-    } else {
-        ""
-    };
     let args = format!(
-        "--cfg getrandom_backend=\"custom\" -C link-args=--export-dynamic {} -C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z pre-link-arg=--pack-dyn-relocs=relr -C link-arg=--no-as-needed -C link-arg=-lunwind{} {}",
-        extra_rustflags,
+        "--cfg getrandom_backend=\"custom\" -C link-args=--export-dynamic -C prefer-dynamic=y -Z staticlib-prefer-dynamic=y -C link-arg=--allow-shlib-undefined -C link-arg=--undefined-glob=__TWIZZLER_SECURE_GATE_* -C link-arg=--export-dynamic-symbol=__TWIZZLER_SECURE_GATE_* -C link-arg=--warn-unresolved-symbols -Z pre-link-arg=-L -Z pre-link-arg={} -L {} -C link-arg=-z -C link-arg=norelro -Z pre-link-arg=--pack-dyn-relocs=relr -C link-arg=--no-as-needed -C link-arg=-lunwind{} {}",
         sysroot_path.display(),
         sysroot_path.display(),
         clang_builtins_flag(target),

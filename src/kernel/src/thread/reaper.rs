@@ -9,9 +9,9 @@
 //!
 //! This thread has neither constraint. It is an ordinary kernel thread, so it may block, and it
 //! drains without a per-pass bound. It runs at BACKGROUND so an idle machine does not pay for it,
-//! and runs at REALTIME while the backlog is over [`BACKLOG_HIGH`] or memory is low. A BACKGROUND
-//! thread never gets a cpu that user threads keep busy, so the boost cannot wait for the reaper to
-//! notice: [`notify`] donates it from the exit path that crosses the threshold.
+//! and at REALTIME while [`boost_wanted`] says so. A BACKGROUND thread never gets a cpu that user
+//! threads keep busy, so the boost cannot wait for the reaper to notice: [`notify`] donates it from
+//! the exit path.
 
 use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::Ordering;
@@ -27,6 +27,13 @@ use crate::{
 /// Threads awaiting reap before the reaper boosts itself. Each holds a 2 MiB kernel stack, so this
 /// is a memory bound wearing a count: 8 is 16 MiB.
 const BACKLOG_HIGH: usize = 8;
+
+/// Past [`BACKLOG_HIGH`], or with anything at all to reap while memory is low: every exited thread
+/// pins a kernel stack, and kernel-stack refill panics rather than waits when the heap cannot grow,
+/// so under pressure a spawn storm must not outrun the reaper.
+fn boost_wanted(backlog: usize) -> bool {
+    backlog >= BACKLOG_HIGH || (backlog > 0 && crate::memory::tracker::is_low_mem())
+}
 
 struct Reaper {
     cv: CondVar,
@@ -49,7 +56,7 @@ pub fn start() {
     THREAD.call_once(|| th);
 }
 
-/// Wake the reaper if there is anything for it to do, boosting it once the backlog is high.
+/// Wake the reaper if there is anything for it to do, boosting it per [`boost_wanted`].
 ///
 /// Cheap enough for every idle-loop pass and every exit: one relaxed load, and a signal only
 /// when the backlog is non-empty.
@@ -59,7 +66,7 @@ pub fn notify() {
         return;
     }
     if let Some(r) = REAPER.poll() {
-        if backlog >= BACKLOG_HIGH {
+        if boost_wanted(backlog) {
             if let Some(th) = THREAD.poll() {
                 th.donate_priority(Priority::REALTIME);
             }
@@ -101,16 +108,14 @@ fn reaper_main() -> ! {
     let r = REAPER.wait();
     let me = current_thread_ref().unwrap();
     let mut batch: Vec<ThreadRef> = Vec::new();
-    let mut boosted = false;
     loop {
-        let urgent = EXITED_BACKLOG.load(Ordering::Relaxed) >= BACKLOG_HIGH
-            || crate::memory::tracker::is_low_mem();
+        let urgent = boost_wanted(EXITED_BACKLOG.load(Ordering::Relaxed));
+        // Read back rather than tracked: `notify` donates from the exit path too.
+        let boosted = me.get_donated_priority().is_some();
         if urgent && !boosted {
             me.donate_priority(Priority::REALTIME);
-            boosted = true;
         } else if !urgent && boosted {
             me.remove_donated_priority();
-            boosted = false;
         }
 
         for p in all_processors().iter().flatten() {

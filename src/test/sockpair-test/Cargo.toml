@@ -1,0 +1,15 @@
+[package]
+name = "sockpair_test"
+version = "0.1.0"
+edition = "2021"
+
+# Registry crates on purpose: this test exists to prove the unmodified upstream `errno` and
+# `getrandom` 0.2 work on this target (an `errno_location` alias in mlibc and getrandom's
+# `custom` backend hook in the runtimes), alongside the socketpair the runtime provides.
+[dependencies]
+errno = "0.3"
+getrandom = "0.2"
+libc = { workspace = true }
+
+[package.metadata]
+twizzler-build = "test"

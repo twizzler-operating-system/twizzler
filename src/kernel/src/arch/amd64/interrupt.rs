@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use twizzler_abi::{
     arch::XSAVE_LEN,
@@ -8,7 +8,6 @@ use twizzler_abi::{
 
 use super::{
     gdt::user_selectors,
-    set_interrupt,
     thread::{Registers, UpcallAble},
 };
 use crate::{
@@ -193,29 +192,9 @@ unsafe extern "C" fn common_handler_entry(
             }
             super::processor::write_fs_base(kernel_fs);
 
+            // A user fault at IP 0 (a jump through null) is the user's fault to take, not ours:
+            // it goes through the normal fault path and comes back as an upcall.
             let t = current_thread_ref().unwrap();
-            if (*ctx).get_ip() == 0 {
-                let cr2 = x86::controlregs::cr2();
-                let err = (*ctx).err;
-                let cause = if err & (1 << 4) == 0 {
-                    if err & (1 << 1) == 0 {
-                        MemoryAccessKind::Read
-                    } else {
-                        MemoryAccessKind::Write
-                    }
-                } else {
-                    MemoryAccessKind::InstructionFetch
-                };
-                panic!(
-                    "tried to set IP to 0! is currently: {:x} {:?} {} {} {:x} {:?}",
-                    t.read_ip(),
-                    *ctx,
-                    user,
-                    number,
-                    cr2,
-                    cause,
-                );
-            }
             t.set_entry_registers(Registers::Interrupt(ctx));
         }
     }
@@ -527,6 +506,20 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
     // one `pushfq`/`pop`.
     assert!(!get());
     let ctx = unsafe { ctx.as_mut().unwrap() };
+    if number == Exception::DoubleFault as u64 {
+        // A page fault on a stack guard cannot push its frame onto the stack it overflowed, so it
+        // arrives here, on the IST stack, with the faulting rsp saved.
+        if let Some(t) = current_thread_ref() {
+            let guard = crate::thread::kstack::guard_below(t.kernel_stack.as_ptr());
+            if !guard.is_empty() && ctx.rsp >= guard.start && ctx.rsp < guard.end + 0x100 {
+                panic!(
+                    "kernel stack overflow: rsp {:#x} in the guard below the stack of thread {}",
+                    ctx.rsp,
+                    t.id()
+                );
+            }
+        }
+    }
     if number == Exception::DoubleFault as u64 || number == Exception::MachineCheck as u64 {
         /* diverging */
         panic!(
@@ -1301,25 +1294,45 @@ pub fn get() -> bool {
     x86::bits64::rflags::read().contains(x86::bits64::rflags::RFlags::FLAGS_IF)
 }
 
+/// One bit per vector, set while allocated. Only vectors passing [is_dynamic_vector] are set.
+static VECTORS_USED: [AtomicU64; NUM_VECTORS / 64] =
+    [const { AtomicU64::new(0) }; NUM_VECTORS / 64];
+
+/// Vectors the allocator may hand out: `MIN_VECTOR..=MAX_VECTOR`, minus anything with a fixed
+/// meaning. The IOAPIC maps GSI `n` to vector `32 + n`, which reaches into this range.
+fn is_dynamic_vector(vec: usize) -> bool {
+    (MIN_VECTOR..=MAX_VECTOR).contains(&vec)
+        && vec >= 32 + super::ioapic::gsi_end() as usize
+        && !RESV_VECTORS.contains(&vec)
+        && vec != TLB_SHOOTDOWN_VECTOR as usize
+}
+
 pub fn allocate_interrupt_vector(
     _pri: InterruptPriority,
     _opts: InterruptAllocateOptions,
+    destination: Destination,
 ) -> Option<DynamicInterrupt> {
-    // TODO: Actually track interrupts, and allocate based on priority and flags.
-    static INT: AtomicU32 = AtomicU32::new(64);
-    let int = INT.fetch_add(1, Ordering::SeqCst);
-    set_interrupt(
-        int,
-        false,
-        crate::interrupt::TriggerMode::Edge,
-        crate::interrupt::PinPolarity::ActiveHigh,
-        Destination::Bsp,
-    );
-    Some(DynamicInterrupt::new(int as usize))
+    // The MSI message carries the destination, so there is nothing to program here -- but the
+    // xAPIC-format message has only 8 bits for it.
+    if let Destination::Single(id) = destination
+        && id > 0xff
+    {
+        return None;
+    }
+    let vec = (MIN_VECTOR..=MAX_VECTOR)
+        .filter(|&v| is_dynamic_vector(v))
+        .find(|&v| {
+            let bit = 1 << (v % 64);
+            VECTORS_USED[v / 64].fetch_or(bit, Ordering::SeqCst) & bit == 0
+        })?;
+    Some(DynamicInterrupt::new(vec))
 }
 
 impl Drop for DynamicInterrupt {
     fn drop(&mut self) {
-        // TODO
+        let vec = self.num();
+        if is_dynamic_vector(vec) {
+            VECTORS_USED[vec / 64].fetch_and(!(1 << (vec % 64)), Ordering::SeqCst);
+        }
     }
 }

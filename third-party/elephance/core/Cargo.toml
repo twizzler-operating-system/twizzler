@@ -1,0 +1,11 @@
+[package]
+name = "elephance-core"
+version = "0.1.0"
+edition = "2021"
+description = "Shared dataset/workload definition for the elephance hydration and sharing experiments"
+
+# Standalone for now; when the Twizzler side is wired into the root workspace,
+# delete this table and add the crate to the root members list (see ../README.md).
+[workspace]
+
+[dependencies]

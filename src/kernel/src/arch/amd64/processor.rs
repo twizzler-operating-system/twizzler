@@ -484,10 +484,23 @@ fn has_mwait() -> &'static Option<MwaitInfo> {
     })
 }
 
+/// How long the idle loop polls its queue before halting. Under a hypervisor a halt is a vm exit
+/// and the wake that ends it a host-side wakeup, tens of microseconds; a wake inside this window
+/// is a guest-side hit instead.
+const IDLE_POLL_NS: u64 = 50_000;
+
 pub fn halt_and_wait() {
-    /* TODO: spin a bit */
     /* TODO: parse cstates and actually put the cpu into deeper and deeper sleep */
     let proc = current_processor();
+    if crate::idle_poll() {
+        let until = crate::instant::current_ns() + IDLE_POLL_NS;
+        while crate::instant::current_ns() < until {
+            if proc.has_work() {
+                return;
+            }
+            core::hint::spin_loop();
+        }
+    }
     let mwait_info = has_mwait();
     if let Some(mwait_info) = mwait_info {
         // cli/monitor/re-check/mwait is the race-free idle sequence: an interrupt arriving

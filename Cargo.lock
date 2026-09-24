@@ -5700,6 +5700,14 @@ name = "nullexit"
 version = "0.1.0"
 
 [[package]]
+name = "nulljump"
+version = "0.1.0"
+dependencies = [
+ "twizzler-abi",
+ "twizzler-runtime",
+]
+
+[[package]]
 name = "num-bigint"
 version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"

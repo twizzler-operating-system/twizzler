@@ -350,9 +350,6 @@ impl<T> Mutex<T> {
         };
         let caller = core::panic::Location::caller();
         let current_thread = current_thread_ref();
-        let current_donated_priority = current_thread
-            .as_ref()
-            .and_then(|t| t.get_donated_priority());
 
         if let Some(ref current_thread) = current_thread {
             if current_thread.is_critical() {
@@ -413,7 +410,6 @@ impl<T> Mutex<T> {
                     }
                     return LockGuard {
                         lock: self,
-                        prev_donated_priority: current_donated_priority,
                         start_time,
                         timed: timing,
                         charged,
@@ -667,7 +663,6 @@ impl<T> Mutex<T> {
         crate::interrupt::set(int_state);
         LockGuard {
             lock: self,
-            prev_donated_priority: current_donated_priority,
             start_time,
             timed: timing,
             charged,
@@ -698,7 +693,6 @@ impl<T> Mutex<T> {
         self.stamp_locked_at(core::panic::Location::caller());
         Some(LockGuard {
             lock: self,
-            prev_donated_priority: ct.get_donated_priority(),
             start_time: if timing {
                 Instant::now()
             } else {
@@ -817,7 +811,6 @@ impl<T> Mutex<T> {
 #[must_use = "a dropped guard releases immediately; bind it to a variable"]
 pub struct LockGuard<'a, T> {
     lock: &'a Mutex<T>,
-    prev_donated_priority: Option<Priority>,
     start_time: Instant,
     /// Whether `start_time` is a real reading. Carried rather than re-tested at drop, so a reader
     /// turning timing on mid-hold cannot record a hold time measured from boot.
@@ -842,13 +835,16 @@ impl<T> core::ops::DerefMut for LockGuard<'_, T> {
 
 impl<T> Drop for LockGuard<'_, T> {
     fn drop(&mut self) {
-        if let Some(ref prev) = self.prev_donated_priority {
-            if let Some(thread) = current_thread_ref() {
-                thread.remove_donated_priority();
-                thread.donate_priority(prev.clone());
-            }
-        } else if let Some(thread) = current_thread_ref() {
+        // One donation slot per thread, so only the last mutex released may reset it: an inner or
+        // out-of-order release restoring its own acquire-time value dropped a donation another
+        // held lock still needed, or put back one whose lock was already gone.
+        if let Some(thread) = current_thread_ref()
+            && thread.get_mutex_count() <= 1
+        {
             thread.remove_donated_priority();
+            if let Some(base) = thread.mutex_base_donation() {
+                thread.donate_priority(base);
+            }
         }
         self.lock.release(self.charged.as_ref());
         if self.timed {

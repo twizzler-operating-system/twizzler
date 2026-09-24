@@ -114,6 +114,9 @@ pub struct Thread {
     /// User thread pointer, saved per security context and swapped by [Thread::switch_sctx].
     sctx_cache: SctxCache,
     pub sample_expire: Spinlock<Option<u64>>,
+    /// The timeout that wakes this thread for a pending force-exit. Held so `exit` can release it:
+    /// left to fire, its reference can be the last one, dropped in the timer interrupt.
+    exit_wake_key: Spinlock<Option<crate::clock::TimeoutKey>>,
     pub self_reference: UnsafeCell<*mut ThreadRef>,
     pub pending_message: AtomicU64,
     /// Upcalls generated since the thread last returned to userspace. See `send_upcall`.
@@ -126,6 +129,9 @@ pub struct Thread {
     /// kernel bounds that -- `send_upcall`'s cap only covers the `Err(upcall)` path.
     pub last_pf_count: AtomicU32,
     mutex_count: AtomicU32,
+    /// Donated priority (raw, `u32::MAX` for none) when `mutex_count` last left zero: what the
+    /// release that brings it back to zero restores.
+    mutex_base_donation: AtomicU32,
     /// Consecutive orphan scans that found this thread on no queue. Written only by the scanning
     /// cpu. See `check_orphan_threads`.
     offqueue_scans: AtomicU32,
@@ -321,6 +327,12 @@ pub fn current_memory_context() -> Option<ContextRef> {
         .flatten()
 }
 
+/// [`current_memory_context`] without the clone. The field is fixed at creation, and every thread
+/// of a process bouncing one refcount on each syscall showed in the 2N pingpong profile.
+pub fn current_memory_context_ref() -> Option<&'static ContextRef> {
+    current_thread_ref().and_then(|t| t.memory_context.as_ref())
+}
+
 impl Thread {
     pub fn new(
         ctx: Option<ContextRef>,
@@ -375,6 +387,7 @@ impl Thread {
             // spawning thread when it clones the attachment set.
             sctx_cache: SctxCache::new(KERNEL_SCTX, &kernel_sctx()),
             sample_expire: Spinlock::new(None),
+            exit_wake_key: Spinlock::new(None),
             self_reference: UnsafeCell::new(core::ptr::null_mut()),
             sched: ThreadSched::default(),
             pending_message: AtomicU64::new(0),
@@ -391,6 +404,7 @@ impl Thread {
             sleep_word: [const { AtomicU64::new(0) }; 5],
             last_pf_flags: AtomicU32::new(0),
             mutex_count: AtomicU32::new(0),
+            mutex_base_donation: AtomicU32::new(u32::MAX),
             // Threads start executing in the kernel; jump_to_user() performs the matching exit.
             kernel_depth: AtomicU32::new(1),
         }
@@ -775,6 +789,11 @@ impl Thread {
         let Ok(slot): Result<Slot, _> = va.try_into() else {
             return false;
         };
+        // A region says nothing about its first page: that is the null page, never present, and
+        // reading it from here is a kernel-mode fault that comes back as another upcall.
+        if (addr as usize) % twizzler_abi::object::MAX_SIZE < twizzler_abi::object::NULLPAGE_SIZE {
+            return false;
+        }
         current_memory_context().is_some_and(|ctx| ctx.lookup_object(slot).is_some())
     }
 
@@ -952,12 +971,24 @@ impl Thread {
             // re-checked first (see `end_sync_sleep`), so a sleep that ended meanwhile is left
             // alone, and a target still mid-commit is critical and merely lands on the requeue list
             // for its own `claim_own_wakeup` to collect.
-            let _ = crate::clock::register_timeout_callback(
+            let key = crate::clock::register_timeout_callback(
                 crate::syscall::sync::force_exit_wake_ns(self),
                 crate::syscall::sync::thread_sync_cb_timeout,
                 self.clone(),
                 self.sync_sleep_gen(),
             );
+            // Released outside the spinlock: releasing drops the entry's reference.
+            let old = self.exit_wake_key.lock().replace(key);
+            if let Some(old) = old {
+                old.release();
+            }
+            // `exit` sets is_exiting before it takes the key, so one of us sees the other.
+            if self.is_exiting() {
+                let key = self.exit_wake_key.lock().take();
+                if let Some(key) = key {
+                    key.release();
+                }
+            }
             ipi_exec(
                 Destination::AllButSelf,
                 Box::new(|| schedule_resched()),
@@ -1240,6 +1271,10 @@ pub fn exit(code: u64) -> ! {
     th.end_sync_sleep();
     th.reset_sync_sleep();
     th.reset_sync_sleep_done();
+    let key = th.exit_wake_key.lock().take();
+    if let Some(key) = key {
+        key.release();
+    }
     th.sync_links.clear_all_references();
     // Disable interrupts for the entire exit sequence including schedule(), to
     // prevent an IPI from rescheduling this thread between cleanup and context switch.

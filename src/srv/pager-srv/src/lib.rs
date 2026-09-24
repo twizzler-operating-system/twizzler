@@ -31,6 +31,7 @@ mod helpers;
 mod memstore;
 mod nvme;
 mod physrw;
+mod placement;
 mod request_handle;
 mod threads;
 mod watchdog;

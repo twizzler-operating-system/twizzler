@@ -38,6 +38,38 @@ use crate::{
     syscall::object::count_handles,
 };
 
+const SLEEP_STRIPES: usize = 16;
+
+/// Multiplicative hash of the word index: parkers are same-size heap allocations at a fixed
+/// stride, and a modulus put every one of them in one stripe.
+fn stripe_index(offset: usize) -> usize {
+    ((offset >> 2).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (usize::BITS - 4)) as usize
+}
+
+pub(crate) struct SleepStripe {
+    /// Threads parked in `info`, readable *without* taking that mutex.
+    ///
+    /// Exists for [Object::wakeup_word]: a wake that finds nobody waiting is the common case --
+    /// every uncontended futex release takes it -- and discovering that used to cost a full
+    /// sleeping-`Mutex` acquire (an inner spinlock, an `Arc` clone, a mutex-count pair, a critical
+    /// section) to walk to an empty tree and walk back.
+    ///
+    /// **Ordering.** The claim is `fetch_add`ed *before* the word is read under the lock, not
+    /// after the insert, and that order is the whole correctness argument. Waker and sleeper form
+    /// the usual Dekker pair -- waker stores the word then loads this; sleeper increments this
+    /// then loads the word -- so under `SeqCst` a waker that reads zero is ordered before the
+    /// sleeper's increment, hence before its word read, so the sleeper sees the new value and
+    /// declines to sleep. Incrementing after the word read inverts the pair and loses wakes.
+    ///
+    /// **Bias.** Every discrepancy here is deliberately upward. The overflow path in
+    /// `SleepInfo::insert` drains entries via `SleepEntry::drop` without decrementing, and a
+    /// `fetch_sub` underflow would wrap high rather than to zero. Both leave the count nonzero for
+    /// an object that has none, which costs the fast path and nothing else; the opposite error
+    /// would be a lost wakeup.
+    pub(crate) sleepers: AtomicUsize,
+    pub(crate) info: Mutex<SleepInfo>,
+}
+
 pub mod control;
 pub mod data;
 pub mod id;
@@ -73,28 +105,10 @@ pub struct Object {
     /// See [PtHome]. `Option` only so [Object::drop] can take them: `Some` for the whole life of
     /// every reachable object. Reach it via [Object::page_tables].
     tables: Option<Box<PtHome>>,
-    /// Lazily allocated: see [`sleep_info`](Object::sleep_info).
-    sleep_slot: Once<Box<Mutex<SleepInfo>>>,
-    /// Threads parked anywhere in `sleep_info`, readable *without* taking that mutex.
-    ///
-    /// Exists for [Object::wakeup_word]: a wake that finds nobody waiting is the common case --
-    /// every uncontended futex release takes it -- and discovering that used to cost a full
-    /// sleeping-`Mutex` acquire (an inner spinlock, an `Arc` clone, a mutex-count pair, a critical
-    /// section) to walk to an empty tree and walk back.
-    ///
-    /// **Ordering.** The claim is `fetch_add`ed *before* the word is read under the lock, not
-    /// after the insert, and that order is the whole correctness argument. Waker and sleeper form
-    /// the usual Dekker pair -- waker stores the word then loads this; sleeper increments this
-    /// then loads the word -- so under `SeqCst` a waker that reads zero is ordered before the
-    /// sleeper's increment, hence before its word read, so the sleeper sees the new value and
-    /// declines to sleep. Incrementing after the word read inverts the pair and loses wakes.
-    ///
-    /// **Bias.** Every discrepancy here is deliberately upward. The overflow path in
-    /// `SleepInfo::insert` drains entries via `SleepEntry::drop` without decrementing, and a
-    /// `fetch_sub` underflow would wrap high rather than to zero. Both leave the count nonzero for
-    /// an object that has none, which costs the fast path and nothing else; the opposite error
-    /// would be a lost wakeup.
-    sleepers: AtomicUsize,
+    /// Striped by word and built on first sleep: sixteen parkers on distinct words of one heap
+    /// object serialised on a single mutex (~900k lost acquisitions per 5 s of a 16-thread
+    /// pingpong, 90% of all wakes), and shared one sleeper count between every cpu.
+    sleep_slots: [Once<Box<SleepStripe>>; SLEEP_STRIPES],
     /// Lazily allocated: see [`add_device_interrupt`](Object::add_device_interrupt). Every read
     /// site is already behind `OBJ_HAS_INTERRUPTS`, which only that function sets.
     device_interrupt_info: Once<Box<[(AtomicU64, AtomicU64); NUM_DEVICE_INTERRUPTS]>>,
@@ -299,7 +313,11 @@ impl Object {
     /// here is that skip's smoking gun; the count is biased upward (see the field), so zero is the
     /// one value it must never show while anyone is parked.
     pub fn sleeper_count(&self) -> usize {
-        self.sleepers.load(Ordering::SeqCst)
+        self.sleep_slots
+            .iter()
+            .filter_map(|s| s.poll())
+            .map(|s| s.sleepers.load(Ordering::SeqCst))
+            .sum()
     }
 
     /// Caller must hold this object's page-table lock; see the [`map_count`](Object::map_count)
@@ -465,17 +483,14 @@ impl Object {
             core::panic::Location::caller()
         );
         let device_interrupt_info = Once::new();
-        let sleep_slot = Once::new();
         device_interrupt_info.call_once(|| {
             Box::new([const { (AtomicU64::new(0), AtomicU64::new(0)) }; NUM_DEVICE_INTERRUPTS])
         });
-        sleep_slot.call_once(|| Box::new(Mutex::new(SleepInfo::new(id))));
         let this = Self {
             id,
             flags: AtomicU32::new(0),
             tables: Some(Box::new(PtHome::new())),
-            sleep_slot,
-            sleepers: AtomicUsize::new(0),
+            sleep_slots: [const { Once::new() }; SLEEP_STRIPES],
             map_count: AtomicUsize::new(0),
             pin_info: Mutex::new(PinInfo::default()),
             ties: ties.to_vec(),
@@ -491,21 +506,19 @@ impl Object {
         this
     }
 
-    /// This object's sleep-word table, built on first use.
+    /// The sleep-word stripe for `offset`, built on first use.
     ///
-    /// Every object used to carry one inline, and it is 1,920 bytes -- 45% of the 4,288-byte
-    /// `Object` -- almost all of it a 32-slot `FnvIndexMap` that stays empty for every object that
-    /// nobody ever sleeps on. `Arc::new(Object)` measured 1,017 ns of the 6.1 us
-    /// `sys_object_create` costs, and it is a heap allocation plus a memcpy of exactly this
-    /// struct.
-    ///
-    /// The allocation lands on the first *sleep*, which is a path that is about to block anyway.
-    /// The wake path never reaches here on an object with no sleepers: `wakeup_word` returns at its
-    /// `sleepers == 0` check, which is the same guard that already existed to keep an uncontended
-    /// futex release out of this mutex.
-    pub(crate) fn sleep_info(&self) -> &Mutex<SleepInfo> {
-        self.sleep_slot
-            .call_once(|| Box::new(Mutex::new(SleepInfo::new(self.id))))
+    /// A `SleepInfo` is ~2 KB, almost all of it a 32-slot `FnvIndexMap` that stays empty for every
+    /// object nobody sleeps on, so building all sixteen at create would put ~30 KB on every object.
+    /// The allocation lands on the first *sleep* on the stripe, a path about to block anyway; the
+    /// wake path uses [`Object::sleep_stripe_if_present`] and never allocates.
+    pub(crate) fn sleep_stripe(&self, offset: usize) -> &SleepStripe {
+        self.sleep_slots[stripe_index(offset)].call_once(|| {
+            Box::new(SleepStripe {
+                sleepers: AtomicUsize::new(0),
+                info: Mutex::new(SleepInfo::new(self.id)),
+            })
+        })
     }
 
     /// This object's device-interrupt table, built on first use.
@@ -526,8 +539,8 @@ impl Object {
     ///
     /// For paths that only remove or wake: an object that has never been slept on has nothing for
     /// them to find, and allocating to discover that would be backwards.
-    pub(crate) fn sleep_info_if_present(&self) -> Option<&Mutex<SleepInfo>> {
-        self.sleep_slot.poll().map(|b| &**b)
+    pub(crate) fn sleep_stripe_if_present(&self, offset: usize) -> Option<&SleepStripe> {
+        self.sleep_slots[stripe_index(offset)].poll().map(|b| &**b)
     }
 
     pub fn new_kernel_with_id(id: ObjID) -> Arc<Self> {

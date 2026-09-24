@@ -457,6 +457,11 @@ impl QemuCommand {
                     self.cmd.arg("-machine").arg("virt");
                     self.cmd.arg("-cpu").arg("cortex-a72");
                 }
+                // The aarch64 stand-in for isa-debug-exit: the kernel's debug shutdown exits
+                // through semihosting SYS_EXIT_EXTENDED with the same (code << 1) | 1 status.
+                self.cmd
+                    .arg("-semihosting-config")
+                    .arg("enable=on,target=native");
                 self.cmd.arg("-nographic");
             }
         }

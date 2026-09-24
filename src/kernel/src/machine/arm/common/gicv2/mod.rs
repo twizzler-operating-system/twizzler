@@ -66,16 +66,23 @@ impl GICv2 {
         self.global.enable_interrupt(int_id);
     }
 
+    pub fn disable_interrupt(&self, int_id: u32) {
+        self.global.disable_interrupt(int_id);
+    }
+
     /// Programs the interrupt controller to be able to route
     /// a given interrupt to a particular core.
     pub fn route_interrupt(&self, int_id: u32, core: u32) {
-        // route the interrupt to a corresponding core
-        self.global.set_interrupt_target(int_id, core);
+        self.route_interrupt_to(int_id, 1u8 << core);
+    }
+
+    /// Route an SPI to every cpu interface set in `targets`; GICv2 delivers it to one of them.
+    pub fn route_interrupt_to(&self, int_id: u32, targets: u8) {
+        self.global.set_interrupt_target(int_id, targets);
         // TODO: have the priority set to something reasonable
         // set the priority for the corresponding interrupt
         self.global
             .set_interrupt_priority(int_id, GICD::HIGHEST_PRIORITY);
-        // TODO: edge triggered or level sensitive??? see GICD_ICFGRn
     }
 
     /// Returns the pending interrupt ID from the controller, and

@@ -623,6 +623,8 @@ fn do_syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
                 crate::memory::context::virtmem::fault::print_fault_profile();
                 crate::pager::print_pager_profile();
                 crate::processor::sched::wakestats::print();
+                crate::interrupt::routestats::print();
+                crate::clock::timerstats::print();
                 crate::processor::sched::wakesrc::print();
                 crate::processor::sched::print_kernel_threads();
                 crate::memory::frame::politestats::print();

@@ -55,9 +55,11 @@ impl FromStr for BootMethod {
 
 /// The arguments needed to start a CPU.
 ///
-/// `repr(C)`: `psci_secondary_entry` reads these fields from assembly, by offset.
+/// `repr(C)`: `psci_secondary_entry` reads these fields from assembly, by offset. Aligned so the
+/// struct never straddles a page: the secondary reads it with the MMU off from the physical
+/// address of its start, and the kernel heap is not physically contiguous across pages.
 #[derive(Debug, Default, Copy, Clone)]
-#[repr(C)]
+#[repr(C, align(128))]
 pub struct BootArgs {
     /// System-wide ID of this CPU core
     cpu: u32,
@@ -79,6 +81,8 @@ pub struct BootArgs {
     /// outside the kernel's identity map, so the stub swaps in this before `eret`.
     self_va: u64,
 }
+
+const _: () = assert!(core::mem::size_of::<BootArgs>() <= 128);
 
 /// Start up a CPU.
 /// # Safety

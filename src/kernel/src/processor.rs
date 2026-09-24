@@ -1,5 +1,8 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::{
+    ptr::NonNull,
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+};
 
 use ipi::IpiTask;
 use rq::{NR_QUEUES, RunQueue};
@@ -93,6 +96,10 @@ pub struct ProcessorStats {
     pub pick_lowest: AtomicU64,
     pub pick_fallback: AtomicU64,
     pub pick_migrate: AtomicU64,
+    /// Wakes kept on the waking cpu (`select_cpu` step 1b).
+    pub pick_affine: AtomicU64,
+    /// Threads made runnable by a wake issued on this cpu; see `sched::wakesrc::total`.
+    pub thread_wakes: AtomicU64,
 }
 
 pub struct Processor {
@@ -109,6 +116,9 @@ pub struct Processor {
     exited: Spinlock<Vec<ThreadRef>>,
     /// Deepest this cpu's cleanup list has ever been. See [`Processor::push_exited`].
     exited_max: AtomicUsize,
+    /// The kernel stack of the last thread to exit on this cpu, detached at its final switch and
+    /// freed at this cpu's next scheduler entry. See [`Processor::park_exited_stack`].
+    exited_stack: AtomicPtr<u8>,
     is_idle: AtomicBool,
     must_rebalance: AtomicBool,
     /// This cpu's syscall timings and profile. Per-cpu so the kernel-exit path takes no globally
@@ -150,6 +160,7 @@ impl Processor {
             ipi_tasks: Spinlock::new(Vec::new()),
             exited: Spinlock::new(Vec::new()),
             exited_max: AtomicUsize::new(0),
+            exited_stack: AtomicPtr::new(core::ptr::null_mut()),
             current_priority: AtomicU32::new(0),
         }
     }
@@ -248,13 +259,39 @@ impl Processor {
             ex.push(th);
             ex.len()
         };
-        EXITED_BACKLOG.fetch_add(1, Ordering::Relaxed);
+        let backlog = EXITED_BACKLOG.fetch_add(1, Ordering::Relaxed) + 1;
+        EXITED_BACKLOG_MAX.fetch_max(backlog, Ordering::Relaxed);
         crate::thread::reaper::notify();
         // Per-cpu, because "reaping everywhere is slow" and "reaping stopped on one cpu" produce
         // the same global byte count and want different fixes. A cpu that halts without reaching
         // the reap call again shows a watermark that never comes down; a pacing shortfall shows
         // similar watermarks on every cpu.
         self.exited_max.fetch_max(len, Ordering::Relaxed);
+    }
+
+    /// Detach `old`'s kernel stack at its final switch, which is running on it, and free the one
+    /// parked by the previous exit here.
+    ///
+    /// A stack used to live until the reaper dropped its `Thread`, and a spawn storm outran the
+    /// reaper by thousands of threads: 2 MiB each, until the heap could not grow. Parked here it
+    /// is freed at this cpu's next [`release_exited_stack`](Self::release_exited_stack), which is
+    /// sequentially after `old`'s `__do_switch` on this same cpu with interrupts off throughout,
+    /// so nothing can still be on it -- no cross-cpu predicate, and no `ThreadRef` is held, so no
+    /// `Thread::drop` runs here.
+    pub fn park_exited_stack(&self, old: &Thread) {
+        if let Some(stack) = old.kernel_stack.detach() {
+            self.release_exited_stack();
+            self.exited_stack.store(stack.as_ptr(), Ordering::Release);
+        }
+    }
+
+    pub fn release_exited_stack(&self) {
+        if let Some(stack) = NonNull::new(
+            self.exited_stack
+                .swap(core::ptr::null_mut(), Ordering::AcqRel),
+        ) {
+            crate::thread::kstack::release(stack);
+        }
     }
 
     pub fn cleanup_exited(&self) {
@@ -361,6 +398,8 @@ impl Processor {
 /// `nr_pending_exit` can see them: `exit` removes the thread from `ALL_THREADS` before pushing it
 /// here.
 pub static EXITED_BACKLOG: AtomicUsize = AtomicUsize::new(0);
+/// High-water mark of [`EXITED_BACKLOG`]: how far reaping fell behind, printed at panic.
+pub static EXITED_BACKLOG_MAX: AtomicUsize = AtomicUsize::new(0);
 /// Threads reaped since boot. Read against the backlog: flat while the backlog is non-zero means
 /// reaping has stopped, not that it is behind.
 pub static REAPED: AtomicUsize = AtomicUsize::new(0);
@@ -394,8 +433,9 @@ pub fn report_exited_backlog() {
         }
     }
     logln!(
-        "[reap] backlog={} reaped={} livestack={}{}",
+        "[reap] backlog={} max={} reaped={} livestack={}{}",
         total,
+        EXITED_BACKLOG_MAX.load(Ordering::Relaxed),
         REAPED.load(Ordering::Relaxed),
         live_stack,
         line

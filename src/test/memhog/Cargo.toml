@@ -1,0 +1,10 @@
+[package]
+name = "memhog"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+twizzler-abi = { path = "../../lib/twizzler-abi" }
+
+[package.metadata]
+twizzler-build = "test"

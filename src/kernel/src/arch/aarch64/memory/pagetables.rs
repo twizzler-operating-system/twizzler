@@ -2,6 +2,7 @@ mod consistency;
 mod entry;
 mod mair;
 mod table;
+mod tests;
 
 pub use consistency::{ArchCacheLineMgr, ArchTlbMgr, PendingShootdown};
 pub use entry::{Entry, EntryFlags};

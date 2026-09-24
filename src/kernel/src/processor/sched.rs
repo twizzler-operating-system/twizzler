@@ -235,6 +235,17 @@ impl CPUTopoNode {
         self.children[path] = node;
     }
 
+    /// Point every descendant's `parent` at its node's final address. `add_child` stores the
+    /// parent's address at insert, but a later insert into the same `children` grows it and moves
+    /// every earlier sibling, leaving their children pointing at freed memory.
+    pub fn fix_parents(&mut self) {
+        let me = self as *mut CPUTopoNode;
+        for child in self.children.iter_mut() {
+            child.parent = AtomicPtr::new(me);
+            child.fix_parents();
+        }
+    }
+
     pub fn parent(&self) -> Option<&CPUTopoNode> {
         unsafe { self.parent.load(Ordering::SeqCst).as_ref() }
     }
@@ -419,7 +430,8 @@ fn choose_cpu_balance(node: &CPUTopoNode, allowed_set: &CpuSet) -> Option<Balanc
 
             if jload > highest_load.1 {
                 highest_load = (processor.id, jload);
-            } else if jload < lowest_load.1 {
+            }
+            if jload < lowest_load.1 {
                 lowest_load = (processor.id, jload);
             }
         }
@@ -510,7 +522,10 @@ fn schedule_thread_on_cpu(
     // Resolved once for both uses below: each call is an Arc clone/drop pair.
     let cur = current_thread_ref();
     let is_reinsertion = cur.as_ref().is_some_and(|cur| cur.id() == thread.id());
-    if is_reinsertion {
+    // Stamped on a wake too. The deadline measures waiting for a cpu; left at its switch-out value
+    // it measured the sleep, so any batch thread that slept past a slice woke boosted over the
+    // interactivity score. A batch wake already goes to the front of the calendar.
+    if is_reinsertion || (is_wake && thread.base_priority().class == PriorityClass::User) {
         set_deadline(&thread, processor);
     }
     // A thread the insert below files in the realtime queue -- past its deadline, i.e. it has
@@ -661,8 +676,10 @@ fn admit_on(th: ThreadRef, cpu: u32) -> Option<ThreadRef> {
     if th.sched.affinity.allows(cpu) {
         return Some(th);
     }
-    let cpuid = select_cpu(&th, Some(cpu));
-    schedule_thread_on_cpu(th, get_processor(cpuid), false, false, false);
+    let cpuid = select_cpu(&th, Some(cpu), false);
+    // As preempted, so the drain slot takes it back: it was taken off a queue it had waited in,
+    // and filing it at the calendar's back cost a pinned head its turn on every steal attempt.
+    schedule_thread_on_cpu(th, get_processor(cpuid), false, false, true);
     None
 }
 
@@ -754,7 +771,9 @@ fn balance_node(node: &CPUTopoNode, steps: &mut usize) {
         {
             let donor = get_processor(result.donor);
             let recipient = get_processor(result.recipient);
-            if donor.current_load() == 0 {
+            // A move needs a gap of two: at one it only swaps which cpu is short, and at equal
+            // loads each pass shuffled 2/2 to 1/3 and back, evicting the donor's runner each time.
+            if donor.current_load() <= recipient.current_load() + 1 {
                 break;
             }
 
@@ -791,7 +810,7 @@ fn balance_node(node: &CPUTopoNode, steps: &mut usize) {
     }
 }
 
-fn select_cpu(thread: &ThreadRef, try_avoid: Option<u32>) -> u32 {
+fn select_cpu(thread: &ThreadRef, try_avoid: Option<u32>, is_wake: bool) -> u32 {
     /* TODO: take SMT into acount */
     let affinity = &thread.sched.affinity;
     let stats = &current_processor().stats;
@@ -816,6 +835,32 @@ fn select_cpu(thread: &ThreadRef, try_avoid: Option<u32>) -> u32 {
         if processor.is_idle() || pri > processor.current_priority() {
             stats.pick_last_warm.fetch_add(1, Ordering::Relaxed);
             return last;
+        }
+    }
+
+    /* 1b: a wake from a cpu with nothing queued, when the last cpu is busy: the waker is usually
+     * about to block on the reply, and its cpu then runs the wakee at once, with no IPI and no
+     * idle exit. Linux and FreeBSD pack hand-off pairs this way; without it every hop of a 2N
+     * pingpong was a cross-cpu wake. A waker that keeps running holds the wakee at most
+     * `WAKE_GRAN_NS`. Only a User thread's own wake counts: a timer irq, the hardtick drain or a
+     * realtime waker is not about to block, and piled cold sleepers onto whatever cpu took it. */
+    if is_wake
+        && crate::wake_affine()
+        && crate::interrupt::get()
+        && current_thread_ref().is_some_and(|cur| {
+            !cur.is_idle_thread() && cur.effective_priority().class == PriorityClass::User
+        })
+    {
+        let here = current_processor();
+        if here.rq.is_empty()
+            && affinity.allows(here.id)
+            && try_avoid.is_none_or(|ta| ta != here.id)
+        {
+            stats.pick_affine.fetch_add(1, Ordering::Relaxed);
+            if last.is_some_and(|l| l != here.id) {
+                stats.pick_migrate.fetch_add(1, Ordering::Relaxed);
+            }
+            return here.id;
         }
     }
 
@@ -864,7 +909,8 @@ fn select_cpu(thread: &ThreadRef, try_avoid: Option<u32>) -> u32 {
         // Nothing will run it at once. Cold or not, the last cpu keeps it if it is no busier
         // than the pick: whatever survives in its caches is free, a migration is not.
         if let Some(last) = last.filter(|_| !flat) {
-            if get_processor(last).current_load() <= res.load / 256 {
+            // `res.load` is load*256 less up to 127 of jitter; compare in the same units.
+            if get_processor(last).current_load() * 256 <= res.load + 127 {
                 stats.pick_last_cold.fetch_add(1, Ordering::Relaxed);
                 return last;
             }
@@ -1067,7 +1113,7 @@ pub fn schedule_new_thread(thread: Thread) -> ThreadRef {
             thread.recompute_user_priority();
         }
     }
-    let cpuid = select_cpu(&thread, None);
+    let cpuid = select_cpu(&thread, None, false);
     let processor = get_processor(cpuid);
     // A thread that has never run has no wait to be owed for. Without a stamp its zero
     // deadline reads as expired and every spawn jumps the calendar, which ran the child ahead
@@ -1163,7 +1209,7 @@ pub fn schedule_thread(thread: ThreadRef) {
         .stats
         .wakeups
         .fetch_add(1, Ordering::Relaxed);
-    let cpuid = select_cpu(&thread, None);
+    let cpuid = select_cpu(&thread, None, true);
     let processor = get_processor(cpuid);
     log::trace!(
         "{} on {} (load = {},{}): picked {} (load = {},{}) for thread {}",
@@ -1248,10 +1294,17 @@ fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
     let wake_ticks = thread.sched.wake_ticks.swap(0, Ordering::Relaxed);
     if wake_ticks != 0 {
         let kind = thread.sched.wake_kind.swap(0, Ordering::Relaxed);
-        wakestats::wake_to_run(
-            kind,
-            crate::instant::Instant::now().ns_since_ticks(wake_ticks),
-        );
+        let lat = crate::instant::Instant::now().ns_since_ticks(wake_ticks);
+        wakestats::wake_to_run(kind, lat);
+        if lat > wakestats::SLOW_WAKE_NS {
+            wakestats::slow_wake(
+                thread.id(),
+                kind,
+                lat,
+                thread.sched.queue_note.load(Ordering::Relaxed),
+                cp.id,
+            );
+        }
     }
     let oldcpu = thread.sched.moving_to_active(cp.id);
     thread.sched.stamp_switch_in(now_ns);
@@ -1312,6 +1365,11 @@ fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
     // `Box<ThreadRef>` self-reference -- installed in schedule_new_thread/create_idle_thread and
     // reclaimed only by Processor::cleanup_exited once the thread has exited -- always holds
     // another strong ref.
+    // Its final switch: an exiting thread is never reinserted, so it will not run again.
+    if old.is_exiting() && !flags.contains(SchedFlags::REINSERT) {
+        cp.park_exited_stack(old);
+    }
+
     let threadt = Arc::into_raw(thread);
     unsafe {
         Arc::decrement_strong_count(threadt);
@@ -1337,6 +1395,7 @@ fn rq_has_higher<const N: usize>(thread: &ThreadRef, rq: &RunQueue<N>, eq: bool)
 fn do_schedule(flags: SchedFlags) {
     let cur = current_thread_ref().unwrap();
     let processor = current_processor();
+    processor.release_exited_stack();
     // Why `cur` is leaving, charged only if a switch actually happens below.
     let reason = if cur.is_exiting() {
         &processor.stats.switch_exit
@@ -1386,7 +1445,7 @@ fn do_schedule(flags: SchedFlags) {
             || rq_has_higher(cur, &processor.rq, flags.contains(SchedFlags::YIELD))
         {
             let cpuid = if processor.must_rebalance() || disallowed_here {
-                select_cpu(&cur, Some(processor.id))
+                select_cpu(&cur, Some(processor.id), false)
             } else {
                 processor.id
             };
@@ -1483,6 +1542,14 @@ pub fn schedule(flags: SchedFlags) {
                 ),
             }
         }
+        interrupt::set(istate);
+        return;
+    }
+
+    // `exit` leaves only through its own final schedule, which does not reinsert. Switching an
+    // exiting thread away here would park it on the exited list for good, with the rest of its
+    // exit -- sleep-link and requeue cleanup -- never run.
+    if flags.contains(SchedFlags::REINSERT) && cur.is_exiting() {
         interrupt::set(istate);
         return;
     }
@@ -1700,10 +1767,12 @@ pub mod wakesrc {
     /// The `&'static Location` itself, as a pointer, is the key: two call sites never share one.
     static SITES: [AtomicUsize; NR] = [ZERO_U; NR];
     static COUNTS: [AtomicU64; NR] = [ZERO; NR];
-    static TOTAL: AtomicU64 = AtomicU64::new(0);
 
     pub fn note(loc: &'static Location<'static>) {
-        TOTAL.fetch_add(1, Ordering::Relaxed);
+        crate::processor::mp::current_processor()
+            .stats
+            .thread_wakes
+            .fetch_add(1, Ordering::Relaxed);
         if !crate::kdiag_wake() {
             return;
         }
@@ -1730,7 +1799,11 @@ pub mod wakesrc {
     /// only that: `schedule_resched` charges reschedule requests to `wakeups` as well, so the two
     /// differ by roughly the preempt count.
     pub fn total() -> u64 {
-        TOTAL.load(Ordering::Relaxed)
+        let mut total = 0;
+        crate::processor::mp::with_each_active_processor(|p| {
+            total += p.stats.thread_wakes.load(Ordering::Relaxed)
+        });
+        total
     }
 
     pub fn print() {
@@ -1761,6 +1834,8 @@ pub mod wakesrc {
     }
 }
 
+/// Counted only under `--diag=wake`: these are global lines, and every wake in the system wrote
+/// two of them.
 pub mod wakestats {
     use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -1780,7 +1855,103 @@ pub mod wakestats {
     static RESCHED_CRITICAL: AtomicU64 = AtomicU64::new(0);
     static RESCHED_ASKED: AtomicU64 = AtomicU64::new(0);
 
+    /// Where an insert filed a thread, packed on it for the slow-wake ring: which structure,
+    /// its value, the calendar's insert/drain offsets, the slot, and the queue's cpu.
+    pub const NOTE_RT_ORDERED: u8 = 1;
+    pub const NOTE_TS_FRONT: u8 = 3;
+    pub const NOTE_TS_DRAIN: u8 = 4;
+    pub const NOTE_TS_CALENDAR: u8 = 5;
+    pub const NOTE_TS_CLAMPED: u8 = 6;
+    pub const NOTE_RT_CLASS: u8 = 7;
+    const NOTE_NAMES: [&str; 8] = [
+        "-",
+        "rt-ordered",
+        "-",
+        "ts-front",
+        "ts-drain",
+        "ts-calendar",
+        "ts-clamped",
+        "rt-class",
+    ];
+
+    pub fn queue_note(
+        kind: u8,
+        th: &crate::thread::Thread,
+        ins: usize,
+        deq: usize,
+        idx: usize,
+    ) -> u64 {
+        let pri = th.get_stable_effective_priority();
+        let cpu = th.sched.current_cpu_rq().unwrap_or(0xff);
+        kind as u64
+            | (pri.value as u64 & 0xff) << 8
+            | (ins as u64 & 0xff) << 16
+            | (deq as u64 & 0xff) << 24
+            | (idx as u64 & 0xff) << 32
+            | (cpu as u64 & 0xff) << 40
+            | (th.interact.score() as u64 & 0xff) << 48
+            | (th.interact.is_interactive() as u64) << 56
+    }
+
+    /// A wake that took longer than this to reach a cpu is recorded in `SLOW`.
+    pub const SLOW_WAKE_NS: u64 = 20_000_000;
+    const SLOW_NR: usize = 24;
+    static SLOW: [[AtomicU64; 5]; SLOW_NR] = [const { [const { AtomicU64::new(0) }; 5] }; SLOW_NR];
+    static SLOW_N: AtomicU64 = AtomicU64::new(0);
+
+    pub fn slow_wake(id: u64, kind: u32, ns: u64, note: u64, cpu: u32) {
+        let i = SLOW_N.fetch_add(1, Ordering::Relaxed) as usize % SLOW_NR;
+        SLOW[i][0].store(id, Ordering::Relaxed);
+        SLOW[i][1].store(kind as u64, Ordering::Relaxed);
+        SLOW[i][2].store(ns, Ordering::Relaxed);
+        SLOW[i][3].store(note, Ordering::Relaxed);
+        SLOW[i][4].store(cpu as u64, Ordering::Relaxed);
+    }
+
+    fn print_slow() {
+        let n = SLOW_N.load(Ordering::Relaxed);
+        if n == 0 {
+            return;
+        }
+        logln!(
+            "== slow wakes (>{} ms): {} (last {} shown) ==",
+            SLOW_WAKE_NS / 1_000_000,
+            n,
+            n.min(SLOW_NR as u64)
+        );
+        let first = n.saturating_sub(SLOW_NR as u64);
+        for j in first..n {
+            let e = &SLOW[j as usize % SLOW_NR];
+            let note = e[3].load(Ordering::Relaxed);
+            let kind = (note & 0xff) as usize;
+            let ins = (note >> 16) & 0xff;
+            let deq = (note >> 24) & 0xff;
+            let idx = (note >> 32) & 0xff;
+            let dist = (idx + 128 - deq) % 128;
+            logln!(
+                "  thread {} wake-kind {} {} ms: filed {} value {} score {} interactive {} slot {} \
+                 (ins {} deq {} dist {}) on rq cpu {}, ran on cpu {}",
+                e[0].load(Ordering::Relaxed),
+                e[1].load(Ordering::Relaxed),
+                e[2].load(Ordering::Relaxed) / 1_000_000,
+                NOTE_NAMES[kind.min(NOTE_NAMES.len() - 1)],
+                (note >> 8) & 0xff,
+                (note >> 48) & 0xff,
+                (note >> 56) & 1,
+                idx,
+                ins,
+                deq,
+                dist,
+                (note >> 40) & 0xff,
+                e[4].load(Ordering::Relaxed),
+            );
+        }
+    }
+
     pub fn local(marked: bool, cur_idle: bool) {
+        if !crate::kdiag_wake() {
+            return;
+        }
         LOCAL.fetch_add(1, Ordering::Relaxed);
         if cur_idle {
             CUR_IDLE.fetch_add(1, Ordering::Relaxed);
@@ -1792,6 +1963,9 @@ pub mod wakestats {
     }
 
     pub fn remote(signalled: bool) {
+        if !crate::kdiag_wake() {
+            return;
+        }
         REMOTE.fetch_add(1, Ordering::Relaxed);
         if signalled {
             REMOTE_SIGNALLED.fetch_add(1, Ordering::Relaxed);
@@ -1802,10 +1976,16 @@ pub mod wakestats {
     static HOLDER_SPARED: AtomicU64 = AtomicU64::new(0);
 
     pub fn holder_spared() {
+        if !crate::kdiag_wake() {
+            return;
+        }
         HOLDER_SPARED.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn preempt(taken: bool) {
+        if !crate::kdiag_wake() {
+            return;
+        }
         if taken {
             PREEMPT_TAKEN.fetch_add(1, Ordering::Relaxed);
         } else {
@@ -1814,6 +1994,9 @@ pub mod wakestats {
     }
 
     pub fn resched(critical: bool) {
+        if !crate::kdiag_wake() {
+            return;
+        }
         RESCHED_ASKED.fetch_add(1, Ordering::Relaxed);
         if critical {
             RESCHED_CRITICAL.fetch_add(1, Ordering::Relaxed);
@@ -1927,6 +2110,7 @@ pub mod wakestats {
         );
         print_lat("new-local", WAKE_NEW_LOCAL as usize);
         print_lat("new-remote", WAKE_NEW_REMOTE as usize);
+        print_slow();
     }
 }
 

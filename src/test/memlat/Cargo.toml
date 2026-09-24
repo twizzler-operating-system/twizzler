@@ -1,0 +1,10 @@
+[package]
+name = "memlat"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+twizzler-runtime = { path = "../../rt" }
+
+[package.metadata]
+twizzler-build = "test"

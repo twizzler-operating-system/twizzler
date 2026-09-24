@@ -134,9 +134,10 @@ pub fn write(data: &[u8], _flags: crate::log::KernelConsoleWriteFlags, _debug: b
 }
 
 pub fn serial_interrupt_handler() {
-    let byte = serial().rx_byte();
-    if let Some(x) = byte {
+    // Clear before draining: reading DR lets qemu deliver the next byte of a burst immediately, and a
+    // clear after the read would drop that byte's interrupt, stranding it (and all input after it).
+    serial().clear_rx_interrupt();
+    while let Some(x) = serial().rx_byte() {
         crate::log::push_input_byte(x, false);
     }
-    serial().clear_rx_interrupt();
 }

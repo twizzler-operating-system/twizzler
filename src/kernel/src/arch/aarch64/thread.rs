@@ -186,6 +186,9 @@ impl Thread {
     /// boot cpu, idle) is told by its saved sp and skipped.
     pub fn kernel_stack_overflowed(&self, sp: u64) -> bool {
         let base = self.kernel_stack.as_ptr() as u64;
+        if base == 0 {
+            return false;
+        }
         let size = KERNEL_STACK_SIZE as u64;
         let own = self.arch.context.sp;
         own >= base && own < base + size && sp < base && sp + size > base
@@ -239,11 +242,6 @@ impl Thread {
         }
     }
 
-    // this does not need to be pub, might not needed for aarch64
-    pub unsafe fn init_va(&mut self, _jmptarget: u64) {
-        todo!()
-    }
-
     pub unsafe fn init(&mut self, entry: extern "C" fn()) {
         let stack = new_stack_top(self.kernel_stack.as_ptr() as usize, KERNEL_STACK_SIZE);
         // set the stack pointer as the last thing context (x30 + 1)
@@ -262,49 +260,38 @@ impl Thread {
         0
     }
 
-    pub fn read_ip(&self) -> u64 {
-        let mut frame: Option<UpcallFrame> = *self.arch.upcall_restore_frame.borrow();
+    /// The user register state a sampler or debugger sees: the frame about to be restored, else
+    /// the registers saved at the last entry from EL0; `None` when there are neither. Read through
+    /// `as_ptr`, as on amd64: callers read other threads, and `borrow` would race the owner's
+    /// `borrow_mut` on the non-atomic borrow counter. A torn read costs a wrong sample.
+    fn user_frame(&self) -> Option<UpcallFrame> {
         unsafe {
-            if frame.is_none() {
-                frame = Some((**self.arch.entry_registers.borrow()).into());
+            if let Some(frame) = *self.arch.upcall_restore_frame.as_ptr() {
+                return Some(frame);
             }
+            let regs = *self.arch.entry_registers.as_ptr();
+            (!regs.is_null()).then(|| (*regs).into())
         }
-        frame.unwrap().pc
+    }
+
+    pub fn read_ip(&self) -> u64 {
+        self.user_frame().map_or(0, |f| f.pc)
     }
 
     /// Frame pointer (x29) at sampling time. Mirrors amd64's `read_bp`; without it the sampling
     /// path does not compile for this arch.
     pub fn read_bp(&self) -> u64 {
-        let mut frame: Option<UpcallFrame> = *self.arch.upcall_restore_frame.borrow();
-        unsafe {
-            if frame.is_none() {
-                frame = Some((**self.arch.entry_registers.borrow()).into());
-            }
-        }
-        frame.unwrap().x29
+        self.user_frame().map_or(0, |f| f.x29)
     }
 
     /// Stack pointer at sampling time. See `ThreadSamplingEvent::sp` for why a frameless leaf
     /// needs this rather than the frame pointer.
     pub fn read_di_cx(&self) -> (u64, u64) {
-        let mut frame: Option<UpcallFrame> = *self.arch.upcall_restore_frame.borrow();
-        unsafe {
-            if frame.is_none() {
-                frame = Some((**self.arch.entry_registers.borrow()).into());
-            }
-        }
-        let frame = frame.unwrap();
-        (frame.x0, frame.x2)
+        self.user_frame().map_or((0, 0), |f| (f.x0, f.x2))
     }
 
     pub fn read_sp(&self) -> u64 {
-        let mut frame: Option<UpcallFrame> = *self.arch.upcall_restore_frame.borrow();
-        unsafe {
-            if frame.is_none() {
-                frame = Some((**self.arch.entry_registers.borrow()).into());
-            }
-        }
-        frame.unwrap().sp
+        self.user_frame().map_or(0, |f| f.sp)
     }
 
     pub fn read_registers(&self) -> Result<ArchRegisters, TwzError> {
@@ -313,15 +300,10 @@ impl Thread {
                 twizzler_rt_abi::error::GenericError::AccessDenied,
             ));
         }
-        let mut frame: Option<UpcallFrame> = *self.arch.upcall_restore_frame.borrow();
-        unsafe {
-            if frame.is_none() {
-                frame = Some((**self.arch.entry_registers.borrow()).into());
-            }
-        }
-        Ok(ArchRegisters {
-            frame: frame.unwrap(),
-        })
+        let frame = self.user_frame().ok_or(TwzError::Generic(
+            twizzler_rt_abi::error::GenericError::AccessDenied,
+        ))?;
+        Ok(ArchRegisters { frame })
     }
 }
 
