@@ -300,6 +300,10 @@ pub struct SyscallEntryEvent {
     pub num: Syscall,
     /// Arguments.
     pub args: [u64; 6],
+    /// Return addresses from the user frame-pointer chain above the syscall, innermost first;
+    /// zero past the last frame that could be read. Always zero where the arch does not supply a
+    /// user frame pointer.
+    pub callers: [u64; 4],
 }
 
 /// Event data for system call entry.

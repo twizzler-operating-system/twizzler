@@ -60,6 +60,10 @@ pub trait SyscallContext {
     fn arg4<T: From<u64>>(&self) -> T;
     fn arg5<T: From<u64>>(&self) -> T;
     fn pc(&self) -> VirtAddr;
+    /// The user frame pointer at the syscall, or 0 where the entry path does not save it.
+    fn frame_pointer(&self) -> u64 {
+        0
+    }
     fn set_return_values<R1, R2>(&mut self, ret0: R1, ret1: R2)
     where
         u64: From<R1>,
@@ -959,6 +963,43 @@ fn entry_snapshot_wanted() -> bool {
         || TRACE_MGR.any_enabled(TraceKind::Thread, THREAD_SYSCALL_EXIT)
 }
 
+/// Return addresses up the user frame-pointer chain, for tracing. The kernel cannot unwind a
+/// fault it takes on a bad user address, so every frame is checked before it is read: aligned, in
+/// a readable mapped region, and clear of the object's null page and reserved top pages. The chain
+/// must also move strictly up the stack, which rules out loops.
+fn user_callers(mut fp: u64) -> [u64; 4] {
+    use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
+    let mut out = [0u64; 4];
+    let Some(vmc) = crate::thread::current_memory_context_ref() else {
+        return out;
+    };
+    for slot in out.iter_mut() {
+        let Ok(addr) = VirtAddr::new(fp) else { break };
+        let off = fp as usize % MAX_SIZE;
+        if fp % 8 != 0
+            || addr.is_kernel()
+            || off < NULLPAGE_SIZE
+            || off >= MAX_SIZE - 4 * NULLPAGE_SIZE
+        {
+            break;
+        }
+        let Some(region) = vmc.lookup_slot(fp as usize / MAX_SIZE) else {
+            break;
+        };
+        if !region.prot.contains(Protections::READ) || !region.range.contains(&addr) {
+            break;
+        }
+        let frame = fp as *const u64;
+        let (next, ret) = unsafe { (frame.read_volatile(), frame.add(1).read_volatile()) };
+        *slot = ret;
+        if next <= fp {
+            break;
+        }
+        fp = next;
+    }
+    out
+}
+
 pub fn syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
     // The counters want only the number, so it is read unconditionally and the rest is not.
     let num: Syscall = context.num().into();
@@ -975,6 +1016,7 @@ pub fn syscall_entry<T: SyscallContext + core::fmt::Debug>(context: &mut T) {
             context.arg4(),
             context.arg5(),
         ],
+        callers: user_callers(context.frame_pointer()),
     });
     if let Some(data) = data {
         trace_syscall_entry(data);

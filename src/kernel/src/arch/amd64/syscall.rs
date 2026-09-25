@@ -133,6 +133,10 @@ impl SyscallContext for X86SyscallContext {
         VirtAddr::new(self.rcx).unwrap()
     }
 
+    fn frame_pointer(&self) -> u64 {
+        self.rbp
+    }
+
     fn set_return_values<R1, R2>(&mut self, ret0: R1, ret1: R2)
     where
         u64: From<R1>,

@@ -233,6 +233,52 @@ pub fn stat(state: TracingState, raw_pcs: bool) {
 
         println!("collected {} syscalls", syscalls.len(),);
 
+        // ThreadSync by who called it: the syscall pc is the same wrapper for every caller, so
+        // the frame-pointer chain the kernel records is what attributes a storm of them.
+        // Offsets are slot-relative, ready for llvm-symbolizer against the named library.
+        // Library lists are per compartment and the slot map is the tracer's own view, so the
+        // traced context's map is what names a slot; its object id then matches a library.
+        let name_of_pc = |mctx: ObjID, pc: u64| -> String {
+            let slot = (pc >> 30) as usize;
+            let lib = sys_object_read_map(Some(mctx), slot)
+                .or_else(|_| sys_object_read_map(None, slot))
+                .ok()
+                .and_then(|mi| {
+                    state
+                        .comp_maps
+                        .iter()
+                        .flat_map(|c| c.libs.iter())
+                        .find(|l| l.objid == mi.id)
+                        .map(|l| l.name.clone())
+                        .or_else(|| Some(format!("obj:{:x}", mi.id.raw())))
+                })
+                .unwrap_or_else(|| format!("slot{}", slot));
+            format!("{}+{:x}", lib, pc & 0x3fff_ffff)
+        };
+        let mut chains = HashMap::<(ObjID, [u64; 4]), usize>::new();
+        for syscall in &syscalls {
+            if let Some(data) = syscall
+                .1
+                .and_then(|data| data.try_cast::<SyscallExitEvent>(THREAD_SYSCALL_EXIT))
+            {
+                if data.data.entry.num == twizzler_abi::syscall::Syscall::ThreadSync {
+                    *chains
+                        .entry((syscall.0.mctx, data.data.entry.callers))
+                        .or_default() += 1;
+                }
+            }
+        }
+        let mut chains = chains.into_iter().collect::<Vec<_>>();
+        chains.sort_by_key(|c| core::cmp::Reverse(c.1));
+        for ((mctx, callers), count) in chains.iter().take(20) {
+            let frames = callers
+                .iter()
+                .take_while(|pc| **pc != 0)
+                .map(|pc| name_of_pc(*mctx, *pc))
+                .collect::<Vec<_>>();
+            println!("SYNCCHAIN {:>7} {}", count, frames.join(" <- "));
+        }
+
         let mut coll = map.into_iter().collect::<Vec<_>>();
         coll.sort_by_cached_key(|c| c.1.values().fold(0, |a, v| a + v.1.len()));
 
