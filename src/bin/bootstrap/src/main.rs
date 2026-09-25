@@ -116,7 +116,7 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
 
     let monitor_compartment = ctx.get_compartment_mut(monitor_comp_id).unwrap();
     let tls = monitor_compartment
-        .build_tls_region((), |layout| unsafe {
+        .build_tls_region(MonitorThreadControl([0; 15]), |layout| unsafe {
             std::ptr::NonNull::new(std::alloc::alloc_zeroed(layout))
         })
         .unwrap();
@@ -183,6 +183,13 @@ fn start_runtime(_runtime_monitor: ObjID, _runtime_library: ObjID) -> ! {
     warn!("returned from monitor, exiting...");
     exit(0);
 }
+
+/// Stand-in for monitor-api's `RuntimeThreadControl` (120 bytes, zero-initialized): the monitor's
+/// runtime reads its first thread's control block as `Tcb<RuntimeThreadControl>`, and mlibc as its
+/// own `Tcb` (`localKeys` included). Reserving only `Tcb<()>` put those fields on whatever
+/// bootstrap allocated next, and mlibc's key writes then corrupted the monitor's argv.
+#[repr(C)]
+struct MonitorThreadControl([u64; 15]);
 
 extern crate twizzler_minruntime;
 fn main() {
