@@ -965,7 +965,7 @@ fn entry_snapshot_wanted() -> bool {
 
 /// Return addresses up the user frame-pointer chain, for tracing. The kernel cannot unwind a
 /// fault it takes on a bad user address, so every frame is checked before it is read: aligned, in
-/// a readable mapped region, and clear of the object's null page and reserved top pages. The chain
+/// a readable mapped region, and clear of the object's null page (the one unmapped page). The chain
 /// must also move strictly up the stack, which rules out loops.
 fn user_callers(mut fp: u64) -> [u64; 4] {
     use twizzler_abi::object::{MAX_SIZE, NULLPAGE_SIZE};
@@ -979,7 +979,7 @@ fn user_callers(mut fp: u64) -> [u64; 4] {
         if fp % 8 != 0
             || addr.is_kernel()
             || off < NULLPAGE_SIZE
-            || off >= MAX_SIZE - 4 * NULLPAGE_SIZE
+            || off > MAX_SIZE - 16
         {
             break;
         }
