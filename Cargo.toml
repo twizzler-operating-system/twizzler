@@ -83,6 +83,7 @@ members = [
     "src/test/rmdirtest",
     "src/test/sysbench",
     "src/test/nullexit",
+    "src/test/condtest",
     "src/test/leakcheck",
     #"src/test/gfxtest",
     "src/test/stdnet_test",

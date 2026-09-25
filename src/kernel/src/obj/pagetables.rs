@@ -63,8 +63,11 @@ pub mod mapprobe {
     pub static MF_CALLS: AtomicU64 = AtomicU64::new(0);
     pub static MF_PAGES: AtomicU64 = AtomicU64::new(0);
 
+    /// Only under `--diag=stats`: two global lines per fault-around install.
     pub fn add(c: &AtomicU64, n: u64) {
-        c.fetch_add(n, Ordering::Relaxed);
+        if crate::kdiag_stats() {
+            c.fetch_add(n, Ordering::Relaxed);
+        }
     }
 }
 
@@ -119,7 +122,11 @@ pub mod invl_overflow {
     static MAX_LIVE: AtomicUsize = AtomicUsize::new(0);
     static MAX_LEN: AtomicUsize = AtomicUsize::new(0);
 
+    /// The per-call counters, `record` and `record_shape`, only count under `--diag=stats`.
     pub fn record(site: Site, overflowed: bool) {
+        if !crate::kdiag_stats() {
+            return;
+        }
         CALLS[site as usize].fetch_add(1, Ordering::Relaxed);
         if overflowed {
             OVER[site as usize].fetch_add(1, Ordering::Relaxed);
@@ -134,6 +141,9 @@ pub mod invl_overflow {
     /// re-attempted by the next caller to exceed it. After the first few calls neither branch is
     /// taken.
     pub fn record_shape(live: usize, len: usize) {
+        if !crate::kdiag_stats() {
+            return;
+        }
         if live > MAX_LIVE.load(Ordering::Relaxed) {
             MAX_LIVE.fetch_max(live, Ordering::Relaxed);
         }
@@ -194,6 +204,9 @@ pub mod invl_overflow {
     }
 
     pub fn print() {
+        if !crate::kdiag_stats() && !crate::kdiag_invls() {
+            return;
+        }
         for (i, name) in ["remove", "invalidate", "send"].iter().enumerate() {
             emerglogln!(
                 "== invls overflow ({}): {} of {} calls, {} distinct objects",
@@ -245,6 +258,9 @@ pub mod membership {
     static SATURATED: AtomicUsize = AtomicUsize::new(0);
 
     pub fn record_size(n: usize) {
+        if !crate::kdiag_stats() {
+            return;
+        }
         if n > MAX_SIZE.load(Ordering::Relaxed) {
             MAX_SIZE.fetch_max(n, Ordering::Relaxed);
         }
@@ -270,6 +286,9 @@ pub mod membership {
     }
 
     pub fn print() {
+        if !crate::kdiag_stats() && !crate::kdiag_invls() {
+            return;
+        }
         let misses = MISSES.load(Ordering::Relaxed);
         emerglogln!(
             "== membership: max {} of {} ({}), {} objects unknown, {} checks, {} MISSES{}",

@@ -605,17 +605,24 @@ fn schedule_thread_on_cpu(
 
     thread.sched.moving_to_queue(processor.id);
     thread.sched.reset_timeslice();
+    let dev = thread.sched.irq_wake_ticks.load(Ordering::Relaxed) != 0;
+    let t = crate::interrupt::irqlat::start(dev);
     processor.rq.insert(thread, timeshare_wake, preempted);
+    crate::interrupt::irqlat::seg(crate::interrupt::irqlat::Seg::Insert, t);
     // The bsp ticks every ms regardless; a remote target arms from `schedule_resched`.
     if timeshare_wake && kind != wakestats::WAKE_LOCAL_MARKED && !is_remote && !processor.is_bsp() {
+        let t = crate::interrupt::irqlat::start(dev);
         crate::clock::schedule_oneshot_tick(WAKE_GRAN_TICKS);
+        crate::interrupt::irqlat::seg(crate::interrupt::irqlat::Seg::ArmTick, t);
     }
 
     if is_remote {
         wakestats::remote(should_signal);
     }
     if should_signal {
+        let t = crate::interrupt::irqlat::start(dev);
         processor.wakeup(true);
+        crate::interrupt::irqlat::seg(crate::interrupt::irqlat::Seg::Signal, t);
         return;
     }
     if is_remote {
@@ -815,7 +822,9 @@ fn select_cpu(thread: &ThreadRef, try_avoid: Option<u32>, is_wake: bool) -> u32 
     let irq_cpu = thread.sched.take_irq_hint().filter(|_| is_wake);
     let by_rule = irq_cpu.filter(|&cpu| irq_affine_allows(thread, cpu, try_avoid));
     let cpu = by_rule.unwrap_or_else(|| select_cpu_placed(thread, try_avoid, is_wake));
-    if let Some(irq_cpu) = irq_cpu {
+    if let Some(irq_cpu) = irq_cpu
+        && crate::kdiag_wake()
+    {
         crate::interrupt::routestats::note_device_wake(cpu == irq_cpu, by_rule.is_some());
     }
     cpu
@@ -1254,7 +1263,10 @@ pub fn schedule_thread(thread: ThreadRef) {
         .stats
         .wakeups
         .fetch_add(1, Ordering::Relaxed);
+    let dev = thread.sched.irq_wake_ticks.load(Ordering::Relaxed) != 0;
+    let t = crate::interrupt::irqlat::start(dev);
     let cpuid = select_cpu(&thread, None, true);
+    crate::interrupt::irqlat::seg(crate::interrupt::irqlat::Seg::Select, t);
     let processor = get_processor(cpuid);
     log::trace!(
         "{} on {} (load = {},{}): picked {} (load = {},{}) for thread {}",
@@ -1337,7 +1349,10 @@ fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
     // interval from `schedule_thread_on_cpu` to here is exactly wake-to-run. Taken rather than
     // read, so a thread that is switched to again without an intervening wake is not counted
     // twice.
-    let wake_ticks = thread.sched.wake_ticks.swap(0, Ordering::Relaxed);
+    let wake_ticks = match thread.sched.wake_ticks.load(Ordering::Relaxed) {
+        0 => 0,
+        _ => thread.sched.wake_ticks.swap(0, Ordering::Relaxed),
+    };
     if wake_ticks != 0 {
         let kind = thread.sched.wake_kind.swap(0, Ordering::Relaxed);
         let lat = now.ns_since_ticks(wake_ticks);
@@ -1352,17 +1367,21 @@ fn switch_to(thread: ThreadRef, old: &ThreadRef, flags: SchedFlags) {
             );
         }
     }
+    if thread.sched.irq_wake_ticks.load(Ordering::Relaxed) != 0 {
+        let stamp = thread.sched.irq_wake_ticks.swap(0, Ordering::Relaxed);
+        crate::interrupt::irqlat::to_cpu(&now, stamp);
+    }
     let oldcpu = thread.sched.moving_to_active(cp.id);
     thread.sched.stamp_switch_in(now_ns);
     if old.id() != thread.id() {
         trace_switch(&old, &thread, flags);
     }
-    cp.stats.switches.fetch_add(1, Ordering::Relaxed);
-    thread.stats.switches.fetch_add(1, Ordering::Relaxed);
+    local_inc(&cp.stats.switches);
+    local_inc(&thread.stats.switches);
 
     if let Some(oldcpu) = oldcpu {
         if oldcpu != cp.id {
-            thread.stats.migrations.fetch_add(1, Ordering::Relaxed);
+            local_inc(&thread.stats.migrations);
             log::trace!("migrated {} {} -> {}", thread.id(), oldcpu, cp.id);
             trace_migrate(&thread, oldcpu as u64, cp.id as u64);
         }
@@ -1430,6 +1449,13 @@ bitflags::bitflags! {
         const YIELD = 2;
         const PREEMPT = 4;
     }
+}
+
+/// A counter only its own cpu writes, with interrupts off: a load and a store, not a locked
+/// RMW on the switch path.
+#[inline]
+fn local_inc(c: &AtomicU64) {
+    c.store(c.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
 }
 
 fn rq_has_higher<const N: usize>(thread: &ThreadRef, rq: &RunQueue<N>, eq: bool) -> bool {
@@ -1511,7 +1537,7 @@ fn do_schedule(flags: SchedFlags) {
                 schedule_thread_on_cpu(cur.clone(), processor, false, false, false);
             } else {
                 // shortcut -- we are intending to just run this thread again.
-                processor.stats.resched_noop.fetch_add(1, Ordering::Relaxed);
+                local_inc(&processor.stats.resched_noop);
                 cur.sched.reset_timeslice();
                 processor.exit_idle();
                 return;
@@ -1529,10 +1555,10 @@ fn do_schedule(flags: SchedFlags) {
             // caller of moving_to_active). Clear current_processor_queue here, or we stay marked
             // as queued while actually running.
             cur.sched.moving_to_active(processor.id);
-            processor.stats.resched_noop.fetch_add(1, Ordering::Relaxed);
+            local_inc(&processor.stats.resched_noop);
             return;
         }
-        reason.fetch_add(1, Ordering::Relaxed);
+        local_inc(reason);
         switch_to(next, cur, flags);
         return;
     }

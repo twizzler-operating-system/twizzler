@@ -700,9 +700,11 @@ pub(super) fn pager_compl_handler_main() {
         // a second acquisition of this spinlock to do so. The id stays reserved until
         // `release_simple` below, so nothing can reuse the slot in between.
         let done = completion.1.flags().contains(KernelCompletionFlags::DONE);
-        let idmap_start = Instant::now();
+        let idmap_start = crate::kdiag_pager().then(Instant::now);
         let mut idmap = sender.idmap.lock();
-        super::profile::PAGER_PROFILE.idmap_lock((Instant::now() - idmap_start).as_nanos() as u64);
+        if let Some(start) = idmap_start {
+            super::profile::PAGER_PROFILE.idmap_lock((Instant::now() - start).as_nanos() as u64);
+        }
         let entry = if done {
             idmap.remove(&completion.0)
         } else {
@@ -811,9 +813,11 @@ pub fn submit_pager_request(mut req: RequestFromKernel, obj: Option<&ObjectRef>,
     let sender = SENDER.wait();
     let id = sender.ids.next_simple().value() as u32;
     let stamp_key = reqkind.clone();
-    let idmap_start = Instant::now();
+    let idmap_start = crate::kdiag_pager().then(Instant::now);
     let mut idmap = sender.idmap.lock();
-    super::profile::PAGER_PROFILE.idmap_lock((Instant::now() - idmap_start).as_nanos() as u64);
+    if let Some(start) = idmap_start {
+        super::profile::PAGER_PROFILE.idmap_lock((Instant::now() - start).as_nanos() as u64);
+    }
     let mut old = idmap.insert(
         id,
         SentRequestInfo {
@@ -854,7 +858,10 @@ pub fn submit_pager_request(mut req: RequestFromKernel, obj: Option<&ObjectRef>,
     sender.queue.submit(req, id);
     // After the submit, so the segment covers the enqueue itself, including the overflow wait
     // above. Every caller drops the inflight lock before submitting, so taking it here is safe.
-    super::lock_inflight_for(&stamp_key).with_request(&stamp_key, |r| r.mark_submitted());
+    // A second acquisition only for the profile, so only under `--diag=pager`.
+    if crate::kdiag_pager() {
+        super::lock_inflight_for(&stamp_key).with_request(&stamp_key, |r| r.mark_submitted());
+    }
 }
 
 extern "C" fn pager_compl_handler_entry() {

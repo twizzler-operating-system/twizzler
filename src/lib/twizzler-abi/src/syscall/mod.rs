@@ -289,6 +289,9 @@ bitflags::bitflags! {
         const WAKE = 1 << 3;
         /// `--diag=fault`: the per-object page-fault census.
         const FAULT = 1 << 4;
+        /// `--diag=stats`: global statistics counters and timings on hot paths (allocator,
+        /// frame cache, TLB shootdowns, unmap census, and the like).
+        const STATS = 1 << 5;
     }
 }
 

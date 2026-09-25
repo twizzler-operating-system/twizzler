@@ -1,5 +1,5 @@
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 use intrusive_collections::RBTree;
 use twizzler_abi::{
@@ -212,6 +212,24 @@ static DEVICE_VECTORS: DeviceVectors =
 static DEVICE_WAITERS: DeviceWaiters =
     [const { Spinlock::new(RBTree::new(ThreadSleepAdapter::NEW)) }; MAX_VECTOR + 1];
 
+/// The words in `DEVICE_VECTORS`, for the interrupt handler to store without that table's lock.
+/// Published under the lock once the mapping exists and retracted under it before the mapping is
+/// dropped; the retraction then waits out `active` so no handler still holds a retracted word.
+struct ArmedWords {
+    words: [AtomicPtr<AtomicU64>; MAX_DEVICE_VECTORS],
+    active: AtomicU32,
+    /// A waker spilled into `GlobalInterruptState::ints`, which only the soft path raises.
+    overflowed: AtomicBool,
+}
+
+static ARMED: [ArmedWords; MAX_VECTOR + 1] = [const {
+    ArmedWords {
+        words: [const { AtomicPtr::new(core::ptr::null_mut()) }; MAX_DEVICE_VECTORS],
+        active: AtomicU32::new(0),
+        overflowed: AtomicBool::new(false),
+    }
+}; MAX_VECTOR + 1];
+
 struct GlobalInterruptState {
     ints: Vec<Interrupt>,
     device_vectors: &'static DeviceVectors,
@@ -258,10 +276,12 @@ impl GlobalInterruptState {
         true
     }
 
-    /// Claim and requeue every waiter on `number`. With `unlink_claimed`, waiters someone else
-    /// already claimed are unlinked too rather than left for their own `remove_from_device_wait`,
-    /// which looks the vector up in a device table that a free has already cleared.
-    fn wake_device_waiters(&self, number: u32, unlink_claimed: bool) {
+    /// Claim and requeue every waiter on `number`. `irq` is the interrupt's entry stamp (0 unless
+    /// `--diag=wake`), or `None` from a free, where waiters someone else already claimed are
+    /// unlinked too rather than left for their own `remove_from_device_wait`, which looks the
+    /// vector up in a device table that the free has already cleared.
+    fn wake_device_waiters(&self, number: u32, irq: Option<u64>) {
+        let unlink_claimed = irq.is_none();
         // Claim-then-remove per waiter, under the lock, exactly as `SleepEntry::claim_n` does.
         //
         // `take()` used to detach the whole tree and drain it after dropping the lock. Its nodes
@@ -286,7 +306,11 @@ impl GlobalInterruptState {
         // Critical across the drain for the reason `Object::wakeup_word` gives: a claimed waiter
         // sits in `batch` on this stack over a window the spinlock used to cover, and this thread
         // exiting at a poll point in that window would take the stack and the wakeups with it.
-        let _critical = current_thread_ref().map(|ct| ct.enter_critical());
+        // From the interrupt, interrupts are already off and nothing can preempt us.
+        let ct = if get() { current_thread_ref() } else { None };
+        let _critical = ct.as_ref().map(|ct| ct.enter_critical());
+        let timed = irq.is_some_and(|stamp| stamp != 0);
+        let claim_start = irqlat::start(timed);
         loop {
             let mut batch = heapless::Vec::<ThreadRef, WAKE_BATCH>::new();
             // Refs unlinked without a claim, dropped once the lock is released.
@@ -310,6 +334,9 @@ impl GlobalInterruptState {
             }
             // Entries skipped for being already claimed stay in the tree and are re-walked, so a
             // full batch says only that we ran out of room -- terminate on the empty one.
+            if !batch.is_empty() {
+                irqlat::seg(irqlat::Seg::Claim, claim_start);
+            }
             let full = batch.is_full() || unlinked.is_full();
             let unlinked_any = !unlinked.is_empty();
             drop(unlinked);
@@ -317,10 +344,14 @@ impl GlobalInterruptState {
                 break;
             }
             for thread in batch {
-                if !unlink_claimed {
+                if let Some(stamp) = irq {
                     thread
                         .sched
                         .set_irq_hint(crate::processor::mp::current_processor().id);
+                    if stamp != 0 {
+                        thread.sched.irq_wake_ticks.store(stamp, Ordering::Relaxed);
+                        thread.sched.irq_user_ticks.store(stamp, Ordering::Relaxed);
+                    }
                 }
                 add_to_requeue(thread);
             }
@@ -328,7 +359,9 @@ impl GlobalInterruptState {
                 break;
             }
         }
+        let t = irqlat::start(timed);
         requeue_all();
+        irqlat::seg(irqlat::Seg::RequeueAll, t);
     }
 }
 
@@ -350,10 +383,13 @@ fn get_global_interrupts() -> &'static GlobalInterruptState {
 pub fn set_userspace_interrupt_wakeup(number: u32, wi: WakeInfo) {
     let gi = get_global_interrupts();
     let di = DeviceInterrupter::new(&wi);
+    let armed = &ARMED[number as usize];
     let mut vectors = gi.device_vectors[number as usize].lock();
     if !vectors.is_full() {
+        armed.words[vectors.len()].store(di.raw_word as *mut AtomicU64, Ordering::SeqCst);
         let _ = vectors.push(di);
     } else {
+        armed.overflowed.store(true, Ordering::SeqCst);
         drop(vectors);
         log::warn!("trying to setup too many device interrupt wakers, overflowing...");
         gi.ints[number as usize].add(wi);
@@ -461,27 +497,37 @@ pub fn init() {
 }
 
 pub fn external_interrupt_entry(number: u32) {
-    routestats::note(number);
-    let gi = get_global_interrupts();
-    let vectors = gi.device_vectors[number as usize].lock();
-    if vectors.is_empty() {
-        drop(vectors);
+    let diag = crate::kdiag_wake();
+    let start = irqlat::start(diag);
+    if diag {
+        routestats::note(number);
+    }
+    let armed = &ARMED[number as usize];
+    armed.active.fetch_add(1, Ordering::SeqCst);
+    let mut any = false;
+    for w in &armed.words {
+        let word = w.load(Ordering::SeqCst);
+        if !word.is_null() {
+            unsafe { (*word).store(number as u64, Ordering::Release) };
+            any = true;
+        }
+    }
+    armed.active.fetch_sub(1, Ordering::Release);
+    if !any {
         soft_raise(number);
         return;
     }
-    for di in vectors.iter() {
-        unsafe {
-            di.raw_word
-                .as_ref_unchecked()
-                .store(number as u64, Ordering::Release)
-        };
-    }
-    // A full table may have spilled further wakers into `ints`, which only the soft path raises.
-    let overflowed = vectors.is_full();
-    drop(vectors);
-    gi.wake_device_waiters(number, false);
-    if overflowed {
+    let before = if diag {
+        routestats::wake_counts()
+    } else {
+        (0, 0)
+    };
+    get_global_interrupts().wake_device_waiters(number, Some(start));
+    if armed.overflowed.load(Ordering::Relaxed) {
         soft_raise(number);
+    }
+    if diag {
+        irqlat::handler(start, before, routestats::wake_counts());
     }
 }
 
@@ -495,15 +541,27 @@ fn soft_raise(number: u32) {
 /// vector being freed. It can be handed to another device next, so nothing may stay linked on it.
 pub fn clear_userspace_interrupt_wakeup(number: u32) {
     let gi = get_global_interrupts();
+    let armed = &ARMED[number as usize];
     // Taken out under the locks, dropped outside them: both hold object references.
-    let interrupters = core::mem::take(&mut *gi.device_vectors[number as usize].lock());
+    let interrupters = {
+        let mut vectors = gi.device_vectors[number as usize].lock();
+        for w in &armed.words {
+            w.store(core::ptr::null_mut(), Ordering::SeqCst);
+        }
+        armed.overflowed.store(false, Ordering::SeqCst);
+        core::mem::take(&mut *vectors)
+    };
+    // Pairs with the handler's increment-then-load: a handler this reads as absent loads null.
+    while armed.active.load(Ordering::SeqCst) != 0 {
+        core::hint::spin_loop();
+    }
     let targets = core::mem::take(&mut gi.ints[number as usize].inner.lock().target);
     drop((interrupters, targets));
-    gi.wake_device_waiters(number, true);
+    gi.wake_device_waiters(number, None);
 }
 
 /// Which cpus each external vector was taken on, to check that a routed interrupt lands where
-/// it was sent. Printed at shutdown.
+/// it was sent. Printed at shutdown; counted only under `--diag=wake`.
 pub mod routestats {
     use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -525,16 +583,30 @@ pub mod routestats {
             DEV_WAKES_RULE.fetch_add(1, Ordering::Relaxed);
         }
     }
+    /// (placed, placed on the interrupt's cpu), for `irqlat` to classify one handler run.
+    pub(super) fn wake_counts() -> (u64, u64) {
+        (
+            DEV_WAKES.load(Ordering::Relaxed),
+            DEV_WAKES_LOCAL.load(Ordering::Relaxed),
+        )
+    }
+
     /// Bit `n` for cpu id `n`; ids past 63 fold onto bit 63.
     static CPUS: [AtomicU64; NUM_VECTORS] = [const { AtomicU64::new(0) }; NUM_VECTORS];
 
     pub(super) fn note(vector: u32) {
         let v = vector as usize;
         COUNT[v].fetch_add(1, Ordering::Relaxed);
-        CPUS[v].fetch_or(1 << current_processor().id.min(63), Ordering::Relaxed);
+        let bit = 1 << current_processor().id.min(63);
+        if CPUS[v].load(Ordering::Relaxed) & bit == 0 {
+            CPUS[v].fetch_or(bit, Ordering::Relaxed);
+        }
     }
 
     pub fn print() {
+        if !crate::kdiag_wake() {
+            return;
+        }
         emerglogln!(
             "irqwake: device wakes {} on irq cpu {} by rule {} (irq_affine {})",
             DEV_WAKES.load(Ordering::Relaxed),
@@ -542,6 +614,7 @@ pub mod routestats {
             DEV_WAKES_RULE.load(Ordering::Relaxed),
             crate::irq_affine()
         );
+        super::irqlat::print();
         for v in 0..NUM_VECTORS {
             let n = COUNT[v].load(Ordering::Relaxed);
             if n != 0 {
@@ -552,6 +625,154 @@ pub mod routestats {
                     CPUS[v].load(Ordering::Relaxed)
                 );
             }
+        }
+    }
+}
+
+/// Device-interrupt latency under `--diag=wake`, from the external handler's entry: the handler
+/// itself and its pieces, the woken thread reaching a cpu, and it returning to user. Printed at
+/// shutdown with `irqwake:`. Off, nothing is stamped and every check below reads zero.
+pub mod irqlat {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    use crate::instant::Instant;
+
+    const BOUNDS_US: [u64; 8] = [1, 2, 5, 10, 20, 50, 100, 1000];
+
+    struct Hist {
+        count: AtomicU64,
+        sum: AtomicU64,
+        max: AtomicU64,
+        buckets: [AtomicU64; BOUNDS_US.len() + 1],
+    }
+
+    impl Hist {
+        const fn new() -> Self {
+            Self {
+                count: AtomicU64::new(0),
+                sum: AtomicU64::new(0),
+                max: AtomicU64::new(0),
+                buckets: [const { AtomicU64::new(0) }; BOUNDS_US.len() + 1],
+            }
+        }
+
+        fn record(&self, ns: u64) {
+            self.count.fetch_add(1, Ordering::Relaxed);
+            self.sum.fetch_add(ns, Ordering::Relaxed);
+            self.max.fetch_max(ns, Ordering::Relaxed);
+            let i = BOUNDS_US
+                .iter()
+                .position(|b| ns < b * 1000)
+                .unwrap_or(BOUNDS_US.len());
+            self.buckets[i].fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn print(&self, name: &str) {
+            let n = self.count.load(Ordering::Relaxed);
+            if n == 0 {
+                return;
+            }
+            let b = |i: usize| self.buckets[i].load(Ordering::Relaxed);
+            emerglogln!(
+                "irqlat: {} n={} mean={}ns max={}ns [<1 <2 <5 <10 <20 <50 <100 <1000 >=1000 us] {} {} {} {} {} {} {} {} {}",
+                name,
+                n,
+                self.sum.load(Ordering::Relaxed) / n,
+                self.max.load(Ordering::Relaxed),
+                b(0),
+                b(1),
+                b(2),
+                b(3),
+                b(4),
+                b(5),
+                b(6),
+                b(7),
+                b(8)
+            );
+        }
+    }
+
+    static EOI: Hist = Hist::new();
+    static HANDLER_NONE: Hist = Hist::new();
+    static HANDLER_LOCAL: Hist = Hist::new();
+    static HANDLER_REMOTE: Hist = Hist::new();
+    static TO_CPU: Hist = Hist::new();
+    static TO_USER: Hist = Hist::new();
+
+    /// Pieces of a device wake, timed only for threads carrying an irq stamp.
+    #[derive(Clone, Copy)]
+    pub enum Seg {
+        Claim,
+        Schedule,
+        Select,
+        Insert,
+        ArmTick,
+        Signal,
+        RequeueRemove,
+        RequeueAll,
+    }
+    const SEG_NAMES: [&str; 8] = [
+        "seg claim",
+        "seg schedule_thread",
+        "seg  select_cpu",
+        "seg  rq insert",
+        "seg  arm oneshot",
+        "seg  signal remote",
+        "seg requeue remove",
+        "seg requeue_all",
+    ];
+    static SEGS: [Hist; 8] = [const { Hist::new() }; 8];
+
+    /// A start stamp when `timed`, else 0, which [seg] ignores: every other wake pays nothing.
+    pub fn start(timed: bool) -> u64 {
+        if timed {
+            Instant::now().raw_ticks().max(1)
+        } else {
+            0
+        }
+    }
+
+    pub fn seg(which: Seg, start: u64) {
+        if start != 0 {
+            SEGS[which as usize].record(Instant::now().ns_since_ticks(start));
+        }
+    }
+
+    pub fn eoi(start: u64) {
+        EOI.record(Instant::now().ns_since_ticks(start));
+    }
+
+    /// Classified by the wake counters around the drain; another cpu's handler landing in the
+    /// window can misfile one run, which is rare at device-interrupt rates.
+    pub(super) fn handler(start: u64, before: (u64, u64), after: (u64, u64)) {
+        let ns = Instant::now().ns_since_ticks(start);
+        let (placed, local) = (after.0 - before.0, after.1 - before.1);
+        if placed == 0 {
+            HANDLER_NONE.record(ns);
+        } else if local == placed {
+            HANDLER_LOCAL.record(ns);
+        } else {
+            HANDLER_REMOTE.record(ns);
+        }
+    }
+
+    pub fn to_cpu(now: &Instant, stamp: u64) {
+        TO_CPU.record(now.ns_since_ticks(stamp));
+    }
+
+    pub fn to_user(stamp: u64) {
+        TO_USER.record(Instant::now().ns_since_ticks(stamp));
+    }
+
+    pub fn print() {
+        EOI.print("eoi");
+        HANDLER_NONE.print("handler(no wake)");
+        HANDLER_LOCAL.print("handler(local wake)");
+        HANDLER_REMOTE.print("handler(remote wake)");
+        TO_CPU.print("irq->oncpu");
+        TO_USER.print("irq->user");
+        for (h, name) in SEGS.iter().zip(SEG_NAMES) {
+            h.print(name);
         }
     }
 }

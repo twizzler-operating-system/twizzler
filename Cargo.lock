@@ -1334,6 +1334,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "condtest"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "twizzler-abi",
+]
+
+[[package]]
 name = "console"
 version = "0.15.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"

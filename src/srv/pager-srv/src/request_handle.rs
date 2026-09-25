@@ -277,11 +277,14 @@ fn handle_page_data_request_task(
     static COUNT: AtomicU64 = AtomicU64::new(0);
     static PCOUNT: AtomicU64 = AtomicU64::new(0);
     let prefetch = flags.contains(PagerFlags::PREFETCH);
+    // The STARTING/COMPLETED lines and the in-flight gauges they print are diagnostics: two log
+    // lines and two shared RMWs per request.
+    let diag = crate::watchdog::diag_enabled();
 
     if req_range.start == 0 {
         req_range.start = PAGE;
     }
-    let start_time = Instant::now();
+    let start_time = diag.then(Instant::now);
     let obj_len = ctx.paged_ostore(None).unwrap().len(id.raw()).ok();
     let max_len = obj_len
         .map(|x| x + PAGE)
@@ -352,7 +355,9 @@ fn handle_page_data_request_task(
         req_range = ObjectRange::new(start, end);
     }
     if prefetch {
-        tracing::info!("STARTING {}: {:?} {:?}", id, req_range, flags);
+        if diag {
+            tracing::info!("STARTING {}: {:?} {:?}", id, req_range, flags);
+        }
         if let Some(len) = obj_len {
             // Clamp only, never extend -- which is what "reduce len" always claimed. Assigning
             // here turned a kernel-side prefetch of one region into a whole-object read: a request
@@ -367,9 +372,9 @@ fn handle_page_data_request_task(
             );
             req_range.end = end;
         }
-        PCOUNT.fetch_add(1, Ordering::SeqCst);
-    } else {
-        COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+    if diag {
+        if prefetch { &PCOUNT } else { &COUNT }.fetch_add(1, Ordering::SeqCst);
     }
     let _req = REQ_STATS.enter(prefetch);
 
@@ -390,20 +395,18 @@ fn handle_page_data_request_task(
             return;
         }
     }
-    if prefetch {
-        PCOUNT.fetch_sub(1, Ordering::SeqCst);
-    } else {
-        COUNT.fetch_sub(1, Ordering::SeqCst);
-    }
-    if prefetch {
-        tracing::info!(
-            "COMPLETED: {} {:?} in {} ms, {}:{} remaining",
-            id,
-            req_range,
-            start_time.elapsed().as_millis(),
-            COUNT.load(Ordering::SeqCst),
-            PCOUNT.load(Ordering::SeqCst),
-        );
+    if let Some(start_time) = start_time {
+        if prefetch { &PCOUNT } else { &COUNT }.fetch_sub(1, Ordering::SeqCst);
+        if prefetch {
+            tracing::info!(
+                "COMPLETED: {} {:?} in {} ms, {}:{} remaining",
+                id,
+                req_range,
+                start_time.elapsed().as_millis(),
+                COUNT.load(Ordering::SeqCst),
+                PCOUNT.load(Ordering::SeqCst),
+            );
+        }
     }
 
     let done = CompletionToKernel::new(KernelCompletionData::Okay, KernelCompletionFlags::DONE);

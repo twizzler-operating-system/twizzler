@@ -286,6 +286,9 @@ impl Processor {
     }
 
     pub fn release_exited_stack(&self) {
+        if self.exited_stack.load(Ordering::Relaxed).is_null() {
+            return;
+        }
         if let Some(stack) = NonNull::new(
             self.exited_stack
                 .swap(core::ptr::null_mut(), Ordering::AcqRel),

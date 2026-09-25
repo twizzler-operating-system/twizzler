@@ -133,6 +133,9 @@ pub fn tlb_shootdown_inc_count(count: usize, origin: TlbOrigin, global: bool) {
             .shootdowns
             .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
     }
+    if !crate::kdiag_stats() {
+        return;
+    }
     let o = origin as usize;
     SD_STATS.calls[o].fetch_add(1, Ordering::Relaxed);
     SD_STATS.targets[o].fetch_add(count, Ordering::Relaxed);
@@ -164,6 +167,9 @@ pub fn tlb_wait_record(origin: TlbOrigin, elapsed: core::time::Duration) {
 
 /// Printed beside [print_switch_counters], and for the same reason.
 pub fn print_shootdown_counters() {
+    if !crate::kdiag_stats() {
+        return;
+    }
     // Expected large: one lock hold runs many operations. Each is a merge, not a discharge, so no
     // wait happens inside the lock however big this gets.
     emerglogln!(

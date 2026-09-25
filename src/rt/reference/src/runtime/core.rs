@@ -20,7 +20,7 @@ use twizzler_rt_abi::{
         auxv, BasicAux, BasicReturn, CompartmentInitInfo, CtorSet, ExitCode, RuntimeInfo,
         RUNTIME_INIT_COMP, RUNTIME_INIT_MONITOR,
     },
-    info::SystemInfo,
+    info::{MemoryInfo, SystemInfo},
     time::Monotonicity,
 };
 
@@ -349,6 +349,16 @@ impl ReferenceRuntime {
             clock_monotonicity: Monotonicity::Weak.into(),
             available_parallelism: info.cpu_count().into(),
             page_size: info.page_size(),
+        }
+    }
+
+    pub fn memory_info(&self) -> MemoryInfo {
+        let stats = twizzler_abi::syscall::sys_memory_stats();
+        let page_size = stats.levels[0].page_size;
+        MemoryInfo {
+            total_pages: stats.total_pages,
+            free_pages: stats.free_bytes() / page_size,
+            page_size,
         }
     }
 

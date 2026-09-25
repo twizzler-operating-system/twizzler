@@ -41,7 +41,7 @@
 //!   known zero", not "this page is zero". Tracking by list also makes "how much needs zeroing" an
 //!   O(1) read instead of a scan.
 
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use super::frame::FrameRef;
 use crate::{
@@ -238,9 +238,29 @@ pub fn cached_frames() -> usize {
     CACHED_FRAMES.load(Ordering::Relaxed)
 }
 
+/// A `stat` counter: global, so it only counts under `--diag=stats`.
+pub struct Counter(AtomicU64);
+
+impl Counter {
+    const fn new() -> Self {
+        Self(AtomicU64::new(0))
+    }
+
+    #[inline]
+    pub fn fetch_add(&self, n: u64, order: Ordering) {
+        if crate::kdiag_stats() {
+            self.0.fetch_add(n, order);
+        }
+    }
+
+    pub fn load(&self, order: Ordering) -> u64 {
+        self.0.load(order)
+    }
+}
+
 macro_rules! counters {
     ($($(#[$m:meta])* $name:ident),* $(,)?) => {
-        $($(#[$m])* pub static $name: AtomicU64 = AtomicU64::new(0);)*
+        $($(#[$m])* pub static $name: super::Counter = super::Counter::new();)*
         pub const NAMES: &[&str] = &[$(stringify!($name)),*];
         pub const NR: usize = NAMES.len();
         pub fn snapshot() -> [u64; NR] {
@@ -271,7 +291,7 @@ macro_rules! counters {
 /// number: `object_create_delete_nomap`'s identical-arm drift is 12.9%, which is larger than most
 /// of the effects here, so nanoseconds cannot settle them.
 pub mod stat {
-    use core::sync::atomic::{AtomicU64, Ordering};
+    use core::sync::atomic::Ordering;
 
     counters!(
         /// Frames served from a cpu's own magazine without touching the depot. The hit path.

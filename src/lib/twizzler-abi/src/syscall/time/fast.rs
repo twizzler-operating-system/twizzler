@@ -10,8 +10,9 @@ use super::{sys_read_clock_info, ClockSource, ReadClockFlags};
 
 /// Read the CPU's tick counter.
 ///
-/// The same counter the kernel's registered tick source reads, which is what makes a cached rate
-/// meaningful here: the two are the same clock, not two clocks that agree.
+/// The same counter the kernel's best monotonic source reads, which is what makes its cached rate
+/// meaningful here. Other sources (kvmclock, an RTC) count in their own units, so only their
+/// current value is usable, never their rate.
 #[inline(always)]
 fn tick_counter() -> u64 {
     #[cfg(target_arch = "x86_64")]
@@ -119,7 +120,16 @@ impl FastClock {
             return Duration::from(info.current_value());
         }
         let now = Duration::from(info.current_value());
-        let femtos_per_tick = info.tickrate().0 as u128;
+        // The rate must be the tick counter's. Taking the source's own (1 ns for kvmclock) made
+        // realtime run at the TSC's GHz times true speed.
+        let femtos_per_tick = if matches!(self.source, ClockSource::BestMonotonic) {
+            info.tickrate().0 as u128
+        } else {
+            match sys_read_clock_info(ClockSource::BestMonotonic, ReadClockFlags::empty()) {
+                Ok(mono) => mono.tickrate().0 as u128,
+                Err(_) => 0,
+            }
+        };
         // A clock that does not report its rate cannot be extrapolated from; fall back to asking
         // the kernel every time rather than inventing a rate.
         if femtos_per_tick == 0 {

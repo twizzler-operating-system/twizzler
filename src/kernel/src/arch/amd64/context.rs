@@ -216,6 +216,14 @@ impl ArchContext {
         // very entries it came to kill. Deferring it past the write is what makes it land on the
         // right address space. Cheap when interrupts are already off, which is the common case.
         crate::interrupt::with_disabled(|| {
+            let cr3 = unsafe { x86::controlregs::cr3() };
+            // Already on `tgt` and advertising it: there is no window to cover, and a shootdown
+            // reading `tgt` targets us exactly as CR3_IN_TRANSITION would.
+            if let Some(proc) = proc {
+                if tgt.0 == cr3 && proc.arch.active_cr3.load(Ordering::Relaxed) == tgt.0 {
+                    return;
+                }
+            }
             // Advertise the transition *before* touching cr3. From the cr3 write onwards this
             // processor can cache entries for `tgt`, but it would still be advertising the old
             // root until the store below -- a shootdown for `tgt` landing in that window would
@@ -235,7 +243,7 @@ impl ArchContext {
             // disabled interrupts. Setting it here would then let a later switch into this
             // context skip the flush that invalidation is counting on. Leaving the bit alone is
             // never wrong -- at worst it is conservatively clear and costs one extra flush.
-            if tgt.0 != unsafe { x86::controlregs::cr3() } {
+            if tgt.0 != cr3 {
                 // `proc` is None exactly while this cpu is still short of `processor::init`,
                 // which is where CR4.PCIDE goes on -- and cr3[4:3] mean PWT/PCD until it does.
                 // Targets carry a PCID from the moment they are built, which is earlier than

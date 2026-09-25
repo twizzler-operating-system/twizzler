@@ -2,7 +2,7 @@ use alloc::alloc::{GlobalAlloc, Layout};
 use core::{
     panic,
     ptr::NonNull,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering},
     time::Duration,
 };
 
@@ -78,7 +78,6 @@ impl EarlyAllocator {
 }
 
 pub struct KernelAllocator {
-    allocated_bytes: AtomicUsize,
     early_allocated_bytes: AtomicUsize,
 }
 
@@ -87,7 +86,6 @@ static KERNEL_CTX: Once<&'static ContextRef> = Once::new();
 impl KernelAllocator {
     const fn new() -> Self {
         Self {
-            allocated_bytes: AtomicUsize::new(0),
             early_allocated_bytes: AtomicUsize::new(0),
         }
     }
@@ -126,6 +124,26 @@ unsafe impl ferroc::base::BaseAlloc for KernelAllocator {
 #[thread_local]
 static SKIP: AtomicBool = AtomicBool::new(false);
 
+/// Live late-heap bytes, spread over cpu-indexed lines so an allocation does not bounce one shared
+/// counter between cpus. A slot can go negative (freed on another cpu than allocated); the sum is
+/// exact.
+const KALLOC_SLOTS: usize = 64;
+
+#[repr(align(64))]
+struct KallocSlot(AtomicIsize);
+
+static KALLOC_BYTES: [KallocSlot; KALLOC_SLOTS] =
+    [const { KallocSlot(AtomicIsize::new(0)) }; KALLOC_SLOTS];
+
+fn kalloc_bytes_add(delta: isize) {
+    let slot = crate::processor::mp::current_processor().id as usize % KALLOC_SLOTS;
+    KALLOC_BYTES[slot].0.fetch_add(delta, Ordering::Relaxed);
+}
+
+fn kalloc_traced() -> bool {
+    TRACE_MGR.any_enabled(TraceKind::Kernel, twizzler_abi::trace::KERNEL_ALLOC)
+}
+
 fn trace_kalloc(layout: Layout, time: Duration, is_free: bool) {
     let Some(ct) = current_thread_ref() else {
         return;
@@ -157,7 +175,6 @@ struct GlobalAllocWrapper;
 unsafe impl GlobalAlloc for GlobalAllocWrapper {
     #[track_caller]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let start = Instant::now();
         let early = !tls_ready() || KERNEL_CTX.poll().is_none();
         let inner = FerrocAllocator.base();
 
@@ -166,11 +183,9 @@ unsafe impl GlobalAlloc for GlobalAllocWrapper {
                 .early_allocated_bytes
                 .fetch_add(layout.size(), Ordering::SeqCst);
             return EARLY_ALLOCATOR.early_alloc(layout);
-        } else {
-            inner
-                .allocated_bytes
-                .fetch_add(layout.size(), Ordering::SeqCst);
         }
+        let start = kalloc_traced().then(Instant::now);
+        kalloc_bytes_add(layout.size() as isize);
 
         let ret = if layout.size() >= ferroc::config::SLAB_SIZE {
             inner.ctx().allocate_chunk(layout).unwrap().as_ptr()
@@ -181,14 +196,14 @@ unsafe impl GlobalAlloc for GlobalAllocWrapper {
             })
         };
 
-        let end = Instant::now();
-        trace_kalloc(layout, end - start, false);
+        if let Some(start) = start {
+            trace_kalloc(layout, Instant::now() - start, false);
+        }
         ret
     }
 
     #[track_caller]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let start = Instant::zero();
         {
             let early = !tls_ready() || KERNEL_CTX.poll().is_none();
             if early {
@@ -199,9 +214,7 @@ unsafe impl GlobalAlloc for GlobalAllocWrapper {
             }
 
             let inner = FerrocAllocator.base();
-            inner
-                .allocated_bytes
-                .fetch_sub(layout.size(), Ordering::SeqCst);
+            kalloc_bytes_add(-(layout.size() as isize));
             if layout.size() >= ferroc::config::SLAB_SIZE {
                 unsafe {
                     inner
@@ -216,7 +229,9 @@ unsafe impl GlobalAlloc for GlobalAllocWrapper {
                 unsafe { FerrocAllocator.deallocate(nn, layout) };
             });
         }
-        trace_kalloc(layout, Instant::zero() - start, false);
+        if kalloc_traced() {
+            trace_kalloc(layout, Duration::ZERO, true);
+        }
     }
 }
 
@@ -228,10 +243,11 @@ pub fn init(ctx: &'static ContextRef) {
 }
 
 pub fn fill_stats(stats: &mut twizzler_abi::syscall::MemoryStats) {
-    stats.late_kalloc_bytes = FerrocAllocator
-        .base()
-        .allocated_bytes
-        .load(Ordering::SeqCst);
+    let live: isize = KALLOC_BYTES
+        .iter()
+        .map(|slot| slot.0.load(Ordering::Relaxed))
+        .sum();
+    stats.late_kalloc_bytes = live.max(0) as usize;
     stats.early_kalloc_bytes = FerrocAllocator
         .base()
         .early_allocated_bytes

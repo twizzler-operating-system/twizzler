@@ -585,7 +585,9 @@ impl Thread {
                 core::arch::asm!("fxsave [{}]", in(reg) self.arch.xsave_region.0.as_ptr());
             }
         }
-        self.arch.xsave_inited.store(true, Ordering::SeqCst);
+        if !self.arch.xsave_inited.load(Ordering::Relaxed) {
+            self.arch.xsave_inited.store(true, Ordering::Release);
+        }
     }
 
     fn restore_extended_state(&self) {

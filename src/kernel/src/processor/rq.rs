@@ -331,6 +331,14 @@ impl<const N: usize> RunQueue<N> {
         }
     }
 
+    /// Queue bits are set and cleared only under their queue's lock, so the test is exact and
+    /// the locked RMW is paid only on the empty -> non-empty edge.
+    fn set_flag(&self, bit: u32) {
+        if self.flags.load(Ordering::Acquire) & bit == 0 {
+            self.flags.fetch_or(bit, Ordering::SeqCst);
+        }
+    }
+
     pub fn wake_pending(&self) -> bool {
         self.pending_wakes.load(Ordering::Acquire) != 0
     }
@@ -363,7 +371,7 @@ impl<const N: usize> RunQueue<N> {
                 self.note_realtime_class(&th, 1);
                 let mut realtime = self.realtime.lock();
                 realtime.insert(th);
-                self.flags.fetch_or(RQ_HAS_RT, Ordering::SeqCst);
+                self.set_flag(RQ_HAS_RT);
                 true
             }
             PriorityClass::User => {
@@ -374,7 +382,7 @@ impl<const N: usize> RunQueue<N> {
                     }
                     let mut realtime = self.realtime.lock();
                     realtime.insert(th);
-                    self.flags.fetch_or(RQ_HAS_RT, Ordering::SeqCst);
+                    self.set_flag(RQ_HAS_RT);
                 } else {
                     self.timeshare_load.fetch_add(1, Ordering::Release);
                     let mut timeshare = self.timeshare.lock();
@@ -385,14 +393,14 @@ impl<const N: usize> RunQueue<N> {
                     } else {
                         timeshare.insert(th, preempted);
                     }
-                    self.flags.fetch_or(RQ_HAS_TS, Ordering::SeqCst);
+                    self.set_flag(RQ_HAS_TS);
                 }
                 true
             }
             _ => {
                 let mut idle = self.idle.lock();
                 idle.insert(th);
-                self.flags.fetch_or(RQ_HAS_IL, Ordering::SeqCst);
+                self.set_flag(RQ_HAS_IL);
                 false
             }
         }
@@ -411,14 +419,14 @@ impl<const N: usize> RunQueue<N> {
                     .highest_priority()
                     .unwrap_or(Priority::from_raw(0));
                 self.current_priority
-                    .store(priority.raw(), Ordering::SeqCst);
+                    .store(priority.raw(), Ordering::Release);
             } else {
                 let priority = Priority {
                     value: queue.highest_priority().unwrap_or(0),
                     class: PriorityClass::User,
                 };
                 self.current_priority
-                    .store(priority.raw(), Ordering::SeqCst);
+                    .store(priority.raw(), Ordering::Release);
             }
         }
     }
@@ -468,11 +476,11 @@ impl<const N: usize> RunQueue<N> {
                     Priority::from_raw(0)
                 };
                 self.current_priority
-                    .store(priority.raw(), Ordering::SeqCst);
+                    .store(priority.raw(), Ordering::Release);
             } else {
                 let priority = realtime.highest_priority().unwrap_or(Priority::from_raw(0));
                 self.current_priority
-                    .store(priority.raw(), Ordering::SeqCst);
+                    .store(priority.raw(), Ordering::Release);
             }
         }
         Some(th)
@@ -518,7 +526,7 @@ impl<const N: usize> RunQueue<N> {
         self.load.fetch_sub(1, Ordering::Release);
         let priority = idle.highest_priority().unwrap_or(Priority::from_raw(0));
         self.current_priority
-            .store(priority.raw(), Ordering::SeqCst);
+            .store(priority.raw(), Ordering::Release);
         Some(th)
     }
 

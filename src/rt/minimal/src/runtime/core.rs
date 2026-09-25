@@ -8,7 +8,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{
     core::{BasicAux, BasicReturn, RUNTIME_INIT_MIN, RuntimeInfo, auxv},
-    info::SystemInfo,
+    info::{MemoryInfo, SystemInfo},
     time::Monotonicity,
 };
 
@@ -205,6 +205,16 @@ impl MinimalRuntime {
             clock_monotonicity: Monotonicity::Weak.into(),
             available_parallelism: info.cpu_count().into(),
             page_size: info.page_size(),
+        }
+    }
+
+    pub fn memory_info(&self) -> MemoryInfo {
+        let stats = twizzler_abi::syscall::sys_memory_stats();
+        let page_size = stats.levels[0].page_size;
+        MemoryInfo {
+            total_pages: stats.total_pages,
+            free_pages: stats.free_bytes() / page_size,
+            page_size,
         }
     }
 

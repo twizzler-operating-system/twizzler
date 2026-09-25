@@ -541,7 +541,14 @@ fn generic_isr_handler(ctx: *mut IsrContext, number: u64, user: bool) {
                 number, ctx
             );
         };
+        let device = crate::kdiag_wake()
+            && (MIN_VECTOR..=MAX_VECTOR).contains(&(number as usize))
+            && !RESV_VECTORS.contains(&(number as usize));
+        let start = crate::interrupt::irqlat::start(device);
         lapic.eoi();
+        if device {
+            crate::interrupt::irqlat::eoi(start);
+        }
     }
     match number as u32 {
         14 => {

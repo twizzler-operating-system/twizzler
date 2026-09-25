@@ -87,6 +87,10 @@ pub struct ThreadSched {
     ///
     /// [select_cpu]: crate::processor::sched
     irq_hint: AtomicI32,
+    /// Raw bench-clock stamp of the device interrupt that woke this thread (`irqlat`), taken when
+    /// it reaches a cpu and when it returns to user respectively. Zero when none is pending.
+    pub irq_wake_ticks: AtomicU64,
+    pub irq_user_ticks: AtomicU64,
     pub affinity: Affinity,
     /// Whether this thread was counted in its run queue's `movable` when inserted. Latched at
     /// insert and read at take, so an affinity change while queued cannot desync the count.
@@ -152,6 +156,8 @@ impl Default for ThreadSched {
             last_cpu: AtomicI32::new(-1),
             pinned_cpu: AtomicI32::new(-1),
             irq_hint: AtomicI32::new(-1),
+            irq_wake_ticks: AtomicU64::new(0),
+            irq_user_ticks: AtomicU64::new(0),
             affinity: Affinity::all(),
             queued_movable: AtomicBool::new(false),
             deadline: AtomicU64::new(0),
@@ -258,7 +264,7 @@ impl ThreadSched {
     }
 
     pub fn take_woken(&self) -> bool {
-        self.woken.swap(false, Ordering::AcqRel)
+        self.woken.load(Ordering::Acquire) && self.woken.swap(false, Ordering::AcqRel)
     }
 
     pub fn reset_timeslice(&self) {
@@ -270,7 +276,7 @@ impl ThreadSched {
     }
 
     pub fn take_slice_end(&self) -> bool {
-        self.slice_end.swap(false, Ordering::AcqRel)
+        self.slice_end.load(Ordering::Acquire) && self.slice_end.swap(false, Ordering::AcqRel)
     }
 
     pub fn moving_to_queue(&self, cpu: u32) {
@@ -280,7 +286,11 @@ impl ThreadSched {
 
     pub fn moving_to_active(&self, cpu: u32) -> Option<u32> {
         self.current_processor_queue.store(-1, Ordering::Release);
-        let old = self.last_cpu.swap(cpu as i32, Ordering::SeqCst);
+        // Only the switch-in path writes this, under the thread's switch lock.
+        let old = self.last_cpu.load(Ordering::Acquire);
+        if old != cpu as i32 {
+            self.last_cpu.store(cpu as i32, Ordering::Release);
+        }
         if old == -1 { None } else { Some(old as u32) }
     }
 

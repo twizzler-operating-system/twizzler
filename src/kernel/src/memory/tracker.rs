@@ -95,8 +95,12 @@ pub mod allocprofile {
         PC_OTHER_UNUSED,
     );
 
+    /// Only under `--diag=stats`: these are global lines, bumped several times per fault.
+    #[inline]
     pub fn add(c: &AtomicU64, n: u64) {
-        c.fetch_add(n, Ordering::Relaxed);
+        if crate::kdiag_stats() {
+            c.fetch_add(n, Ordering::Relaxed);
+        }
     }
 }
 

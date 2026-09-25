@@ -89,6 +89,8 @@ enum DiagClass {
     Wake,
     /// Per-object page-fault census.
     Fault,
+    /// Global statistics counters and timings on hot paths.
+    Stats,
     /// Every class above.
     All,
 }
@@ -101,6 +103,7 @@ impl From<DiagClass> for KernelDiagFlags {
             DiagClass::Invls => KernelDiagFlags::INVLS,
             DiagClass::Wake => KernelDiagFlags::WAKE,
             DiagClass::Fault => KernelDiagFlags::FAULT,
+            DiagClass::Stats => KernelDiagFlags::STATS,
             DiagClass::All => KernelDiagFlags::all(),
         }
     }
@@ -123,6 +126,7 @@ fn describe(bits: u64) -> String {
         (KernelDiagFlags::INVLS, "invls"),
         (KernelDiagFlags::WAKE, "wake"),
         (KernelDiagFlags::FAULT, "fault"),
+        (KernelDiagFlags::STATS, "stats"),
     ]
     .iter()
     .filter(|(f, _)| flags.contains(*f))

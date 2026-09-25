@@ -191,6 +191,14 @@ static KDIAG_PAGER: AtomicBool = AtomicBool::new(false);
 static KDIAG_INVLS: AtomicBool = AtomicBool::new(false);
 static KDIAG_WAKE: AtomicBool = AtomicBool::new(false);
 static KDIAG_FAULT: AtomicBool = AtomicBool::new(false);
+static KDIAG_STATS: AtomicBool = AtomicBool::new(false);
+
+/// `--diag=stats`: global counters, timings and tripwires on hot paths, and the shutdown sections
+/// that print them. Off, perf runs pay one relaxed load per site.
+#[inline]
+pub fn kdiag_stats() -> bool {
+    KDIAG_STATS.load(Ordering::Relaxed)
+}
 
 /// `--diag=fault`: the per-object page-fault census
 /// ([`crate::memory::context::virtmem::fault::census`]).
@@ -226,7 +234,7 @@ pub fn kdiag_invls() -> bool {
 /// Kept as separate atomics rather than one mask word because the instrumented paths load them
 /// individually and a shared word would put unrelated classes on one cacheline; this assembles the
 /// view only when something asks.
-fn diag_flag_cells() -> [(twizzler_abi::syscall::KernelDiagFlags, &'static AtomicBool); 5] {
+fn diag_flag_cells() -> [(twizzler_abi::syscall::KernelDiagFlags, &'static AtomicBool); 6] {
     use twizzler_abi::syscall::KernelDiagFlags as F;
     [
         (F::DIAG, &DIAG_MODE),
@@ -234,6 +242,7 @@ fn diag_flag_cells() -> [(twizzler_abi::syscall::KernelDiagFlags, &'static Atomi
         (F::INVLS, &KDIAG_INVLS),
         (F::WAKE, &KDIAG_WAKE),
         (F::FAULT, &KDIAG_FAULT),
+        (F::STATS, &KDIAG_STATS),
     ]
 }
 
@@ -382,6 +391,9 @@ fn kernel_main<B: BootInfo + Send + Sync + 'static>(boot_info: B) -> ! {
                 }
                 if class == "fault" || class == "all" {
                     KDIAG_FAULT.store(true, Ordering::SeqCst);
+                }
+                if class == "stats" || class == "all" {
+                    KDIAG_STATS.store(true, Ordering::SeqCst);
                 }
             }
         }

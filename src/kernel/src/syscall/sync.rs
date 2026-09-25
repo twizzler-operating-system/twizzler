@@ -274,8 +274,12 @@ pub fn add_to_requeue(thread: ThreadRef) {
             );
             let id = thread.objid();
             assert!(!thread.get_mutex_wait());
+            let dev = thread.sched.irq_wake_ticks.load(Ordering::Relaxed) != 0;
+            let t = crate::interrupt::irqlat::start(dev);
             crate::processor::sched::schedule_thread(thread);
             let requeue = get_requeue_list();
+            crate::interrupt::irqlat::seg(crate::interrupt::irqlat::Seg::Schedule, t);
+            let t = crate::interrupt::irqlat::start(dev);
             // See `remove_from_requeue`: the removed reference must not be dropped under the
             // spinlock. `schedule_thread` above returns early for an exiting thread
             // without storing the one it was given, so a stale entry here can hold the
@@ -290,6 +294,7 @@ pub fn add_to_requeue(thread: ThreadRef) {
                 removed
             };
             drop(removed);
+            crate::interrupt::irqlat::seg(crate::interrupt::irqlat::Seg::RequeueRemove, t);
             return;
         }
         // Token won but the thread is not parked: it is somewhere between commit and the
@@ -1300,7 +1305,11 @@ pub mod requeuebug {
     /// Live invariant violations: count said zero with the list non-empty. Must stay 0.
     static LIVE_DESYNC: AtomicU64 = AtomicU64::new(0);
 
+    /// The counterfactual pair, only under `--diag=stats`; `note_desync` always counts.
     pub fn note_removal(prev: usize) {
+        if !crate::kdiag_stats() {
+            return;
+        }
         if prev >= 2 {
             DESYNC.fetch_add(1, Ordering::Relaxed);
         } else {

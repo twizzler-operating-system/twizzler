@@ -104,6 +104,12 @@ pub fn exit_kernel() {
         // and in `send_upcall`) and ordered against nothing. `SeqCst` made this an `xchg` on every
         // return to user, almost always writing the zero that was already there.
         thread.upcalls_since_user.store(0, Ordering::Relaxed);
+        if thread.sched.irq_user_ticks.load(Ordering::Relaxed) != 0 {
+            let stamp = thread.sched.irq_user_ticks.swap(0, Ordering::Relaxed);
+            crate::interrupt::irqlat::to_user(stamp);
+            // Claimed before it switched out, so no switch-in consumed it.
+            thread.sched.irq_wake_ticks.store(0, Ordering::Relaxed);
+        }
         thread.remove_donated_priority();
         // A suspend requested while this thread was critical is only recorded:
         // `maybe_suspend_self` declines, and `exit_critical` does nothing on the 0 transition, so

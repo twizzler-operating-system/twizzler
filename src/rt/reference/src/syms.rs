@@ -1286,12 +1286,18 @@ pub unsafe extern "C-unwind" fn twz_rt_iter_phdr(
 check_ffi_type!(twz_rt_iter_phdr, _, _);
 
 // info.h
-use twizzler_rt_abi::bindings::system_info;
+use twizzler_rt_abi::bindings::{memory_info, system_info};
 #[no_mangle]
 pub unsafe extern "C-unwind" fn twz_rt_get_sysinfo() -> system_info {
     OUR_RUNTIME.sysinfo()
 }
 check_ffi_type!(twz_rt_get_sysinfo);
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_get_memory_info() -> memory_info {
+    OUR_RUNTIME.memory_info()
+}
+check_ffi_type!(twz_rt_get_memory_info);
 
 // exec.h
 

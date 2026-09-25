@@ -139,13 +139,16 @@ fn shard_idx(id: Option<ObjID>) -> usize {
     }
 }
 
-/// Take the inflight-manager lock, timing the acquisition.
+/// Take the inflight-manager lock, timing the acquisition under `--diag=pager`.
 ///
 /// One global mutex guards every request's admission, coalescing, wait setup and completion, so it
 /// is on both the submit and the completion path of every page-in and taken again on each turn of
 /// the wait loop. Whether that serializes is a question worth asking only now that requests
 /// actually overlap; the timing is an `Instant::now()` pair, which is two `rdtsc`s.
 pub(super) fn lock_shard(idx: usize) -> LockGuard<'static, InflightManager> {
+    if !crate::kdiag_pager() {
+        return inflight_mgr().shards[idx].lock();
+    }
     let start = crate::instant::Instant::now();
     let guard = inflight_mgr().shards[idx].lock();
     profile::PAGER_PROFILE.mgr_lock((crate::instant::Instant::now() - start).as_nanos() as u64);

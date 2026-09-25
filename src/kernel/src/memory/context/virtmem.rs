@@ -1612,7 +1612,9 @@ pub mod unmap_census {
     static SKIPPED: AtomicUsize = AtomicUsize::new(0);
 
     pub fn record_skip() {
-        SKIPPED.fetch_add(1, Ordering::Relaxed);
+        if crate::kdiag_stats() {
+            SKIPPED.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Objects left permanently unreapable by a removal: last region gone, `map_count` still
@@ -1644,7 +1646,11 @@ pub mod unmap_census {
         }
     }
 
+    /// `record` and `record_skip` run per region removal, so they count only under `--diag=stats`.
     pub fn record(arches: usize, mapped: usize, counted: bool) {
+        if !crate::kdiag_stats() {
+            return;
+        }
         CALLS.fetch_add(1, Ordering::Relaxed);
         if !counted {
             STABLE_CALLS.fetch_add(1, Ordering::Relaxed);
@@ -1666,6 +1672,19 @@ pub mod unmap_census {
     }
 
     pub fn print() {
+        // The anomaly counters are always kept and always printed; the census only under stats.
+        emerglogln!(
+            "== unmap census releases: {} unverified (dec taken), {} foreign (dec withheld)",
+            UNVERIFIED.load(Ordering::Relaxed),
+            FOREIGN.load(Ordering::Relaxed)
+        );
+        emerglogln!(
+            "== unmap census pd-stuck: {} objects left unreapable (log capped at 8)",
+            PD_STUCK.load(Ordering::Relaxed)
+        );
+        if !crate::kdiag_stats() {
+            return;
+        }
         let calls = CALLS.load(Ordering::Relaxed);
         if calls == 0 {
             emerglogln!("== unmap census: none");
@@ -1692,15 +1711,6 @@ pub mod unmap_census {
             SKIPPED.load(Ordering::Relaxed),
             MAX_ARCHES.load(Ordering::Relaxed),
             MAX_MAPPED.load(Ordering::Relaxed),
-        );
-        emerglogln!(
-            "== unmap census releases: {} unverified (dec taken), {} foreign (dec withheld)",
-            UNVERIFIED.load(Ordering::Relaxed),
-            FOREIGN.load(Ordering::Relaxed)
-        );
-        emerglogln!(
-            "== unmap census pd-stuck: {} objects left unreapable (log capped at 8)",
-            PD_STUCK.load(Ordering::Relaxed)
         );
         emerglogln!(
             "== unmap census arches/removal [0,1,2,3,4,5-8,9-16,17+]: {} {} {} {} {} {} {} {}",

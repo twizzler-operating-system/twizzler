@@ -805,7 +805,7 @@ impl PendingShootdown {
         if self.count == 0 {
             return;
         }
-        let start = crate::instant::Instant::now();
+        let start = crate::kdiag_stats().then(crate::instant::Instant::now);
         // Wait for every targeted processor to report that it is done. This wait must not be
         // bounded: the caller frees the unmapped frames -- page table pages included -- once it
         // returns, so giving up early lets a processor that still holds stale entries walk recycled
@@ -875,7 +875,9 @@ impl PendingShootdown {
                 },
             );
         });
-        tlb_wait_record(self.origin, crate::instant::Instant::now() - start);
+        if let Some(start) = start {
+            tlb_wait_record(self.origin, crate::instant::Instant::now() - start);
+        }
         self.count = 0;
     }
 }

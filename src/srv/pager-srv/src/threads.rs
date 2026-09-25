@@ -129,15 +129,21 @@ fn is_fast(req: &RequestFromKernel) -> bool {
             let flags_ok = !flags.intersects(PagerFlags::PREFETCH | PagerFlags::BACKGROUND);
             let urgent_range = crate::request_handle::urgent_segment(range, required);
             let urgent = urgent_range.page_count();
+            if !crate::watchdog::diag_enabled() {
+                return flags_ok
+                    && urgent <= FAST_PAGE_LIMIT
+                    && !probe_store(id, range).would_block();
+            }
             let pages = range.page_count();
             // Probed on the whole range, not the urgent segment: the lane serves the read-ahead
             // inline after the urgent pages, so it parks on the fs lock if any part of the request
             // needs it.
             //
-            // Deliberately not short-circuited: the question `FAST_PAGE_LIMIT` has never been able
-            // to answer is whether raising it would *let anything through*, and that needs the
-            // probe evaluated on the requests the size test currently rejects. Two cache reads on
-            // the dequeue thread, which is the same cost the accepted path already pays.
+            // Under the diag class, deliberately not short-circuited: the question
+            // `FAST_PAGE_LIMIT` has never been able to answer is whether raising it
+            // would *let anything through*, and that needs the probe evaluated on the
+            // requests the size test currently rejects. Two cache reads on the dequeue
+            // thread, which is the same cost the accepted path already pays.
             let miss = probe_store(id, range);
             let probe_ok = !miss.would_block();
             // The counterfactual the probe cannot otherwise answer: if the lane served only the

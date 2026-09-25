@@ -142,7 +142,13 @@ impl Work {
     ///
     /// `PHASE_STATS` is taken *after* `ACTIVE` is released rather than nested inside it: the two
     /// locks are then never held together, so no ordering discipline is needed between them.
+    ///
+    /// Only under the `pager` diag class: both are global mutexes, taken at every phase of every
+    /// request. Off, a wedge report names the phase the work started in.
     pub fn phase(&self, phase: &'static str) {
+        if !diag_enabled() {
+            return;
+        }
         let now = Instant::now();
         let left = with_active(|active| {
             active.get_mut(&self.id).map(|entry| {
@@ -167,7 +173,9 @@ impl Drop for Work {
         if let Some(entry) = finished {
             // The last phase has no successor marker to close it, so it is charged here; without
             // this every request's final phase would be missing from the totals.
-            record_phase(entry.phase, entry.phase_start.elapsed().as_nanos() as u64);
+            if diag_enabled() {
+                record_phase(entry.phase, entry.phase_start.elapsed().as_nanos() as u64);
+            }
             if entry.reported.is_some() {
                 tracing::warn!(
                     "pager watchdog: {} finished qid {} after {}ms in phase '{}': {:?}",
@@ -237,9 +245,13 @@ const PHASE_REPORT_EVERY: Duration = Duration::from_secs(2);
 /// Same contract as `twizzler_net::diag_enabled`, which pager-srv does not depend on; init logs
 /// the value at boot, so a log without NVMEQ/PHASETICK heartbeats provably means "off".
 pub(crate) fn diag_enabled() -> bool {
-    static SET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    let set = SET.get_or_init(|| std::env::var("TWZ_DIAG").unwrap_or_default());
-    set.split(',').any(|c| c == "pager" || c == "all")
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("TWZ_DIAG")
+            .unwrap_or_default()
+            .split(',')
+            .any(|c| c == "pager" || c == "all")
+    })
 }
 
 fn sampler_main() {

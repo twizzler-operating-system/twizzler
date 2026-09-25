@@ -1483,7 +1483,12 @@ const POOLED_BIT: u64 = 1 << 17;
 /// so [Frame::adjust_pt_count]'s `fetch_add` can never carry out of the field.
 const PT_COUNT_SHIFT: u64 = 18;
 const PT_COUNT_MASK: u64 = 0x3ff << PT_COUNT_SHIFT;
+/// A tripwire, so armed only for test and `--diag` boots: it reads 2 head frames per 4 KiB frame
+/// and every child of a large one, on every alloc and free.
 pub(super) fn check_overlap(frame: FrameRef, whence: &str) {
+    if !crate::is_test_mode() && !crate::is_diag_mode() {
+        return;
+    }
     let pa = frame.start_address();
     let level = frame.get_level();
     for l in (level + 1)..NR_LEVELS {

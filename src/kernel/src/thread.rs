@@ -513,7 +513,7 @@ impl Thread {
     /// Mark this thread as having executed, returning whether it already had. A thread that has
     /// not run yet exists on exactly one run queue and has never been current anywhere.
     pub fn mark_run(&self) -> bool {
-        self.has_run.swap(true, Ordering::SeqCst)
+        self.has_run.load(Ordering::Acquire) || self.has_run.swap(true, Ordering::SeqCst)
     }
 
     /// True once this thread's switch has saved its stack pointer and is provably no longer
