@@ -7,6 +7,7 @@ use std::{
 use reqwest::Client;
 use toml_edit::DocumentMut;
 
+use super::llvm::is_nixos;
 use crate::{
     toolchain::{download_file, guess_host_triple, install_build_tools, BootstrapOptions},
     triple::all_possible_platforms,
@@ -78,7 +79,13 @@ pub fn generate_config_toml(_cli: &BootstrapOptions) -> anyhow::Result<()> {
 
     let host_cc = std::env::var("CC").unwrap_or("/usr/bin/clang".to_string());
     let host_cxx = std::env::var("CXX").unwrap_or("/usr/bin/clang++".to_string());
-    let host_ld = std::env::var("LD").unwrap_or("/usr/bin/clang++".to_string());
+    // Nix shells export LD=ld (the raw linker), which rustc cannot drive directly, so link
+    // through the C++ compiler driver there instead.
+    let host_ld = if is_nixos() {
+        host_cxx.clone()
+    } else {
+        std::env::var("LD").unwrap_or("/usr/bin/clang++".to_string())
+    };
     toml["target"][host_triple]["llvm-has-rust-patches"] = toml_edit::value(true);
     toml["target"][host_triple]["cc"] = toml_edit::value(host_cc);
     toml["target"][host_triple]["cxx"] = toml_edit::value(host_cxx);

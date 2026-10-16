@@ -60,6 +60,9 @@
               libclang
               mdbook
 
+              # build-host python for cross-compiling the cpython port (configure --with-build-python=python3.14)
+              python314
+
               e2fsprogs
               llvmPackages.lld
             ];

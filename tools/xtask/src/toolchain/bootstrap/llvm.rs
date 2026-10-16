@@ -105,7 +105,13 @@ pub fn build_llvm(_cli: &BootstrapOptions) -> anyhow::Result<()> {
     cfg.define("LLVM_INSTALL_UTILS", "ON");
     cfg.define("LLVM_ENABLE_ZLIB", "OFF");
 
-    cfg.define("LLVM_ENABLE_RUNTIMES", "compiler-rt");
+    // The host compiler-rt is built with the freshly built (unwrapped) clang, which on NixOS
+    // cannot find the host libc headers. Nothing in the Twizzler toolchain uses the host
+    // compiler-rt (Twizzler targets get their own in build_compiler_rt), so skip it there.
+    cfg.define(
+        "LLVM_ENABLE_RUNTIMES",
+        if is_nixos() { "" } else { "compiler-rt" },
+    );
     cfg.define("LLVM_ENABLE_PROJECTS", "clang");
     cfg.define("LLVM_VERSION_SUFFIX", "-rust-twizzler");
 
@@ -429,6 +435,10 @@ pub fn build_compiler_rt(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Re
     std::fs::copy(src, dest)?;
 
     Ok(())
+}
+
+pub fn is_nixos() -> bool {
+    Path::new("/etc/NIXOS").exists() || std::env::var_os("IN_NIX_SHELL").is_some()
 }
 
 fn unhashed_basename(obj: &Path) -> &str {
