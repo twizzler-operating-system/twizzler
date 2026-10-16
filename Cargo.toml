@@ -120,7 +120,7 @@ initrd = [
     "crate:shell",
     #"crate:sshd",
 
-    #"crate:sec",
+    "crate:sec",
     #"crate:ptest",
     #"crate:sqlite_test",
     #"crate:persistent-hashmap-test",
@@ -389,6 +389,10 @@ hostname = { git = "https://github.com/twizzler-operating-system/hostname.git", 
 ctrlc = { git = "https://github.com/twizzler-operating-system/rust-ctrlc.git", branch = "twizzler" }
 crossterm = { path = "src/ports/crossterm" }
 mio = { path = "src/ports/mio" }
+
+pyo3 = { git = "https://github.com/suri-codes/pyo3.git" , branch = "twizzler" }
+pyo3-build-config = { git = "https://github.com/suri-codes/pyo3.git", branch = "twizzler" }
+
 signal-hook = { path = "src/ports/signal-hook" }
 signal-hook-mio = { path = "src/ports/signal-hook/signal-hook-mio" }
 #memmap2 = { git = "https://github.com/twizzler-operating-system/memmap2-rs.git", branch = "twizzler" }

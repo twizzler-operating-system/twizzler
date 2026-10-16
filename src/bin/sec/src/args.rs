@@ -22,6 +22,16 @@ pub enum Commands {
     /// Commands pertaining to objects.
     #[command(subcommand)]
     Obj(ObjCommands),
+
+    /// Start an interactive Python REPL with twizzler/twizzler-security bindings.
+    Repl(ReplArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ReplArgs {
+    /// Optional path to a .py script to run instead of dropping into an
+    /// interactive prompt.
+    pub script: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
