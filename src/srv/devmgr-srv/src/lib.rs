@@ -1,4 +1,5 @@
 use devmgr::{DriverSpec, OwnedDevice};
+use ids_rs::PciDatabase;
 use pci_types::device_type::DeviceType;
 use twizzler::{
     collections::vec::VecObject,
@@ -16,7 +17,7 @@ fn get_pcie_offset(bus: u8, device: u8, function: u8) -> usize {
     ((bus as usize * 256) + (device as usize * 8) + function as usize) * 4096
 }
 
-fn start_pcie_device(seg: &Device, bus: u8, device: u8, function: u8) {
+fn start_pcie_device(db: &PciDatabase, seg: &Device, bus: u8, device: u8, function: u8) {
     let kr = seg.kaction(
         KactionCmd::Specific(PcieKactionSpecific::RegisterDevice.into()),
         ((bus as u64) << 16) | ((device as u64) << 8) | (function as u64),
@@ -32,7 +33,7 @@ fn start_pcie_device(seg: &Device, bus: u8, device: u8, function: u8) {
     }
 }
 
-fn start_pcie(seg: Device) {
+fn start_pcie(seg: Device, db: &PciDatabase) {
     tracing::info!("[devmgr] scanning PCIe bus");
     let mmio = seg.get_mmio(0).unwrap();
 
@@ -55,20 +56,27 @@ fn start_pcie(seg: Device) {
                     let cfg = unsafe { mmio.get_mmio_offset::<PcieFunctionHeader>(off) };
                     let cfg = cfg.as_ptr();
                     if map_field!(cfg.vendor_id).read() != 0xffff {
-                        let dt = DeviceType::from((
+                        let _dt = DeviceType::from((
                             map_field!(cfg.class).read(),
                             map_field!(cfg.subclass).read(),
                         ));
+                        let description = db.describe_device(
+                            map_field!(cfg.vendor_id).read().into(),
+                            map_field!(cfg.device_id).read().into(),
+                            Some(map_field!(cfg.class).read().into()),
+                            Some(map_field!(cfg.subclass).read().into()),
+                            Some(map_field!(cfg.progif).read().into()),
+                            None,
+                            None,
+                        );
                         tracing::info!(
-                            "pcie device: {:02x}:{:02x}.{:02x} -- {:?} ({:x} {:x})",
+                            "pcie device: {:02x}:{:02x}.{:02x} -- {}",
                             bus,
                             device,
                             function,
-                            dt,
-                            map_field!(cfg.class).read(),
-                            map_field!(cfg.subclass).read()
+                            description,
                         );
-                        start_pcie_device(&seg, bus, device, function)
+                        start_pcie_device(db, &seg, bus, device, function)
                     }
                 }
             }
@@ -86,10 +94,11 @@ pub fn devmgr_start() -> Result<(), TwzError> {
     )
     .unwrap();
 
+    let db = PciDatabase::get();
     let device_root = twizzler_driver::get_bustree_root();
     for device in device_root.children() {
         if device.is_bus() && device.bus_type() == BusType::Pcie {
-            start_pcie(device);
+            start_pcie(device, db);
         }
     }
     Ok(())

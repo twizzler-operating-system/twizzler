@@ -22,3 +22,4 @@ tracing-subscriber = { workspace = true }
 tracing = { workspace = true }
 devmgr = { workspace = true }
 twizzler = { workspace = true }
+ids_rs = "*"

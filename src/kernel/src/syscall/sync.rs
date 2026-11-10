@@ -328,7 +328,8 @@ pub fn add_to_requeue(thread: ThreadRef) {
             Some(t) => (Some(t), requeue.count.load(Ordering::SeqCst)),
         };
         // bit 0: duplicate (nothing inserted); bits 1..: `count` after.
-        (leftover, leftover.is_some() as u16 | ((count as u16) << 1))
+        let val = leftover.is_some() as u16 | ((count as u16) << 1);
+        (leftover, val)
     };
     rec.sync_note(crate::thread::synctrace::RQ_INSERT, arg);
     drop(rec);

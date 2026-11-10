@@ -1514,7 +1514,14 @@ impl Object {
         ct: CacheType,
     ) -> Result<(), TwzError> {
         let mut pt = self.lock_page_tables();
-        let len = (end.raw() - start.raw()) as usize;
+        let mut len = (end.raw() - start.raw()) as usize;
+        if len == 0 {
+            return Ok(());
+        }
+        // TODO: temporary limit
+        if len >= (512 * 1024 * 1024) {
+            len = 512 * 1024 * 1024;
+        }
         let cursor = MappingCursor::new(VirtAddr::new(offset as u64).unwrap(), len);
         let mut fa = take_or_new_frame_allocator();
         let need = pt.mapper.tables_needed(&cursor);

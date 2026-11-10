@@ -8,9 +8,6 @@ MAC_PACKAGES=(
             "zstd"
 )
 DEBIAN_PKGS=(
-    qemu-system
-    qemu-utils
-    qemu-kvm
     bridge-utils
     cpu-checker
     libvirt-daemon-system
