@@ -609,8 +609,15 @@ fn schedule_thread_on_cpu(
     let t = crate::interrupt::irqlat::start(dev);
     processor.rq.insert(thread, timeshare_wake, preempted);
     crate::interrupt::irqlat::seg(crate::interrupt::irqlat::Seg::Insert, t);
-    // The bsp ticks every ms regardless; a remote target arms from `schedule_resched`.
-    if timeshare_wake && kind != wakestats::WAKE_LOCAL_MARKED && !is_remote && !processor.is_bsp() {
+    // The bsp ticks every ms regardless; a remote target arms from `schedule_resched`. A deadline
+    // already due within the granularity serves too: the tick re-arms at it while the wake is
+    // pending, and each arm costs timer-register writes (VM exits under KVM).
+    if timeshare_wake
+        && kind != wakestats::WAKE_LOCAL_MARKED
+        && !is_remote
+        && !processor.is_bsp()
+        && !crate::arch::oneshot_pending_within(WAKE_GRAN_NS)
+    {
         let t = crate::interrupt::irqlat::start(dev);
         crate::clock::schedule_oneshot_tick(WAKE_GRAN_TICKS);
         crate::interrupt::irqlat::seg(crate::interrupt::irqlat::Seg::ArmTick, t);
@@ -1062,6 +1069,17 @@ where
 /// counters; a stranded runnable thread shows `Running, run false` with a linked or unlinked
 /// sched_link and frozen ticks; a lost wake shows `Sleeping` plus whichever wait link it holds.
 pub fn schedmon_dump(pass: u64) {
+    /// Sys ticks in one 30 s pass (3810 at 127 Hz) past which a runnable thread that is not on a
+    /// cpu gets its kernel frames printed: a thread spending its slices inside a syscall is the
+    /// wedge shape neither the hang scan (nothing is blocked) nor `ip` (a user address) names.
+    const KERNEL_HOG_TICKS: u64 = 1500;
+    /// A timed sleeper this far past its deadline has lost its wake, not merely been slow.
+    const TIMED_WAIT_OVERDUE_NS: u64 = 2_000_000_000;
+    let now_ns = crate::instant::current_ns();
+    static LAST_SYS: crate::spinlock::Spinlock<alloc::collections::BTreeMap<u64, u64>> =
+        crate::spinlock::Spinlock::new(alloc::collections::BTreeMap::new());
+    let mut hogs: alloc::vec::Vec<(u64, u64, u64, u64, core::ops::Range<u64>)> =
+        alloc::vec::Vec::new();
     for p in crate::processor::mp::all_processors().iter().flatten() {
         // Host steal time, so a reading taken on a contended host says so in the same line as
         // the numbers it perturbs. 0 outside KVM (and always on non-x86).
@@ -1123,8 +1141,43 @@ pub fn schedmon_dump(pass: u64) {
                 t.stats.sys.load(Ordering::Relaxed),
                 t.read_ip(),
             );
+            if t.get_state() == ExecutionState::Sleeping && t.has_timed_wait() {
+                let deadline = t.tw_deadline_ns.load(Ordering::Relaxed);
+                if deadline != 0 && now_ns > deadline + TIMED_WAIT_OVERDUE_NS {
+                    emerglogln!(
+                        "[schedmon] {}   th {} timed wait overdue {} ms: deadline {} fired {} sleep_gen {}",
+                        pass,
+                        t.id(),
+                        (now_ns - deadline) / 1_000_000,
+                        deadline,
+                        t.tw_fired_ns.load(Ordering::Relaxed),
+                        t.sync_sleep_gen(),
+                    );
+                }
+            }
+            let sys = t.stats.sys.load(Ordering::Relaxed);
+            let prev = LAST_SYS.lock().insert(t.id(), sys).unwrap_or(sys);
+            #[cfg(target_arch = "x86_64")]
+            if t.get_state() == ExecutionState::Running && sys - prev >= KERNEL_HOG_TICKS {
+                if let Some((rip, _rsp, rbp)) = t.saved_kernel_frame() {
+                    let base = t.kernel_stack.as_ptr() as u64;
+                    let stack = base..base + crate::processor::THREAD_STACK_SIZE as u64;
+                    hogs.push((t.id(), sys - prev, rip, rbp, stack));
+                }
+            }
         }
     });
+    // Outside the thread-list lock: symbolizing is slow and takes its own lock.
+    for (id, delta, rip, rbp, stack) in hogs {
+        emerglogln!(
+            "[schedmon] {} kernel frames of th {} ({} sys ticks this pass, saved rip {:x}):",
+            pass,
+            id,
+            delta,
+            rip
+        );
+        crate::panic::backtrace_saved(rip, rbp, stack);
+    }
 }
 
 /// Take a thread out of both registries.
@@ -1267,6 +1320,7 @@ pub fn schedule_thread(thread: ThreadRef) {
     let t = crate::interrupt::irqlat::start(dev);
     let cpuid = select_cpu(&thread, None, true);
     crate::interrupt::irqlat::seg(crate::interrupt::irqlat::Seg::Select, t);
+    thread.sync_note(crate::thread::synctrace::SCHED, cpuid as u16);
     let processor = get_processor(cpuid);
     log::trace!(
         "{} on {} (load = {},{}): picked {} (load = {},{}) for thread {}",

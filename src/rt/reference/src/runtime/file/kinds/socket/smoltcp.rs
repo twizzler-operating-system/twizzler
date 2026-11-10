@@ -67,6 +67,9 @@ struct Listener {
 
 impl Drop for Listener {
     fn drop(&mut self) {
+        if twizzler_net::diag_enabled("net") {
+            twizzler_abi::klog_println!("LISTENERDROP {:?} port={}", self.socket_handle, self.port);
+        }
         ENGINE
             .core
             .lock()
@@ -343,6 +346,14 @@ impl SmolTcpListener {
                         );
                     }) {
                         let dead = listener.socket_handle;
+                        if twizzler_net::diag_enabled("net") {
+                            twizzler_abi::klog_println!(
+                                "LISTENERREPAIR {:?} port={} state={:?}",
+                                dead,
+                                self.port,
+                                core.get_mutable_socket(dead).state()
+                            );
+                        }
                         let newhandle = core.add_socket(sock, Some(self.group));
                         listener.socket_handle = newhandle;
                         // Retire the broken socket rather than orphaning it in the group:

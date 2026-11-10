@@ -403,6 +403,10 @@ pub struct ArchProcessor {
     /// what remote readers use.
     pub(super) steal_va: AtomicU64,
     pub(super) steal_phys: AtomicU64,
+    /// TSC deadline last programmed on this cpu, and whether its timer LVT is already in deadline
+    /// mode. Written only by this cpu; each timer register write is a VM exit under KVM.
+    pub(super) timer_deadline: AtomicU64,
+    pub(super) timer_lvt_deadline: AtomicBool,
 }
 
 impl ArchProcessor {
@@ -453,6 +457,8 @@ impl Default for ArchProcessor {
             pcid_valid: [const { AtomicU64::new(0) }; PCID_BITMAP_WORDS],
             steal_va: AtomicU64::new(0),
             steal_phys: AtomicU64::new(0),
+            timer_deadline: AtomicU64::new(0),
+            timer_lvt_deadline: AtomicBool::new(false),
         }
     }
 }

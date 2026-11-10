@@ -355,6 +355,10 @@ impl Fd for KqueueFile {
 }
 
 impl ReferenceRuntime {
+    /// A sleep that returns without a reportable event is not a timeout: a falling-edge re-arm,
+    /// or a change to a word shared with something else, wakes `kevent_once` and it hands back
+    /// zero events, which a caller with a long timeout reads as "nothing arrived in all that
+    /// time". Keep waiting for what is left of the timeout until an event is reportable.
     pub fn kevent(
         &self,
         kq: RawFd,
@@ -362,6 +366,37 @@ impl ReferenceRuntime {
         eventlist: &mut [kevent],
         timeout: Option<Duration>,
     ) -> Result<usize> {
+        let deadline = timeout.map(|t| std::time::Instant::now() + t);
+        let mut changes = changelist;
+        let mut remaining = timeout;
+        loop {
+            let (n, slept) = self.kevent_once(kq, changes, eventlist, remaining)?;
+            if n > 0 || !slept || eventlist.is_empty() {
+                return Ok(n);
+            }
+            // Applied by the first pass; a repeat would re-register them.
+            changes = &[];
+            if let Some(deadline) = deadline {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    return Ok(0);
+                }
+                remaining = Some(deadline - now);
+            }
+        }
+    }
+
+    /// One registration pass, one sleep. Returns the events reported and whether the call
+    /// actually slept on a waitpoint (a call with nothing to wait on returns at once, and must
+    /// not be retried by `kevent`).
+    fn kevent_once(
+        &self,
+        kq: RawFd,
+        changelist: &[kevent],
+        eventlist: &mut [kevent],
+        timeout: Option<Duration>,
+    ) -> Result<(usize, bool)> {
+        let mut slept = false;
         let binding = get_fd_slots().read().unwrap();
         let file_desc = binding
             .get(kq as usize)
@@ -403,7 +438,7 @@ impl ReferenceRuntime {
         // than wait. This is what makes an EV_RECEIPT-on-every-change registration call (mio's
         // Selector::register sizes eventlist to nchanges) non-blocking.
         if out_count >= eventlist.len() {
-            return Ok(out_count);
+            return Ok((out_count, false));
         }
 
         // Sample the wake counter before snapshotting registrations. apply_changes bumps an
@@ -519,6 +554,8 @@ impl ReferenceRuntime {
                 )));
             }
             let __t0 = std::time::Instant::now();
+            let __r0 = std::time::SystemTime::now();
+            slept = !wps.is_empty() || timeout.is_some();
             let __res = sys_thread_sync(wps, timeout);
             let __slept = __t0.elapsed();
             // Age of the last read-readiness rising edge at the moment this sleep returned:
@@ -608,6 +645,14 @@ impl ReferenceRuntime {
             if matches!(__res, Err(TwzError::TIMED_OUT))
                 && timeout.is_some_and(|t| t.as_millis() >= 1000)
             {
+                // Both clocks, so a timeout that fired early says whether the thread's monotonic
+                // clock and the wall clock agree about how long it actually slept.
+                twizzler_abi::klog_println!(
+                    "KEVTIMEOUT req_ms={} mono_us={} wall_us={}",
+                    timeout.map(|t| t.as_millis() as u64).unwrap_or(0),
+                    __slept.as_micros() as u64,
+                    __r0.elapsed().map(|d| d.as_micros() as u64).unwrap_or(0)
+                );
                 crate::runtime::file::kinds::socket::engine::sample_rings();
                 crate::runtime::file::kinds::socket::engine::pollprobe("kevtimeout");
             }
@@ -701,6 +746,6 @@ impl ReferenceRuntime {
                 .retain(|e| !oneshot_fired.contains(&(e.ident, e.filter, e.token)));
         }
 
-        Ok(out_count)
+        Ok((out_count, slept))
     }
 }

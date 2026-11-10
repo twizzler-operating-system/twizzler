@@ -366,10 +366,11 @@ fn run_and_report(cli: &TestOptions, run: RunConfig, memhog_free: u32) -> anyhow
     // A run that produced no report tells us nothing, whether it timed out or died early. Treat
     // both as failure rather than falling back on the exit code alone.
     let Some(report) = outcome.report.take() else {
-        if outcome.qemu_exit.is_none() {
-            eprintln!("FAILED: qemu timed out before producing a report");
-        } else {
-            eprintln!("FAILED: qemu exited without producing a report");
+        match outcome.qemu_exit {
+            None => eprintln!("FAILED: qemu timed out before producing a report"),
+            // The status separates a guest that died (triple fault exits with a code) from a
+            // qemu the host killed (a signal), which the bare message could not.
+            Some(status) => eprintln!("FAILED: qemu exited without producing a report ({status})"),
         }
         std::process::exit(34);
     };

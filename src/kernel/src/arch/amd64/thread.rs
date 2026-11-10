@@ -837,3 +837,27 @@ mod tests {
         thread.with_saved_extended_state(|| { /* TODO: SIMD test */ })
     }
 }
+
+impl Thread {
+    /// The kernel context `__do_switch` saved when this thread was last switched out, as
+    /// `(rip, rsp, rbp)`: the return address into the switch caller, the stack pointer after the
+    /// saved registers, and the frame pointer. `None` for a thread that has never run, is running
+    /// now, or whose save does not lie on its own kernel stack.
+    pub fn saved_kernel_frame(&self) -> Option<(u64, u64, u64)> {
+        if self.is_active_running() {
+            return None;
+        }
+        let base = self.kernel_stack.as_ptr() as u64;
+        let rsp = unsafe { *self.arch.rsp.get() };
+        let saved = 7 * 8;
+        if base == 0
+            || rsp < base
+            || rsp + saved + 8 > base + crate::processor::THREAD_STACK_SIZE as u64
+        {
+            return None;
+        }
+        // Pushed in this order: rbp rbx r12 r13 r14 r15 rflags, so rsp points at rflags.
+        let word = |off: u64| unsafe { core::ptr::read_volatile((rsp + off) as *const u64) };
+        Some((word(saved), rsp + saved + 8, word(6 * 8)))
+    }
+}

@@ -108,14 +108,13 @@ type MonitorLocks<'a> = (
 
 /// Entry point for an ordinary compartment thread spawn. Plain function, no closure, no allocation.
 ///
-/// Deliberately *not* merged with `comp_main_entry`: this one guards on a zero instance and ignores
-/// a failed attach, where the compartment-main path attaches unconditionally and unwraps. Unifying
-/// them would silently change whether a failed `sys_sctx_attach` panics a monitor thread.
+/// Deliberately *not* merged with `comp_main_entry`: this one does not attach at all (the thread
+/// inherits the caller's attachment set through the spawn gate), where the compartment-main path
+/// attaches unconditionally and unwraps.
 unsafe extern "C" fn comp_spawn_entry(args: usize) -> ! {
+    // No `sys_sctx_attach` here, unlike `comp_main_entry`: this thread was spawned from a gate
+    // call out of `a.instance`, so the attachment set it inherited already holds it.
     let a = unsafe { core::ptr::read_unaligned(args as *const thread::EntryArgs) };
-    if a.instance.raw() != 0 {
-        let _ = twizzler_abi::syscall::sys_sctx_attach(a.instance);
-    }
     let frame = UpcallFrame::new_entry_frame(
         a.stack_ptr,
         a.stack_size,
@@ -253,7 +252,7 @@ impl Monitor {
         let (super_tls, super_tid) = match thread::readypool::take() {
             Some(super_tls) => {
                 let key = ThreadKey::get().unwrap();
-                let mut tmgr = crate::lockdiag::watched(self.thread_mgr.write(key));
+                let mut tmgr = crate::lockdiag::watched_write(self.thread_mgr, key);
                 let super_tid = tmgr.take_super_tid();
                 drop(tmgr);
                 thread::init_super_tcb(&super_tls, super_tid);
@@ -261,7 +260,7 @@ impl Monitor {
             }
             None => {
                 let key = ThreadKey::get().unwrap();
-                let locks = &mut *crate::lockdiag::watched(self.locks.lock(key));
+                let locks = &mut *crate::lockdiag::watched_lock_all(&self.locks, key);
                 let monitor_dynlink_comp =
                     locks.2.get_compartment_mut(MONITOR_COMPARTMENT_ID).unwrap();
                 locks.0.prep_spawn(monitor_dynlink_comp)?
@@ -271,7 +270,7 @@ impl Monitor {
         let mt = ThreadMgr::finish_spawn(super_tls, super_tid, start, args, None, instance);
 
         let key = ThreadKey::get().unwrap();
-        let mut tmgr = crate::lockdiag::watched(self.thread_mgr.write(key));
+        let mut tmgr = crate::lockdiag::watched_write(self.thread_mgr, key);
         match mt {
             Ok(mt) => {
                 tmgr.register(&mt);
@@ -296,7 +295,8 @@ impl Monitor {
         args: ThreadSpawnArgs,
         stack_ptr: usize,
         thread_ptr: usize,
-    ) -> Result<ObjID, TwzError> {
+        upcall_self: usize,
+    ) -> Result<monitor_api::SpawnedThread, TwzError> {
         let thread = self.start_thread(
             instance,
             comp_spawn_entry,
@@ -308,6 +308,7 @@ impl Monitor {
                 entry: args.start,
                 arg: args.arg,
                 suspend: false,
+                upcall_self,
             },
         )?;
         let mon = get_monitor();
@@ -332,7 +333,7 @@ impl Monitor {
 
         // A read: both of the things done here -- pre-creating the per-thread structure and
         // recording the premapped repr -- now take `&RunComp` and carry their own locks.
-        let comps = crate::lockdiag::watched(mon.comp_mgr.read(ThreadKey::get().unwrap()));
+        let comps = crate::lockdiag::watched_read(mon.comp_mgr, ThreadKey::get().unwrap());
         let comp = comps.get(instance)?;
         write_note!(thread.id, "thread:{}", comp.name);
         // Deliberately does *not* touch `get_per_thread`. That creates and maps a simple-buffer
@@ -343,16 +344,23 @@ impl Monitor {
         // Held by the compartment, not by us: the caller's `map_object` replaces this entry with
         // its own handle for the same `MapInfo`, and the mapping is released when the caller
         // releases that one.
-        if let Some(repr_handle) = repr_handle {
+        // The slot goes back to the caller, which records it as its own mapping instead of
+        // asking for it through a second gate.
+        let repr_slot = repr_handle.map(|repr_handle| {
+            let slot = repr_handle.addrs().slot;
             comp.premap_object(repr_info, repr_handle);
-        }
-        Ok(thread.id)
+            slot
+        });
+        Ok(monitor_api::SpawnedThread {
+            id: thread.id,
+            repr_slot,
+        })
     }
 
     /// Get the compartment config for the given compartment.
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn get_comp_config(&self, sctx: ObjID) -> Result<*const SharedCompConfig, TwzError> {
-        let comps = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
+        let comps = crate::lockdiag::watched_read(self.comp_mgr, ThreadKey::get().unwrap());
         Ok(comps.get(sctx)?.comp_config_ptr())
     }
 
@@ -364,7 +372,7 @@ impl Monitor {
         // A read: recording the mapping only touches the compartment's own map, which has its own
         // lock. Taking the manager's *write* lock here made every map in the system serialize
         // against every other one, in any compartment.
-        let comp_mgr = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
+        let comp_mgr = crate::lockdiag::watched_read(self.comp_mgr, ThreadKey::get().unwrap());
         let rc = comp_mgr.get(sctx)?;
         rc.map_object(info, handle)
     }
@@ -380,7 +388,7 @@ impl Monitor {
         let (handle, handle2) =
             crate::lockdiag::watched(self.space.lock().unwrap()).map_pair(info, info2)?;
 
-        let comp_mgr = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
+        let comp_mgr = crate::lockdiag::watched_read(self.comp_mgr, ThreadKey::get().unwrap());
         let rc = comp_mgr.get(sctx)?;
         let handle = rc.map_object(info, handle)?;
         let handle2 = rc.map_object(info2, handle2)?;
@@ -406,7 +414,7 @@ impl Monitor {
             return;
         };
 
-        let comp_mgr = crate::lockdiag::watched(self.comp_mgr.read(key));
+        let comp_mgr = crate::lockdiag::watched_read(self.comp_mgr, key);
         if let Ok(comp) = comp_mgr.get(sctx) {
             // Handle dropped after both locks: it sends to the unmapper thread.
             let handle = comp.unmap_object(info);
@@ -433,7 +441,7 @@ impl Monitor {
         sctx: ObjID,
         thread: ObjID,
     ) -> Result<std::sync::Arc<Mutex<compartment::PerThread>>, TwzError> {
-        let comps = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
+        let comps = crate::lockdiag::watched_read(self.comp_mgr, ThreadKey::get().unwrap());
         Ok(comps.get(sctx)?.get_per_thread(thread))
     }
 
@@ -471,7 +479,7 @@ impl Monitor {
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn compartment_ids(&self, caller: ObjID, thread: ObjID) -> Result<usize, TwzError> {
         let ids = {
-            let cmp = crate::lockdiag::watched(self.comp_mgr.read(reentrant_key()?));
+            let cmp = crate::lockdiag::watched_read(self.comp_mgr, reentrant_key()?);
             cmp.instance_ids()
         };
         let bytes: Vec<u8> = ids.iter().flat_map(|id| id.raw().to_ne_bytes()).collect();
@@ -608,7 +616,7 @@ impl Monitor {
                         sys_thread_exit(code as u64);
                     };
                     let (ref tmgr, ref cmgr, _, _, _) =
-                        *crate::lockdiag::watched(self.locks.lock(key));
+                        *crate::lockdiag::watched_lock_all(&self.locks, key);
                     let Ok(rc) = cmgr.get(src) else {
                         sys_thread_exit(code as u64);
                     };
@@ -645,7 +653,7 @@ impl Monitor {
         }
         let post_signal = |target: ObjID, sig: u64| -> Result<(), TwzError> {
             tracing::debug!("posting signal {} to {}", sig, target);
-            let comp = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
+            let comp = crate::lockdiag::watched_read(self.comp_mgr, ThreadKey::get().unwrap());
             let comp = comp.get(target)?;
             let scc = comp.comp_config_ptr();
             let scc = unsafe { &*scc };
@@ -685,7 +693,7 @@ impl Monitor {
         target: ObjID,
         controller: ObjID,
     ) -> Result<(), TwzError> {
-        let mut cm = crate::lockdiag::watched(self.comp_mgr.write(ThreadKey::get().unwrap()));
+        let mut cm = crate::lockdiag::watched_write(self.comp_mgr, ThreadKey::get().unwrap());
         cm.set_controller(target, controller)?;
         return Ok(());
     }
@@ -701,7 +709,7 @@ impl Monitor {
 
         let name = str::from_utf8(&str_bytes).map_err(|_| TwzError::INVALID_ARGUMENT)?;
         tracing::trace!("libname map: {}", name);
-        let mut dynlink = crate::lockdiag::watched(self.dynlink.write(ThreadKey::get().unwrap()));
+        let mut dynlink = crate::lockdiag::watched_write(self.dynlink, ThreadKey::get().unwrap());
         dynlink.engine.add_name_map(name, id);
 
         Ok(())
@@ -718,7 +726,7 @@ impl Monitor {
         let name = namelen
             .map(|_| str::from_utf8(&str_bytes).map_err(|_| TwzError::INVALID_ARGUMENT))
             .transpose()?;
-        let mut dynlink = crate::lockdiag::watched(self.dynlink.write(ThreadKey::get().unwrap()));
+        let mut dynlink = crate::lockdiag::watched_write(self.dynlink, ThreadKey::get().unwrap());
         dynlink.engine.remove_name_map(name, id);
 
         Ok(())

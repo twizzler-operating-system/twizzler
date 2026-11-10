@@ -1,4 +1,4 @@
-use core::arch::asm;
+use core::{arch::asm, sync::atomic::Ordering};
 
 use x86::msr::{APIC_BASE, rdmsr, wrmsr};
 
@@ -8,6 +8,7 @@ use crate::{
     interrupt,
     memory::{PhysAddr, VirtAddr},
     once::Once,
+    processor::mp::current_processor,
     time::ClockHardware,
 };
 
@@ -189,6 +190,12 @@ impl Lapic {
 
             // Reset timer and basic interrupt control registers.
             self.write(LAPIC_TIMER, LAPIC_INT_MASKED | TIMER_VECTOR);
+            if crate::processor::tls_ready() {
+                current_processor()
+                    .arch
+                    .timer_lvt_deadline
+                    .store(false, Ordering::Relaxed);
+            }
             self.write(LAPIC_TICR, 0);
             self.write(LAPIC_LINT0, LAPIC_INT_MASKED);
             self.write(LAPIC_LINT1, LAPIC_INT_MASKED);
@@ -214,24 +221,32 @@ impl Lapic {
 
     /// Schedule the APIC timer to go off after `time` nanoseconds.
     pub fn setup_oneshot_timer(&self, time: Nanoseconds) {
-        static TSC: Once<Tsc> = Once::new();
-        let tsc = TSC.call_once(|| Tsc::new());
         let old = interrupt::disable();
-        let tsc_val = tsc.read();
+        let tsc_val = timer_tsc().read();
         let time_ticks = (1000000 * time) / tsc_val.rate.0;
         unsafe {
             // TODO: clean up once we do the cleanup for Nanoseconds.
             if supports_deadline() {
                 let deadline = tsc_val.value + time_ticks;
-                get_lapic().write(
-                    LAPIC_TIMER,
-                    LAPIC_TIMER_VECTOR as u32 | LAPIC_TIMER_DEADLINE,
-                );
+                let proc = crate::processor::tls_ready().then(current_processor);
+                // The LVT keeps deadline mode across firings; only `reset` changes it.
+                if !proc.is_some_and(|p| p.arch.timer_lvt_deadline.load(Ordering::Relaxed)) {
+                    get_lapic().write(
+                        LAPIC_TIMER,
+                        LAPIC_TIMER_VECTOR as u32 | LAPIC_TIMER_DEADLINE,
+                    );
+                    if let Some(p) = proc {
+                        p.arch.timer_lvt_deadline.store(true, Ordering::Relaxed);
+                    }
+                }
                 // Intel 3A:11.5.4.1 requires an mfence between the xAPIC MMIO write and the MSR
                 // write; on AMD the deadline `wrmsr` itself is weakly ordered (same rule as the
                 // ICR, see write_icr), so fence unconditionally.
                 asm!("mfence", "lfence", options(nostack, preserves_flags));
                 x86::msr::wrmsr(x86::msr::IA32_TSC_DEADLINE, deadline);
+                if let Some(p) = proc {
+                    p.arch.timer_deadline.store(deadline, Ordering::Relaxed);
+                }
             } else {
                 let apic = get_lapic();
                 apic.write(LAPIC_TIMER, LAPIC_TIMER_VECTOR as u32);
@@ -240,6 +255,24 @@ impl Lapic {
         }
         interrupt::set(old);
     }
+}
+
+fn timer_tsc() -> &'static Tsc {
+    static TSC: Once<Tsc> = Once::new();
+    TSC.call_once(|| Tsc::new())
+}
+
+/// Whether this cpu's deadline timer is already due to fire within `time`.
+pub fn oneshot_pending_within(time: Nanoseconds) -> bool {
+    if !supports_deadline() || !crate::processor::tls_ready() {
+        return false;
+    }
+    let now = timer_tsc().read();
+    let deadline = current_processor()
+        .arch
+        .timer_deadline
+        .load(Ordering::Relaxed);
+    deadline > now.value && deadline - now.value <= (1000000 * time) / now.rate.0
 }
 
 fn supports_deadline() -> bool {

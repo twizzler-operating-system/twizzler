@@ -52,6 +52,8 @@ pub(crate) struct EntryArgs {
     pub entry: usize,
     pub arg: usize,
     pub suspend: bool,
+    /// The compartment's own upcall entry, for Mailbox upcalls' `CallSelf` (0 if it sets its own).
+    pub upcall_self: usize,
 }
 
 /// Stack size for the supervisor upcall stack.
@@ -309,7 +311,7 @@ pub(crate) fn refill_ready_tls() {
         return;
     };
     let monitor = get_monitor();
-    let locks = &mut *crate::lockdiag::watched(monitor.locks.lock(key));
+    let locks = &mut *crate::lockdiag::watched_lock_all(&monitor.locks, key);
     let Ok(comp) = locks.2.get_compartment_mut(MONITOR_COMPARTMENT_ID) else {
         return;
     };
@@ -414,6 +416,7 @@ impl ThreadMgr {
         super_thread_pointer: usize,
         arg: usize,
         self_ctx: ObjID,
+        upcall_self: usize,
     ) -> Result<ObjID, TwzError> {
         let mut upcall_target = UpcallTarget::new(
             None,
@@ -431,6 +434,7 @@ impl ThreadMgr {
 
         let mb = &mut upcall_target.options[UpcallInfo::Mailbox(0).number()];
         mb.mode = UpcallMode::CallSelf;
+        upcall_target.self_address = upcall_self;
 
         sys_spawn(twizzler_abi::syscall::ThreadSpawnArgs {
             entry: start,
@@ -514,6 +518,7 @@ impl ThreadMgr {
                 super_thread_pointer,
                 arg,
                 instance,
+                args.upcall_self,
             )?
         };
         // We own this repr object from here: the kernel no longer deletes it when the thread dies

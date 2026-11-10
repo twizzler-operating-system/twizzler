@@ -32,7 +32,7 @@ impl Monitor {
     ) -> Result<LibraryInfoRaw, TwzError> {
         // A read: the only reason this held the collection exclusively was the simple-buffer write.
         let (_, ref comps, ref dynlink, ref libhandles, _) =
-            *crate::lockdiag::watched(self.locks.read(super::reentrant_key()?));
+            *crate::lockdiag::watched_read_all(&self.locks, super::reentrant_key()?);
         let handle = libhandles
             .lookup(instance, desc)
             .ok_or(ArgumentError::InvalidArgument)?;
@@ -80,7 +80,7 @@ impl Monitor {
         num: usize,
     ) -> Result<Descriptor, TwzError> {
         let (_, ref mut comps, ref dynlink, ref mut handles, ref comphandles) =
-            *crate::lockdiag::watched(self.locks.lock(super::reentrant_key()?));
+            *crate::lockdiag::watched_lock_all(&self.locks, super::reentrant_key()?);
         let comp_id = comp
             .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
             .unwrap_or(Some(caller))
@@ -110,7 +110,7 @@ impl Monitor {
         id: Option<ObjID>,
     ) -> Result<(Descriptor, usize), TwzError> {
         let (_, ref mut comps, ref mut dynlink, ref mut handles, _) =
-            *crate::lockdiag::watched(self.locks.lock(super::reentrant_key()?));
+            *crate::lockdiag::watched_lock_all(&self.locks, super::reentrant_key()?);
         let rc = comps.get(caller)?;
         let per_thread = rc.get_per_thread(thread);
         let name_bytes = per_thread.lock().unwrap().read_bytes(name_len);
@@ -221,7 +221,7 @@ impl Monitor {
             tracing::warn!("skipping drop of library handle {} for {}: monitor locks already held by this thread", desc, caller);
             return;
         };
-        crate::lockdiag::watched(self.library_handles.write(key)).remove(caller, desc);
+        crate::lockdiag::watched_write(self.library_handles, key).remove(caller, desc);
     }
 
     /// Look up a symbol by name in the given library (or all libs in the caller's compartment
@@ -236,7 +236,7 @@ impl Monitor {
     ) -> Result<usize, TwzError> {
         // A read: symbol lookup mutates nothing, and the name comes out of the caller's own buffer.
         let (_, ref comps, ref dynlink, ref libhandles, _) =
-            *crate::lockdiag::watched(self.locks.read(super::reentrant_key()?));
+            *crate::lockdiag::watched_read_all(&self.locks, super::reentrant_key()?);
         let rc = comps.get(caller)?;
         let name_bytes = rc
             .get_per_thread(thread)

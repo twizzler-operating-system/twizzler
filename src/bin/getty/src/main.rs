@@ -358,6 +358,16 @@ fn run_autostart(autostart: &str, autostart_args: &[String]) {
     });
     println!("autostart {} finished with code {}", path, exit_code);
 
+    // A requested shutdown (`ctl shutdown`) stops this compartment on its way down, which is why
+    // the program exited. Init's watcher owns that shutdown: it syncs and flushes the store first
+    // and reports 0, where taking the machine down from here skips both and reports 127.
+    if monitor_api::monitor_state()
+        .unwrap_or(MonitorState::empty())
+        .contains(MonitorState::SHUTDOWN)
+    {
+        return;
+    }
+
     // Same clamp as init's run_tests: isa-debug-exit reports (code << 1) | 1 in an 8-bit status,
     // so anything above 127 aliases onto another code. Clamped before the cast, since `exit_code`
     // is wider than what is being clamped to.

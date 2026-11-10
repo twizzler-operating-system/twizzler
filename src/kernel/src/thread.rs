@@ -156,6 +156,15 @@ pub struct Thread {
     /// Hang reports this thread has already caused, reset whenever it moves. Written only by the
     /// scanning cpu. See `check_system_hang`.
     hang_reports: AtomicU32,
+    /// Absolute ns deadline of this thread's current timed wait, and when its timeout callback
+    /// last ran (0 = never). Diagnostic only: lets `schedmon_dump` tell a lost timeout from a
+    /// wake that fired and went nowhere.
+    pub(crate) tw_deadline_ns: AtomicU64,
+    pub(crate) tw_fired_ns: AtomicU64,
+    /// Last [`SYNC_TRACE_LEN`] thread-sync protocol transitions (site, packed meta), under
+    /// `--diag=wake`. Read back by the hang table for a thread that is Sleeping on no queue.
+    pub(crate) sync_trace: [[AtomicU64; 2]; SYNC_TRACE_LEN],
+    pub(crate) sync_trace_idx: AtomicU32,
     /// Object and offset of the first sleep word of this thread's current `sys_thread_sync`, as
     /// (lo, hi, offset). Diagnostic only: the user ip of a blocked thread is always the same
     /// syscall wrapper, so it says the thread is in a thread-sync sleep and nothing about *which*
@@ -401,6 +410,10 @@ impl Thread {
             hang_gen: AtomicU64::new(0),
             hang_since: AtomicU64::new(0),
             hang_reports: AtomicU32::new(0),
+            tw_deadline_ns: AtomicU64::new(0),
+            tw_fired_ns: AtomicU64::new(0),
+            sync_trace: [const { [AtomicU64::new(0), AtomicU64::new(0)] }; SYNC_TRACE_LEN],
+            sync_trace_idx: AtomicU32::new(0),
             sleep_word: [const { AtomicU64::new(0) }; 5],
             last_pf_flags: AtomicU32::new(0),
             mutex_count: AtomicU32::new(0),
@@ -547,7 +560,9 @@ impl Thread {
     /// then running -- which surfaced later as "attempted to insert an object that is already
     /// linked" from the run queue. Call it before releasing the key, so no window is left where the
     /// callback can still see itself as current.
+    #[track_caller]
     pub fn end_sync_sleep(&self) {
+        self.sync_note(synctrace::GEN_END, 0);
         self.sync_sleep_gen.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -684,7 +699,9 @@ impl Thread {
     /// This function may be called in a critical section only if:
     ///   1: transitioning between running and sleeping
     ///   2: state == current state
+    #[track_caller]
     pub fn set_state_and_code(&self, state: ExecutionState, code: u64) {
+        self.sync_note(synctrace::STATE, state as u16);
         if (state == ExecutionState::Exited || state == ExecutionState::Suspended)
             && self.is_current_thread()
             && self.is_critical()
@@ -763,8 +780,50 @@ impl Thread {
 
     #[inline]
     /// See set_state_and_code for details.
+    #[track_caller]
     pub fn set_state(&self, state: ExecutionState) {
         self.set_state_and_code(state, 0)
+    }
+
+    /// Record one thread-sync transition; see [`synctrace`].
+    #[track_caller]
+    #[inline]
+    pub(crate) fn sync_note(&self, ev: u8, arg: u16) {
+        if !crate::kdiag_wake() {
+            return;
+        }
+        let site = core::panic::Location::caller() as *const _ as u64;
+        let cpu = crate::processor::mp::current_processor().id as u64 & 0xff;
+        let generation = self.sync_sleep_gen.load(Ordering::Relaxed) & 0xffff_ffff;
+        let meta = (ev as u64) | (cpu << 8) | ((arg as u64) << 16) | (generation << 32);
+        let i = self.sync_trace_idx.fetch_add(1, Ordering::Relaxed) as usize % SYNC_TRACE_LEN;
+        self.sync_trace[i][0].store(site, Ordering::Relaxed);
+        self.sync_trace[i][1].store(meta, Ordering::Relaxed);
+    }
+
+    pub(crate) fn dump_sync_trace(&self) {
+        let n = self.sync_trace_idx.load(Ordering::Relaxed) as usize;
+        if n == 0 {
+            return;
+        }
+        let first = n.saturating_sub(SYNC_TRACE_LEN);
+        for k in first..n {
+            let e = &self.sync_trace[k % SYNC_TRACE_LEN];
+            let site = e[0].load(Ordering::Relaxed);
+            let meta = e[1].load(Ordering::Relaxed);
+            let loc = unsafe { (site as *const core::panic::Location<'static>).as_ref() };
+            emerglogln!(
+                "    synctrace th {} #{} {} cpu {} arg {} gen {} @ {}:{}",
+                self.id(),
+                k,
+                synctrace::name(meta as u8),
+                (meta >> 8) & 0xff,
+                (meta >> 16) & 0xffff,
+                meta >> 32,
+                loc.map(|l| l.file()).unwrap_or("?"),
+                loc.map(|l| l.line()).unwrap_or(0),
+            );
+        }
     }
 
     pub fn get_state(&self) -> ExecutionState {
@@ -1702,6 +1761,22 @@ pub fn check_system_hang() {
                 thread.sched_link.is_linked(),
                 thread.has_timed_wait(),
             );
+            if thread.get_state() == ExecutionState::Sleeping
+                && !thread.sync_links.is_linked()
+                && !thread.pager_link.is_linked()
+                && !thread.memwait_link.is_linked()
+                && !thread.mutex_link.is_linked()
+                && !thread.condvar_link.is_linked()
+                && !thread.requeue_link.is_linked()
+                && !thread.has_timed_wait()
+            {
+                emerglogln!(
+                    "    requeue count {} walked {}",
+                    crate::syscall::sync::requeue_len(),
+                    crate::syscall::sync::requeue_walked_len()
+                );
+                thread.dump_sync_trace();
+            }
         }
     }
     // Never silently: a truncated table that looks complete is how a missing thread becomes a
@@ -1819,4 +1894,38 @@ pub fn check_orphan_threads() {
             );
         }
     });
+}
+
+pub(crate) const SYNC_TRACE_LEN: usize = 16;
+
+/// Event codes for [`Thread::sync_note`].
+pub(crate) mod synctrace {
+    pub const SET_SYNC: u8 = 1;
+    pub const RESET_SYNC: u8 = 2;
+    pub const SET_DONE: u8 = 3;
+    pub const RESET_DONE: u8 = 4;
+    pub const STATE: u8 = 5;
+    pub const RQ_INSERT: u8 = 6;
+    pub const RQ_REMOVE: u8 = 7;
+    pub const RQ_CLAIM: u8 = 8;
+    pub const SCHED: u8 = 9;
+    pub const GEN_END: u8 = 10;
+    pub const RQ_DRAIN: u8 = 11;
+
+    pub fn name(ev: u8) -> &'static str {
+        match ev {
+            SET_SYNC => "set-sync",
+            RESET_SYNC => "reset-sync",
+            SET_DONE => "set-done",
+            RESET_DONE => "reset-done",
+            STATE => "state",
+            RQ_INSERT => "rq-insert",
+            RQ_REMOVE => "rq-remove",
+            RQ_CLAIM => "rq-claim",
+            SCHED => "sched",
+            GEN_END => "gen-end",
+            RQ_DRAIN => "rq-drain",
+            _ => "?",
+        }
+    }
 }

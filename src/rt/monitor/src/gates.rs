@@ -19,7 +19,8 @@ pub fn monitor_rt_spawn_thread(
     args: ThreadSpawnArgs,
     thread_pointer: usize,
     stack_pointer: usize,
-) -> Result<ObjID, TwzError> {
+    upcall_self: usize,
+) -> Result<monitor_api::SpawnedThread, TwzError> {
     let info = secgate::get_caller().ok_or(TwzError::NOT_SUPPORTED)?;
     let monitor = crate::mon::get_monitor();
     monitor.spawn_compartment_thread(
@@ -27,6 +28,7 @@ pub fn monitor_rt_spawn_thread(
         args,
         stack_pointer,
         thread_pointer,
+        upcall_self,
     )
 }
 

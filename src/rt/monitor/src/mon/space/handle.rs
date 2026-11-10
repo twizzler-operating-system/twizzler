@@ -79,9 +79,21 @@ impl Drop for MapHandleInner {
         if let Some(unmapper) = monitor.unmapper.get() {
             if self.exclusive {
                 unmapper.background_unmap_slot(self.map.slot);
-            } else {
-                unmapper.background_unmap_info(self.info);
+                return;
             }
+            // A drop that only decrements the count needs no thread of its own; each message wakes
+            // the unmapper, and a thread's repr costs two per spawn. Try-lock, because this can run
+            // with `space` already held -- the reason the unmapper exists. The unmap itself still
+            // goes to the unmapper: it is a syscall, and the caller may hold other monitor locks.
+            if let Ok(mut space) = monitor.space.try_lock() {
+                let unmap = space.handle_drop(self.info);
+                drop(space);
+                if let Some(unmap) = unmap {
+                    unmapper.background_unmap_last(unmap);
+                }
+                return;
+            }
+            unmapper.background_unmap_info(self.info);
         }
     }
 }

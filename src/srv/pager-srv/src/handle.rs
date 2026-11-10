@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use object_store::{
     ExternalFile, ExternalFileSbHdr, ExternalFileStore, ExternalOpenFlags, PagedObjectStore,
@@ -12,13 +12,17 @@ use twizzler_abi::{
         ObjectCreateFlags,
     },
 };
-use twizzler_rt_abi::{bindings::NAME_DATA_MAX, error::TwzError, object::MapFlags};
+use twizzler_rt_abi::{
+    bindings::NAME_DATA_MAX,
+    error::{ArgumentError, TwzError},
+    object::MapFlags,
+};
 
 use crate::PAGER_CTX;
 
 // Per-client metadata.
 pub(crate) struct PagerClient {
-    buffer: SimpleBuffer,
+    buffer: Arc<SimpleBuffer>,
 }
 
 impl PagerClient {
@@ -26,8 +30,14 @@ impl PagerClient {
         self.buffer.handle().id()
     }
 
-    pub fn into_handle(self) -> ObjectHandle {
-        self.buffer.into_handle()
+    /// None when a gate call on this client is still using the buffer; the object then simply
+    /// does not return to the pool.
+    pub fn into_handle(self) -> Option<ObjectHandle> {
+        Arc::try_unwrap(self.buffer).ok().map(|b| b.into_handle())
+    }
+
+    pub fn buffer(&self) -> Arc<SimpleBuffer> {
+        self.buffer.clone()
     }
 }
 
@@ -71,7 +81,7 @@ pub fn release_sb_object(obj: ObjectHandle) {
 impl PagerClient {
     pub fn new(instance: ObjID) -> Result<Self, TwzError> {
         let handle = get_sb_object(instance)?;
-        let buffer = SimpleBuffer::new(handle);
+        let buffer = Arc::new(SimpleBuffer::new(handle));
         Ok(Self { buffer })
     }
 }
@@ -97,7 +107,7 @@ pub fn pager_close_handle(desc: Descriptor) -> Result<(), TwzError> {
     Ok(())
 }
 
-fn write_external_file_to_sb(sb: &mut SimpleBuffer, file: &ExternalFile, off: usize) -> usize {
+fn write_external_file_to_sb(sb: &SimpleBuffer, file: &ExternalFile, off: usize) -> usize {
     let ext_file_hdr = ExternalFileSbHdr {
         pathlen: file.path.as_os_str().as_encoded_bytes().len() as u32,
         kind: file.kind,
@@ -128,10 +138,10 @@ pub fn pager_enumerate_external(
 
     pager
         .data
-        .with_handle_mut(comp, desc, |pc| {
+        .with_buffer(comp, desc, |sb| {
             let mut len = 0;
             for item in entries.iter() {
-                len += write_external_file_to_sb(&mut pc.buffer, item, len);
+                len += write_external_file_to_sb(sb, item, len);
             }
             len
         })
@@ -156,7 +166,8 @@ pub fn pager_lookup_external(
     let mut namebuf = [0u8; NAME_DATA_MAX];
     let namelen = pager
         .data
-        .with_handle(comp, desc, |pc| pc.buffer.read(&mut namebuf[0..namelen]))?;
+        .with_buffer(comp, desc, |sb| sb.read(&mut namebuf[0..namelen]))
+        .ok_or(ArgumentError::BadHandle)?;
     let name =
         str::from_utf8(namebuf[..namelen].as_ref()).map_err(|_| TwzError::INVALID_ARGUMENT)?;
 
@@ -170,9 +181,7 @@ pub fn pager_lookup_external(
 
     pager
         .data
-        .with_handle_mut(comp, desc, |pc| {
-            write_external_file_to_sb(&mut pc.buffer, &file, 0)
-        })
+        .with_buffer(comp, desc, |sb| write_external_file_to_sb(sb, &file, 0))
         .ok_or(TwzError::INVALID_ARGUMENT)
 }
 
@@ -191,7 +200,8 @@ pub fn pager_create_external(
     let mut namebuf = [0u8; NAME_DATA_MAX];
     let namelen = pager
         .data
-        .with_handle(comp, desc, |pc| pc.buffer.read(&mut namebuf[0..namelen]))?;
+        .with_buffer(comp, desc, |sb| sb.read(&mut namebuf[0..namelen]))
+        .ok_or(ArgumentError::BadHandle)?;
     let name =
         str::from_utf8(namebuf[..namelen].as_ref()).map_err(|_| TwzError::INVALID_ARGUMENT)?;
 
@@ -205,9 +215,7 @@ pub fn pager_create_external(
 
     pager
         .data
-        .with_handle_mut(comp, desc, |pc| {
-            write_external_file_to_sb(&mut pc.buffer, &file, 0)
-        })
+        .with_buffer(comp, desc, |sb| write_external_file_to_sb(sb, &file, 0))
         .ok_or(TwzError::INVALID_ARGUMENT)
 }
 
@@ -237,7 +245,8 @@ pub fn pager_unlink_external(desc: Descriptor, dir: ObjID, namelen: usize) -> Re
     let mut namebuf = [0u8; NAME_DATA_MAX];
     let namelen = pager
         .data
-        .with_handle(comp, desc, |pc| pc.buffer.read(&mut namebuf[0..namelen]))?;
+        .with_buffer(comp, desc, |sb| sb.read(&mut namebuf[0..namelen]))
+        .ok_or(ArgumentError::BadHandle)?;
     let name = str::from_utf8(namebuf[..namelen].as_ref()).map_err(|_| {
         tracing::warn!(
             "pager_unlink_external: non-UTF-8 name of {} bytes: {:?}",
@@ -274,7 +283,8 @@ pub fn pager_rename_external(
     let mut namebuf = [0u8; NAME_DATA_MAX];
     let total = pager
         .data
-        .with_handle(comp, desc, |pc| pc.buffer.read(&mut namebuf[0..total]))?;
+        .with_buffer(comp, desc, |sb| sb.read(&mut namebuf[0..total]))
+        .ok_or(ArgumentError::BadHandle)?;
     if total < old_len {
         return Err(TwzError::INVALID_ARGUMENT);
     }
@@ -303,7 +313,7 @@ pub fn pager_readlink_external(desc: Descriptor, id: ObjID) -> Result<usize, Twz
     let name = pager.paged_ostore(None)?.readlink_external(id.raw())?;
     let namelen = pager
         .data
-        .with_handle_mut(comp, desc, |pc| pc.buffer.write(name.as_bytes()))
+        .with_buffer(comp, desc, |sb| sb.write(name.as_bytes()))
         .ok_or(TwzError::INVALID_ARGUMENT)?;
 
     Ok(namelen)

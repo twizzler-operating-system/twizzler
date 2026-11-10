@@ -137,6 +137,14 @@ pub struct Processor {
     pub rng: Spinlock<crate::random::PerCpuRng>,
     /// This cpu's running frequency, fed from its statclock tick. See [`freq::FreqSampler`].
     pub freq: freq::FreqSampler,
+    /// Bench-clock ns by which this cpu's last programmed oneshot must have fired (0 = none).
+    /// Read on the way out of an idle halt: a timer that is overdue by then never fired, and a
+    /// halted cpu has no other way to notice. See `clock::rearm_if_overdue`.
+    pub oneshot_due_ns: AtomicU64,
+    /// `BSP_TICK` as last seen by this cpu's hardtick, and how many hardticks it has stood
+    /// still; see `clock::kick_bsp_if_stalled`.
+    pub bsp_tick_seen: AtomicU64,
+    pub bsp_tick_same: AtomicU32,
 }
 
 impl Processor {
@@ -148,6 +156,9 @@ impl Processor {
             fault_stats: Spinlock::new(crate::memory::context::virtmem::fault::FaultTracking::new()),
             rng: Spinlock::new(crate::random::PerCpuRng::new()),
             freq: freq::FreqSampler::new(),
+            oneshot_due_ns: AtomicU64::new(0),
+            bsp_tick_seen: AtomicU64::new(0),
+            bsp_tick_same: AtomicU32::new(0),
             running: AtomicBool::new(false),
             is_idle: AtomicBool::new(false),
             must_rebalance: AtomicBool::new(false),

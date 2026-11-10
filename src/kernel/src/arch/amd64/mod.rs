@@ -68,6 +68,11 @@ pub fn schedule_oneshot_tick(time: Nanoseconds) {
     get_lapic().setup_oneshot_timer(crate::clock::stat::clamp_oneshot(time))
 }
 
+/// Whether this cpu's oneshot already fires within `time`, so a later deadline need not be armed.
+pub fn oneshot_pending_within(time: Nanoseconds) -> bool {
+    apic::oneshot_pending_within(time)
+}
+
 /// Jump into userspace
 /// # Safety
 /// The stack and target must be valid addresses.
@@ -106,7 +111,9 @@ pub fn set_interrupt(
 }
 
 pub fn debug_shutdown(code: u32) {
-    log::info!("performing debug shutdown with code {}", code);
+    // Emergency path, no console lock: this line is how a transcript tells a guest-requested
+    // exit from qemu dying, so it must not depend on the normal console being usable.
+    emerglogln!("performing debug shutdown with code {}", code);
     unsafe {
         x86::io::outw(0xf4, code as u16);
     }

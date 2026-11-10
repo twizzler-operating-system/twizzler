@@ -17,6 +17,12 @@ use std::{
     time::Duration,
 };
 
+use happylock::{
+    collection::LockGuard,
+    lockable::{Lockable, RawLock, Sharable},
+    rwlock::{RwLockReadGuard, RwLockWriteGuard},
+    LockCollection, RwLock, ThreadKey,
+};
 use twizzler_abi::{klog_println, syscall::sys_thread_self_id};
 use twizzler_rt_abi::object::ObjID;
 
@@ -76,7 +82,11 @@ fn self_id() -> u128 {
 #[track_caller]
 pub fn watched<G>(inner: G) -> Watched<G> {
     if !tracking() {
-        return Watched { inner, slot: None };
+        return Watched {
+            inner,
+            slot: None,
+            held: None,
+        };
     }
     let id = self_id();
     let seq = EPOCH.fetch_add(1, Ordering::Relaxed) + 1;
@@ -94,16 +104,22 @@ pub fn watched<G>(inner: G) -> Watched<G> {
         return Watched {
             inner,
             slot: Some(slot),
+            held: None,
         };
     }
     // Out of slots: untracked rather than displacing someone else's live record.
-    Watched { inner, slot: None }
+    Watched {
+        inner,
+        slot: None,
+        held: None,
+    }
 }
 
 #[must_use = "a dropped guard releases immediately; bind it to a variable"]
 pub struct Watched<G> {
     inner: G,
     slot: Option<usize>,
+    held: Option<usize>,
 }
 
 impl<G> Drop for Watched<G> {
@@ -111,7 +127,114 @@ impl<G> Drop for Watched<G> {
         if let Some(slot) = self.slot {
             SLOT_SEQ[slot].store(0, Ordering::Release);
         }
+        if let Some(held) = self.held {
+            HELD.with(|c| {
+                let mut all = c.get();
+                all[held] = None;
+                c.set(all);
+            });
+        }
     }
+}
+
+/// A monitor lock this thread holds, with the raw release that undoes it. Unlike the diag slots
+/// this is always recorded (one thread-local write), because it is what [`release_orphans`]
+/// needs when the thread dies inside a gate with no unwind to drop the guard.
+#[derive(Clone, Copy)]
+struct Held {
+    lock: *const (),
+    release: unsafe fn(*const ()),
+    site: &'static Location<'static>,
+    slot: Option<usize>,
+}
+
+const HELD_MAX: usize = 4;
+
+thread_local! {
+    static HELD: Cell<[Option<Held>; HELD_MAX]> = const { Cell::new([None; HELD_MAX]) };
+}
+
+fn held_push(h: Held) -> Option<usize> {
+    HELD.with(|c| {
+        let mut all = c.get();
+        let i = all.iter().position(|e| e.is_none())?;
+        all[i] = Some(h);
+        c.set(all);
+        Some(i)
+    })
+}
+
+unsafe fn unlock_write<L: RawLock>(lock: *const ()) {
+    unsafe { (*lock.cast::<L>()).raw_unlock_write() }
+}
+
+unsafe fn unlock_read<L: RawLock>(lock: *const ()) {
+    unsafe { (*lock.cast::<L>()).raw_unlock_read() }
+}
+
+#[track_caller]
+fn watched_held<G, L: RawLock>(inner: G, lock: &L, release: unsafe fn(*const ())) -> Watched<G> {
+    let mut w = watched(inner);
+    w.held = held_push(Held {
+        lock: (lock as *const L).cast(),
+        release,
+        site: Location::caller(),
+        slot: w.slot,
+    });
+    w
+}
+
+#[track_caller]
+pub fn watched_read<'a, T>(
+    lock: &'a RwLock<T>,
+    key: ThreadKey,
+) -> Watched<RwLockReadGuard<'a, T, parking_lot::RawRwLock>> {
+    watched_held(lock.read(key), lock, unlock_read::<RwLock<T>>)
+}
+
+#[track_caller]
+pub fn watched_write<'a, T>(
+    lock: &'a RwLock<T>,
+    key: ThreadKey,
+) -> Watched<RwLockWriteGuard<'a, T, parking_lot::RawRwLock>> {
+    watched_held(lock.write(key), lock, unlock_write::<RwLock<T>>)
+}
+
+#[track_caller]
+pub fn watched_lock_all<'a, L: Lockable>(
+    locks: &'a LockCollection<L>,
+    key: ThreadKey,
+) -> Watched<LockGuard<L::Guard<'a>>> {
+    watched_held(locks.lock(key), locks, unlock_write::<LockCollection<L>>)
+}
+
+#[track_caller]
+pub fn watched_read_all<'a, L: Sharable>(
+    locks: &'a LockCollection<L>,
+    key: ThreadKey,
+) -> Watched<LockGuard<L::ReadGuard<'a>>> {
+    watched_held(locks.read(key), locks, unlock_read::<LockCollection<L>>)
+}
+
+/// Force-release every monitor lock this thread recorded, newest first, for a thread that is
+/// about to exit inside a gate. The data behind them may be mid-update; the alternative is a lock
+/// held forever by a thread that no longer exists. Returns how many were released.
+pub fn release_orphans() -> usize {
+    let held = HELD.with(|c| c.replace([None; HELD_MAX]));
+    let mut n = 0;
+    for h in held.iter().rev().flatten() {
+        klog_println!(
+            "MONLOCK: dying thread releasing monitor lock taken at {}:{}",
+            h.site.file(),
+            h.site.line()
+        );
+        unsafe { (h.release)(h.lock) };
+        if let Some(slot) = h.slot {
+            SLOT_SEQ[slot].store(0, Ordering::Release);
+        }
+        n += 1;
+    }
+    n
 }
 
 impl<G: std::ops::Deref> std::ops::Deref for Watched<G> {

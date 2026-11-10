@@ -307,6 +307,8 @@ fn pingpong(threads: usize, secs: f64) {
         loop {
             while !turns2[p][side].swap(false, Ordering::Acquire) {
                 if stop2.load(Ordering::Relaxed) {
+                    // The peer may have parked on a turn we will now never pass it.
+                    peer.unpark();
                     return (trips, probe.finish());
                 }
                 std::thread::park();

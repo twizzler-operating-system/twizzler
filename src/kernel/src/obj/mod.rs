@@ -313,8 +313,11 @@ impl Object {
     /// here is that skip's smoking gun; the count is biased upward (see the field), so zero is the
     /// one value it must never show while anyone is parked.
     pub fn sleeper_count(&self) -> usize {
+        // `is_complete` first: `poll` spins through a running initializer, and this is read from
+        // the schedmon thread, which on one cpu would starve that initializer forever.
         self.sleep_slots
             .iter()
+            .filter(|s| s.is_complete())
             .filter_map(|s| s.poll())
             .map(|s| s.sleepers.load(Ordering::SeqCst))
             .sum()
@@ -513,6 +516,10 @@ impl Object {
     /// The allocation lands on the first *sleep* on the stripe, a path about to block anyway; the
     /// wake path uses [`Object::sleep_stripe_if_present`] and never allocates.
     pub(crate) fn sleep_stripe(&self, offset: usize) -> &SleepStripe {
+        // Critical across the build: a preemption inside `call_once` is a poll point where this
+        // thread can be force-exited or suspended, leaving the slot RUNNING for good, and every
+        // later sleeper or waker on the stripe then spins inside one syscall forever.
+        let _critical = crate::thread::current_thread_ref().map(|t| t.enter_critical());
         self.sleep_slots[stripe_index(offset)].call_once(|| {
             Box::new(SleepStripe {
                 sleepers: AtomicUsize::new(0),
@@ -540,7 +547,14 @@ impl Object {
     /// For paths that only remove or wake: an object that has never been slept on has nothing for
     /// them to find, and allocating to discover that would be backwards.
     pub(crate) fn sleep_stripe_if_present(&self, offset: usize) -> Option<&SleepStripe> {
-        self.sleep_slots[stripe_index(offset)].poll().map(|b| &**b)
+        // Never `poll`: that spins through another thread's initializer, which a waker at a
+        // higher priority (or in an interrupt) starves forever on one cpu. A stripe still being
+        // built has no sleepers, and its builder re-reads the word under the lock before parking.
+        let slot = &self.sleep_slots[stripe_index(offset)];
+        slot.is_complete()
+            .then(|| slot.poll())
+            .flatten()
+            .map(|b| &**b)
     }
 
     pub fn new_kernel_with_id(id: ObjID) -> Arc<Self> {

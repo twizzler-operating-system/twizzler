@@ -7,6 +7,9 @@ use twizzler_abi::syscall::{
     ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference, ThreadSyncSleep, ThreadSyncWake,
 };
 
+/// `head` and `tail` hold a byte count shifted left by one; bit 0 ([`WAITER`]) means a thread may
+/// be sleeping on that word. Advancing clears the bit in the same CAS and wakes only if it was set,
+/// so a sleeper that armed after the advance sees a changed word and does not sleep.
 pub struct VolatileBuffer<const N: usize> {
     reserve: AtomicU64,
     head: AtomicU64,
@@ -15,6 +18,8 @@ pub struct VolatileBuffer<const N: usize> {
 }
 unsafe impl<const N: usize> Send for VolatileBuffer<N> {}
 unsafe impl<const N: usize> Sync for VolatileBuffer<N> {}
+
+const WAITER: u64 = 1;
 
 impl<const N: usize> VolatileBuffer<N> {
     pub fn new() -> Self {
@@ -36,41 +41,39 @@ impl<const N: usize> VolatileBuffer<N> {
     /// subtraction from `N - 1` saturates rather than wrapping. Both directions are a momentarily
     /// pessimistic answer about a value that is racy by construction anyway.
     pub fn avail_space(&self) -> usize {
-        let tail = self.tail.load(Ordering::SeqCst);
+        let tail = self.tail.load(Ordering::SeqCst) >> 1;
         let resv = self.reserve.load(Ordering::SeqCst);
 
         (N - 1).saturating_sub((resv - tail) as usize)
     }
 
     pub fn pending_bytes(&self) -> usize {
-        let tail = self.tail.load(Ordering::SeqCst);
-        let head = self.head.load(Ordering::SeqCst);
+        let tail = self.tail.load(Ordering::SeqCst) >> 1;
+        let head = self.head.load(Ordering::SeqCst) >> 1;
 
         (head - tail) as usize
     }
 
     pub fn is_empty(&self) -> bool {
-        let tail = self.tail.load(Ordering::SeqCst);
-        let head = self.head.load(Ordering::SeqCst);
+        let tail = self.tail.load(Ordering::SeqCst) >> 1;
+        let head = self.head.load(Ordering::SeqCst) >> 1;
 
         head == tail
     }
 
     pub fn sync_for_pending_data(&self) -> ThreadSyncSleep {
-        let head = self.head.load(Ordering::SeqCst);
         ThreadSyncSleep::new(
             ThreadSyncReference::Virtual(&self.head),
-            head,
+            Self::arm(&self.head),
             ThreadSyncOp::Equal,
             ThreadSyncFlags::empty(),
         )
     }
 
     pub fn sync_for_avail_space(&self) -> ThreadSyncSleep {
-        let tail = self.tail.load(Ordering::SeqCst);
         ThreadSyncSleep::new(
             ThreadSyncReference::Virtual(&self.tail),
-            tail,
+            Self::arm(&self.tail),
             ThreadSyncOp::Equal,
             ThreadSyncFlags::empty(),
         )
@@ -81,8 +84,8 @@ impl<const N: usize> VolatileBuffer<N> {
         while buf.len() > 0 {
             // tail first: see avail_space. Read head first and a concurrent reader advancing tail
             // past it makes `head - tail` wrap.
-            let tail = self.tail.load(Ordering::SeqCst);
-            let head = self.head.load(Ordering::SeqCst);
+            let tail = self.tail.load(Ordering::SeqCst) >> 1;
+            let head = self.head.load(Ordering::SeqCst) >> 1;
 
             // Empty
             if tail == head {
@@ -92,14 +95,9 @@ impl<const N: usize> VolatileBuffer<N> {
             let n = std::cmp::min(buf.len(), (head - tail) as usize);
             let n = self.read_from_circle(&mut buf[0..n], tail as usize % N);
 
-            if self
-                .tail
-                .compare_exchange(tail, tail + n as u64, Ordering::SeqCst, Ordering::SeqCst)
-                .is_err()
-            {
+            if !Self::advance(&self.tail, tail, n) {
                 continue;
             }
-            self.do_wake(&self.tail);
             buf = &mut buf[n..];
             count += n;
         }
@@ -112,7 +110,7 @@ impl<const N: usize> VolatileBuffer<N> {
             // tail first: see avail_space. This is the pair that actually bites -- with several
             // writers advancing reserve and a reader consuming past the reserve we observed, a
             // stale `resv` minus a fresh `tail` wraps.
-            let tail = self.tail.load(Ordering::SeqCst);
+            let tail = self.tail.load(Ordering::SeqCst) >> 1;
             let resv = self.reserve.load(Ordering::SeqCst);
 
             // Reads full because tail is already stale, not because it is. Reporting a short write
@@ -138,17 +136,15 @@ impl<const N: usize> VolatileBuffer<N> {
             // Step 2: wait until our head catches up to the old reserve. Note that since
             // we succeeded the compare-exchange above, we have to complete this operation
             // for the pty to remain in a consistent state.
-            while self.head.load(Ordering::SeqCst) != resv {
+            while self.head.load(Ordering::SeqCst) >> 1 != resv {
                 core::hint::spin_loop();
             }
 
             let n = self.write_to_circle(&buf[0..n], resv as usize % N);
 
-            let old_head = self.head.fetch_add(n as u64, Ordering::SeqCst);
-            if old_head != resv {
-                tracing::warn!("head incremented unexpectedly ({} != {})", old_head, resv);
+            if !Self::advance(&self.head, resv, n) {
+                tracing::warn!("head moved unexpectedly (expected {})", resv);
             }
-            self.do_wake(&self.head);
 
             buf = &buf[n..];
             count += n;
@@ -188,7 +184,38 @@ impl<const N: usize> VolatileBuffer<N> {
         return first_len + second_len;
     }
 
-    fn do_wake(&self, ptr: &AtomicU64) {
+    /// Marks `word` as slept on and returns the value to sleep against.
+    fn arm(word: &AtomicU64) -> u64 {
+        let mut raw = word.load(Ordering::SeqCst);
+        while raw & WAITER == 0 {
+            match word.compare_exchange(raw, raw | WAITER, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => return raw | WAITER,
+                Err(cur) => raw = cur,
+            }
+        }
+        raw
+    }
+
+    /// Moves `word`'s count from `from` to `from + n`; false if the count was not `from`.
+    fn advance(word: &AtomicU64, from: u64, n: usize) -> bool {
+        let mut raw = word.load(Ordering::SeqCst);
+        loop {
+            if raw >> 1 != from {
+                return false;
+            }
+            let new = (from + n as u64) << 1;
+            match word.compare_exchange(raw, new, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => break,
+                Err(cur) => raw = cur,
+            }
+        }
+        if raw & WAITER != 0 {
+            Self::do_wake(word);
+        }
+        true
+    }
+
+    fn do_wake(ptr: &AtomicU64) {
         let _ = twizzler_abi::syscall::sys_thread_sync(
             &mut [ThreadSync::new_wake(ThreadSyncWake::new(
                 ThreadSyncReference::Virtual(ptr),
@@ -289,9 +316,7 @@ pub mod tests {
             let expected = ITER * BS;
             for count in (&*counts).iter().enumerate() {
                 let nr = count.1.load(std::sync::atomic::Ordering::SeqCst);
-                if nr != expected {
-                    tracing::warn!("{}: found wrong count: {} {}", count.0, nr, expected);
-                }
+                assert_eq!(nr, expected, "writer {} bytes lost or duplicated", count.0);
             }
         });
         tracing::info!("finished mt pty test");

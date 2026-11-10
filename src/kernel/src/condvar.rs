@@ -127,12 +127,15 @@ impl CondVar {
         let critical_guard = current_thread_ref().unwrap().enter_critical();
         loop {
             let mut threads_to_wake = heapless::Vec::<_, MAX_PER_ITER>::new();
+            // Unclaimed entries are dropped after `inner` is released: the reference can be the
+            // last one, and `Thread::drop` takes a sleeping mutex (see `remove_from_requeue`).
+            let mut stale = heapless::Vec::<ThreadRef, MAX_PER_ITER>::new();
             let mut inner = self.inner.lock();
             if inner.queue.is_empty() {
                 break;
             }
             let mut node = inner.queue.front_mut();
-            while !threads_to_wake.is_full() && !node.is_null() {
+            while !threads_to_wake.is_full() && !stale.is_full() && !node.is_null() {
                 // Remove from the queue FIRST, then try to claim. A waiter can legitimately be
                 // queued with sync_sleep already clear -- wait_waiters() blocks in
                 // sys_thread_sync(), which clears the flag on its way out, and only unlinks
@@ -142,9 +145,13 @@ impl CondVar {
                 if thread.reset_sync_sleep() {
                     // Safety: vec isn't full, checked above.
                     unsafe { threads_to_wake.push_unchecked(thread) };
+                } else {
+                    // Safety: same bound as above.
+                    unsafe { stale.push_unchecked(thread) };
                 }
             }
             drop(inner);
+            drop(stale);
             for t in threads_to_wake {
                 add_to_requeue(t);
             }

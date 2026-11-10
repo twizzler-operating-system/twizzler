@@ -63,6 +63,9 @@ pub static NR_CPUS: AtomicUsize = AtomicUsize::new(1);
 static MAX_REGISTERED_ID: AtomicUsize = AtomicUsize::new(0);
 
 static CPU_MAIN_BARRIER: AtomicBool = AtomicBool::new(false);
+/// Counter the most recently started AP read just before it set `running`; see
+/// boot_all_secondaries.
+static AP_TSC: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// Every secondary has been released from its bring-up wait, where it sits with interrupts off
 /// and cannot answer a TLB shootdown.
@@ -87,6 +90,8 @@ fn secondary_main(id: u32, kernel_stack_base: *mut u8) -> ! {
     crate::pmc::init_cpu();
     let topo_path = arch::processor::get_topology();
     current_processor().set_topology(topo_path);
+    #[cfg(target_arch = "x86_64")]
+    AP_TSC.store(unsafe { x86::time::rdtsc() }, Ordering::SeqCst);
     current_processor()
         .running
         .store(true, core::sync::atomic::Ordering::SeqCst);
@@ -118,6 +123,21 @@ pub fn boot_all_secondaries(tls_template: TlsInfo) {
         while !p.running.load(core::sync::atomic::Ordering::SeqCst) {
             // We can safely spin-loop here because we are in kernel initialization.
             core::hint::spin_loop();
+        }
+        // The AP stamped its counter just before `running`; the bsp reads its own now. Every
+        // timeout is stamped on one cpu and fired on the bsp, so an offset here is a wall-clock
+        // error of the same size (TCG does not keep vcpu counters in step).
+        #[cfg(target_arch = "x86_64")]
+        if p.id != 0 {
+            let bsp = unsafe { x86::time::rdtsc() };
+            let ap = AP_TSC.load(Ordering::SeqCst);
+            logln!(
+                "cpu {} tsc at bring-up: ap {} bsp {} (bsp - ap = {})",
+                p.id,
+                ap,
+                bsp,
+                bsp as i64 - ap as i64
+            );
         }
     }
 

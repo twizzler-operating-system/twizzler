@@ -155,6 +155,8 @@ pub(crate) struct Core {
     // Listening sockets -> the listener group they belong to. Membership is also what marks a
     // socket as a listener, which is what selects listener_socket_ready over can_recv/can_send.
     groups: HashMap<SocketHandle, u64>,
+    /// Last TCP state seen per listener-group member, for the `--diag=net` GROUPSTATE trace.
+    group_last_state: std::cell::RefCell<HashMap<SocketHandle, State>>,
     /// Handles currently present in `socketset`.
     ///
     /// `SocketSet::get` panics on a handle whose slot has been removed, and `refresh_waiter` is
@@ -1402,6 +1404,7 @@ impl Core {
             tracking: Vec::new(),
             agg_scratch: HashMap::new(),
             groups: HashMap::new(),
+            group_last_state: std::cell::RefCell::new(HashMap::new()),
             live: HashSet::new(),
         }
     }
@@ -1478,6 +1481,13 @@ impl Core {
     }
 
     pub fn release_socket(&mut self, handle: SocketHandle) {
+        if twizzler_net::diag_enabled("net") {
+            twizzler_abi::klog_println!(
+                "SOCKREL octet={} {:?}",
+                ENGINE_OCTET.load(Ordering::Relaxed),
+                handle
+            );
+        }
         let group = self.groups.remove(&handle);
         self.live.remove(&handle);
         self.socketset.remove(handle);
@@ -1611,6 +1621,21 @@ impl Core {
                     read |= r;
                     write |= w;
                     if let smoltcp::socket::Socket::Tcp(t) = sock {
+                        if twizzler_net::diag_enabled("net") {
+                            let prev = self.group_last_state.borrow_mut().insert(handle, t.state());
+                            if prev != Some(t.state()) {
+                                twizzler_abi::klog_println!(
+                                    "GROUPSTATE octet={} {:?} {:?}->{:?} remote={:?} ready={} now={}",
+                                    ENGINE_OCTET.load(Ordering::Relaxed),
+                                    handle,
+                                    prev,
+                                    t.state(),
+                                    t.remote_endpoint(),
+                                    r,
+                                    Instant::now().total_millis()
+                                );
+                            }
+                        }
                         census[match t.state() {
                             State::Closed => 0,
                             State::Listen => 1,

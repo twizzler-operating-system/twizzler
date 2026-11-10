@@ -1,15 +1,18 @@
 use std::{
+    cell::Cell,
     collections::HashMap,
+    ops::{Deref, DerefMut},
+    panic::Location,
     sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc, Condvar, Mutex,
+        atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering},
+        Arc, Condvar, Mutex, MutexGuard,
     },
     time::Instant,
 };
 
 use itertools::Itertools;
 use object_store::{objid_to_ino, PageRequest, PagedObjectStore, PagedPhysMem, INLINE_LEN};
-use secgate::util::{Descriptor, HandleMgr};
+use secgate::util::{Descriptor, HandleMgr, SimpleBuffer};
 use twizzler::{
     error::ObjectError,
     object::{ObjID, ObjectHandle},
@@ -269,6 +272,10 @@ impl PerObject {
 
 pub struct PagerData {
     inner: Arc<Mutex<PagerDataInner>>,
+    diag: Arc<PoolLockDiag>,
+    /// Its own lock, not the pool's: the gate paths that use it drop object handles (an unmap
+    /// gate into the monitor) and were holding the page-in lanes' mutex while doing so.
+    handles: Mutex<HandleMgr<PagerClient>>,
     /// How many threads are parked in [`MemoryWaiter`], so the hot free path can skip the notify
     /// syscall when nobody is waiting.
     mem_waiters: Arc<AtomicUsize>,
@@ -280,15 +287,122 @@ pub struct PagerData {
     mem_avail: Arc<Condvar>,
 }
 
+/// Who holds `PagerData::inner`, for the watchdog's stuck report. Both lanes of a wedge were
+/// found parked on this one mutex with no visible owner (rearm5 round2); the kernel's hang table
+/// names the sleepers but nothing named the holder. Recorded only under `--diag=pager`.
+pub struct PoolLockDiag {
+    site: AtomicPtr<Location<'static>>,
+    owner: AtomicU64,
+    since: AtomicU64,
+}
+
+#[thread_local]
+static SELF_ID: Cell<u64> = Cell::new(0);
+
+fn self_id() -> u64 {
+    let id = SELF_ID.get();
+    if id != 0 {
+        return id;
+    }
+    // The low half of the repr id, as the kernel's hang table prints it. Zero (never seen in
+    // practice) just means it is looked up again next time.
+    let id = twizzler_abi::syscall::sys_thread_self_id().parts()[1];
+    SELF_ID.set(id);
+    id
+}
+
+impl PoolLockDiag {
+    fn new() -> Self {
+        Self {
+            site: AtomicPtr::new(core::ptr::null_mut()),
+            owner: AtomicU64::new(0),
+            since: AtomicU64::new(0),
+        }
+    }
+
+    fn acquired(&self, site: &'static Location<'static>) {
+        if !crate::watchdog::diag_enabled() {
+            return;
+        }
+        self.owner.store(self_id(), Ordering::Relaxed);
+        self.since
+            .store(crate::watchdog::epoch_nanos(), Ordering::Relaxed);
+        self.site
+            .store(site as *const _ as *mut _, Ordering::Release);
+    }
+
+    fn released(&self) {
+        if !crate::watchdog::diag_enabled() {
+            return;
+        }
+        self.site.store(core::ptr::null_mut(), Ordering::Release);
+    }
+
+    pub fn report(&self) -> String {
+        let site = self.site.load(Ordering::Acquire);
+        if site.is_null() {
+            return "pool lock free".to_string();
+        }
+        let site = unsafe { &*site };
+        let held =
+            crate::watchdog::epoch_nanos().saturating_sub(self.since.load(Ordering::Relaxed));
+        format!(
+            "pool lock held {}ms by thread ..{:x} from {}:{}",
+            held / 1_000_000,
+            self.owner.load(Ordering::Relaxed),
+            site.file(),
+            site.line()
+        )
+    }
+}
+
+pub struct PoolGuard<'a> {
+    guard: MutexGuard<'a, PagerDataInner>,
+    diag: &'a PoolLockDiag,
+}
+
+impl Deref for PoolGuard<'_> {
+    type Target = PagerDataInner;
+    fn deref(&self) -> &PagerDataInner {
+        &self.guard
+    }
+}
+
+impl DerefMut for PoolGuard<'_> {
+    fn deref_mut(&mut self) -> &mut PagerDataInner {
+        &mut self.guard
+    }
+}
+
+impl Drop for PoolGuard<'_> {
+    fn drop(&mut self) {
+        self.diag.released();
+    }
+}
+
 #[allow(dead_code)]
 impl PagerData {
+    #[track_caller]
+    fn lock(&self) -> PoolGuard<'_> {
+        let guard = self.inner.lock().unwrap();
+        self.diag.acquired(Location::caller());
+        PoolGuard {
+            guard,
+            diag: &self.diag,
+        }
+    }
+
+    pub fn pool_lock_report(&self) -> String {
+        self.diag.report()
+    }
+
     /// Whether at least `want` bytes are available, without totalling what is not needed.
     ///
     /// The fill path's only use of `avail_mem` is a comparison against a threshold, and the fold
     /// runs under the hot inner lock, so answering the comparison directly lets it stop at the
     /// first region that settles it -- on a system with headroom, the first one.
     pub fn avail_mem_at_least(&self, want: usize) -> bool {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.lock();
         let mut acc = 0usize;
         for region in &inner.memory.regions {
             acc += region.avail();
@@ -300,7 +414,7 @@ impl PagerData {
     }
 
     pub fn avail_mem(&self) -> usize {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.lock();
         inner
             .memory
             .regions
@@ -309,7 +423,7 @@ impl PagerData {
     }
 
     pub fn alloc_page(&self) -> Option<u64> {
-        let page = self.inner.lock().unwrap().get_next_available_page();
+        let page = self.lock().get_next_available_page();
         // PRPTRACE (see nvme/dma.rs): catch garbage leaving the pool.
         if let Some(p) = page {
             if p & 0xFFF != 0 {
@@ -324,7 +438,7 @@ impl PagerData {
         if page & 0xFFF != 0 {
             tracing::error!("PRPTRACE misaligned page freed to pool: {:x}", page);
         }
-        self.inner.lock().unwrap().free_page(page);
+        self.lock().free_page(page);
         // A page returned here satisfies a waiter just as a kernel donation does, but only
         // `add_memory_range` ever signalled -- so a thread parked for memory could not be woken by
         // another thread freeing some, and waited for the kernel instead. That gap predates the
@@ -338,7 +452,7 @@ impl PagerData {
     }
 
     pub fn try_alloc_page(&self) -> core::result::Result<u64, MemoryWaiter> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock();
         if let Some(page) = inner.get_next_available_page() {
             return Ok(page);
         }
@@ -348,6 +462,7 @@ impl PagerData {
             self.inner.clone(),
             self.mem_avail.clone(),
             self.mem_waiters.clone(),
+            self.diag.clone(),
         ))
     }
 
@@ -356,7 +471,7 @@ impl PagerData {
         start: i64,
         len: u32,
     ) -> core::result::Result<(u64, u32), MemoryWaiter> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock();
 
         tracing::trace!(
             "try_alloc_pages: start = {}, len = {}, avail = {}",
@@ -420,6 +535,7 @@ impl PagerData {
             self.inner.clone(),
             self.mem_avail.clone(),
             self.mem_waiters.clone(),
+            self.diag.clone(),
         ))
     }
 }
@@ -427,7 +543,6 @@ impl PagerData {
 pub struct PagerDataInner {
     memory: Memory,
     pub per_obj: HashMap<ObjID, PerObject>,
-    pub handles: HandleMgr<PagerClient>,
 }
 
 /// What an allocator hands back when the pool is empty: block on this until it is not.
@@ -439,6 +554,7 @@ pub struct MemoryWaiter {
     inner: Arc<Mutex<PagerDataInner>>,
     avail: Arc<Condvar>,
     waiters: Arc<AtomicUsize>,
+    diag: Arc<PoolLockDiag>,
 }
 
 impl MemoryWaiter {
@@ -446,25 +562,31 @@ impl MemoryWaiter {
         inner: Arc<Mutex<PagerDataInner>>,
         avail: Arc<Condvar>,
         waiters: Arc<AtomicUsize>,
+        diag: Arc<PoolLockDiag>,
     ) -> Self {
         Self {
             inner,
             avail,
             waiters,
+            diag,
         }
     }
 
+    #[track_caller]
     pub fn wait(self) -> u64 {
         self.waiters.fetch_add(1, Ordering::Relaxed);
         let mut inner = self.inner.lock().unwrap();
+        self.diag.acquired(Location::caller());
         let page = loop {
             if let Some(page) = inner.get_next_available_page() {
                 break page;
             }
+            self.diag.released();
             let (guard, timeout) = self
                 .avail
                 .wait_timeout(inner, crate::threads::WAKE_FALLBACK)
                 .unwrap();
+            self.diag.acquired(Location::caller());
             if timeout.timed_out() {
                 // Peek rather than take: reporting has to leave the page for the loop to claim.
                 let owed = guard.memory.available_memory() > 0;
@@ -473,6 +595,7 @@ impl MemoryWaiter {
             inner = guard;
         };
         self.waiters.fetch_sub(1, Ordering::Relaxed);
+        self.diag.released();
         page
     }
 }
@@ -627,7 +750,6 @@ impl PagerDataInner {
         PagerDataInner {
             per_obj: HashMap::with_capacity(0),
             memory: Memory::default(),
-            handles: HandleMgr::new(None),
         }
     }
 
@@ -657,6 +779,8 @@ impl PagerData {
         tracing::trace!("creating new PagerData instance");
         PagerData {
             inner: Arc::new(Mutex::new(PagerDataInner::new())),
+            diag: Arc::new(PoolLockDiag::new()),
+            handles: Mutex::new(HandleMgr::new(None)),
             mem_avail: Arc::new(Condvar::new()),
             mem_waiters: Arc::new(AtomicUsize::new(0)),
         }
@@ -672,7 +796,7 @@ impl PagerData {
                 range.end
             );
         }
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock();
         tracing::debug!("add memory range: {} pages", range.pages().count());
         if !inner.memory.try_add_memory_range(range) {
             if range.page_count() >= 128 {
@@ -891,7 +1015,7 @@ impl PagerData {
         work: &crate::watchdog::Work,
     ) -> CompletionToKernel {
         let po = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.lock();
             inner.get_per_object(info.obj_id).clone()
         };
 
@@ -904,34 +1028,37 @@ impl PagerData {
         ds: Descriptor,
         f: impl FnOnce(&PagerClient) -> R,
     ) -> Result<R> {
-        let inner = self.inner.lock().unwrap();
-        Ok(f(inner
-            .handles
+        let handles = self.handles.lock().unwrap();
+        Ok(f(handles
             .lookup(comp, ds)
             .ok_or(ArgumentError::BadHandle)?))
     }
 
-    pub fn with_handle_mut<R>(
-        &self,
-        comp: ObjID,
-        ds: Descriptor,
-        f: impl FnOnce(&mut PagerClient) -> R,
-    ) -> Option<R> {
-        let mut inner = self.inner.lock().unwrap();
-        Some(f(inner.handles.lookup_mut(comp, ds)?))
-    }
-
     pub fn new_handle(&self, comp: ObjID) -> Result<Descriptor> {
-        let mut inner = self.inner.lock().unwrap();
-        inner
-            .handles
-            .insert(comp, PagerClient::new(comp)?)
+        // Built before the lock: it creates and maps an object, which is a kernel call and a
+        // monitor gate, and no other gate call should wait behind those.
+        let client = PagerClient::new(comp)?;
+        self.handles
+            .lock()
+            .unwrap()
+            .insert(comp, client)
             .ok_or(ResourceError::OutOfResources.into())
     }
 
+    /// Run `f` on the client's buffer with the table lock already released: the buffer is object
+    /// memory, and a first touch of it faults.
+    pub fn with_buffer<R>(
+        &self,
+        comp: ObjID,
+        ds: Descriptor,
+        f: impl FnOnce(&SimpleBuffer) -> R,
+    ) -> Option<R> {
+        let buffer = self.handles.lock().unwrap().lookup(comp, ds)?.buffer();
+        Some(f(&buffer))
+    }
+
     pub fn drop_handle(&self, comp: ObjID, ds: Descriptor) -> Option<ObjectHandle> {
-        let mut inner = self.inner.lock().unwrap();
-        let pc = inner.handles.remove(comp, ds)?;
-        Some(pc.into_handle())
+        let pc = self.handles.lock().unwrap().remove(comp, ds)?;
+        pc.into_handle()
     }
 }

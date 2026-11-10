@@ -109,6 +109,10 @@ pub fn start_clock(statclock_hz: u64, stat_cb: fn(Nanoseconds)) {
     crate::clock::stat::start(statclock_hz, stat_cb);
 }
 
+pub fn oneshot_pending_within(_time: Nanoseconds) -> bool {
+    false
+}
+
 pub fn schedule_oneshot_tick(time: Nanoseconds) {
     let old = interrupt::disable();
     // set timer to fire off after a certian amount of time has passed

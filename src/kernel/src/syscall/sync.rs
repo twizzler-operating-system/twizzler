@@ -95,6 +95,11 @@ pub fn requeue_len() -> usize {
     get_requeue_list().len()
 }
 
+/// The list walked under its lock, against the count the early-outs trust.
+pub fn requeue_walked_len() -> usize {
+    get_requeue_list().list.lock().iter().count()
+}
+
 fn get_requeue_list() -> &'static Requeue {
     &REQUEUE
 }
@@ -171,13 +176,11 @@ pub fn requeue_all() {
                     // this exact path is the mode-A wedge. The outer loop terminates on an empty
                     // batch, so an entry that is never claimable cannot spin it.
                     if cursor.get().is_some_and(|v| {
-                        matches!(
-                            v.get_state(),
-                            ExecutionState::Sleeping | ExecutionState::Suspended
-                        ) && !v.get_mutex_wait()
+                        v.get_state() == ExecutionState::Sleeping && !v.get_mutex_wait()
                     }) {
                         if let Some(t) = cursor.remove() {
                             assert!(!t.get_mutex_wait());
+                            t.sync_note(crate::thread::synctrace::RQ_DRAIN, 1);
                             // Safety: not full, checked above.
                             unsafe { batch.push_unchecked(t) };
                         }
@@ -262,10 +265,9 @@ pub fn add_to_requeue(thread: ThreadRef) {
     // someone else owns the wake; fall through to the slow path so the entry exists for
     // whoever resolves it.
     if thread.reset_sync_sleep_done() {
-        if matches!(
-            thread.get_state(),
-            ExecutionState::Sleeping | ExecutionState::Suspended
-        ) {
+        // Sleeping only: a `Suspended` thread is resumed by `unsuspend_thread` alone, since a
+        // token found on one is a stale give-back, not a wake it is waiting for.
+        if thread.get_state() == ExecutionState::Sleeping {
             log::trace!(
                 "adding {} ({}) to immediate schedule, from {}",
                 thread.id(),
@@ -317,14 +319,19 @@ pub fn add_to_requeue(thread: ThreadRef) {
     );
     let requeue = get_requeue_list();
     // Dropped outside the lock; see [`do_add_to_requeue`].
-    let leftover = {
+    // Held across the insert only for the trace: the insert consumes `thread`.
+    let rec = thread.clone();
+    let (leftover, arg) = {
         let mut list = requeue.list.lock();
-        let leftover = do_add_to_requeue(&mut *list, thread);
-        if leftover.is_none() {
-            requeue.count.fetch_add(1, Ordering::SeqCst);
-        }
-        leftover
+        let (leftover, count) = match do_add_to_requeue(&mut *list, thread) {
+            None => (None, requeue.count.fetch_add(1, Ordering::SeqCst) + 1),
+            Some(t) => (Some(t), requeue.count.load(Ordering::SeqCst)),
+        };
+        // bit 0: duplicate (nothing inserted); bits 1..: `count` after.
+        (leftover, leftover.is_some() as u16 | ((count as u16) << 1))
     };
+    rec.sync_note(crate::thread::synctrace::RQ_INSERT, arg);
+    drop(rec);
     drop(leftover);
 }
 
@@ -354,10 +361,7 @@ pub fn add_all_to_requeue(iter: impl IntoIterator<Item = ThreadRef>) {
     for thread in iter.into_iter() {
         // Token first, then execution state: see add_to_requeue.
         let woke = if thread.reset_sync_sleep_done() {
-            if matches!(
-                thread.get_state(),
-                ExecutionState::Sleeping | ExecutionState::Suspended
-            ) {
+            if thread.get_state() == ExecutionState::Sleeping {
                 true
             } else {
                 // Not parked: hand the token back and queue an entry instead; see
@@ -421,6 +425,7 @@ pub fn remove_from_requeue(thread: &ThreadRef) {
             // (`intword 67` on the one queue involved).
             let prev = requeue.count.fetch_sub(1, Ordering::SeqCst);
             requeuebug::note_removal(prev);
+            thread.sync_note(crate::thread::synctrace::RQ_REMOVE, 1);
             // The invariant `requeue_all`'s early-out actually rests on, checked where the lock
             // is already held: the count must never say "nothing queued" while entries are
             // linked. Unreachable now; if it ever fires there is a *second* undercount source,
@@ -460,7 +465,7 @@ pub fn remove_from_requeue(thread: &ThreadRef) {
 /// the flag still set.
 pub fn claim_own_wakeup(thread: &ThreadRef) -> bool {
     let requeue = get_requeue_list();
-    let (removed, claimed) = {
+    let (removed, claimed, how) = {
         let mut list = requeue.list.lock();
         let mut cursor = list.find_mut(&thread.objid());
         // Win the flag BEFORE removing the entry, not after. The old order removed first and
@@ -470,21 +475,23 @@ pub fn claim_own_wakeup(thread: &ThreadRef) -> bool {
         // the entry stays, and whichever drain runs next schedules us out of the block. A
         // stale entry left by the lose case is cleaned by our own remove_from_requeue in the
         // post-sleep cleanup, same as any other stale entry.
-        let (removed, claimed) = if cursor.is_null() {
-            (None, false)
+        let (removed, claimed, how) = if cursor.is_null() {
+            (None, false, 2)
         } else if thread.reset_sync_sleep_done() {
             let removed = cursor.remove();
             if removed.is_some() {
                 requeue.count.fetch_sub(1, Ordering::SeqCst);
             }
-            (removed, true)
+            (removed, true, 1)
         } else {
-            (None, false)
+            (None, false, 0)
         };
-        (removed, claimed)
+        (removed, claimed, how)
     };
     // See remove_from_requeue: the removed reference must not be dropped under the spinlock.
     drop(removed);
+    // 1 claimed, 2 no entry, 0 entry present but the token was not ours.
+    thread.sync_note(crate::thread::synctrace::RQ_CLAIM, how);
     claimed
 }
 
@@ -867,6 +874,9 @@ fn resolve_ops(ops: &[ThreadSync]) -> heapless::Vec<Resolved, RESOLVE_CHUNK> {
 }
 
 pub(crate) fn thread_sync_cb_timeout(thread: ThreadRef, sleep_gen: u64) {
+    thread
+        .tw_fired_ns
+        .store(crate::instant::current_ns() | 1, Ordering::Relaxed);
     // The sleep we were registered for is over, so this timeout has no one to wake. Bail before
     // touching the sleep flags: they belong to whatever the thread is doing now, and consuming them
     // here is what used to schedule an already-running thread. Reached whenever the thread woke for

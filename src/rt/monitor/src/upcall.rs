@@ -20,19 +20,24 @@ const UPCALL_EXIT_CODE: u64 = 137;
 /// reads as a hang in whichever test happened to be running, which is how it was attributed to
 /// `net_test` (and before that to `lltest`) rather than to the monitor.
 ///
-/// This does not save the lock; nothing here can, since a `happylock` guard is owned by the
-/// holder's stack. It makes the moment greppable and names the hold site, which is the thing an
-/// unattributed five-minute timeout does not tell you.
-fn note_dying_with_lock(frame: &UpcallFrame, info: &UpcallData) {
-    let Some(site) = crate::lockdiag::current_hold_site() else {
-        return;
+/// The guards themselves are owned by the holder's stack and cannot be dropped, but the locks
+/// behind them are recorded per thread, so they are force-released here (`release_orphans`);
+/// their data may be mid-update, which is still better than a monitor nothing can enter again.
+fn note_dying_with_lock(frame: &UpcallFrame, info: &UpcallData, nested: bool) {
+    // A fault inside this handler must not try again.
+    let released = if nested {
+        0
+    } else {
+        crate::lockdiag::release_orphans()
     };
+    if released == 0 {
+        return;
+    }
     twizzler_abi::klog_println!(
-        "MONLOCK: FATAL thread {} exiting while holding monitor lock at {}:{} -- lock is now \
-         orphaned and every later compartment load will block. fault {:?} at ip {:#x} sp {:#x}",
+        "MONLOCK: thread {} exiting inside a monitor gate; {} lock(s) force-released. fault {:?} \
+         at ip {:#x} sp {:#x}",
         info.thread_id,
-        site.file(),
-        site.line(),
+        released,
         info.info,
         frame.ip(),
         frame.sp(),
@@ -60,7 +65,7 @@ pub fn upcall_monitor_handler(frame: &mut UpcallFrame, info: &UpcallData) {
                     frame.ip(),
                     frame.sp()
                 );
-                note_dying_with_lock(frame, info);
+                note_dying_with_lock(frame, info, _nested);
                 twizzler_abi::syscall::sys_thread_exit(UPCALL_EXIT_CODE);
             }
             Err(e) => {
@@ -70,7 +75,7 @@ pub fn upcall_monitor_handler(frame: &mut UpcallFrame, info: &UpcallData) {
                     frame,
                     info
                 );
-                note_dying_with_lock(frame, info);
+                note_dying_with_lock(frame, info, _nested);
                 twizzler_abi::syscall::sys_thread_exit(101);
             }
         }
@@ -80,7 +85,7 @@ pub fn upcall_monitor_handler(frame: &mut UpcallFrame, info: &UpcallData) {
             frame,
             info
         );
-        note_dying_with_lock(frame, info);
+        note_dying_with_lock(frame, info, _nested);
         twizzler_abi::syscall::sys_thread_exit(101);
     }
 }

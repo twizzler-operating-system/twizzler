@@ -45,7 +45,16 @@ pub fn monitor_rt_spawn_thread(
     args: ThreadSpawnArgs,
     thread_pointer: usize,
     stack_pointer: usize,
-) -> Result<ObjID, TwzError> {
+    upcall_self: usize,
+) -> Result<SpawnedThread, TwzError> {
+}
+
+/// A thread started by [monitor_rt_spawn_thread]: its repr object, and the slot the monitor
+/// already mapped that repr at in the caller's compartment (`None` if it could not).
+#[derive(Copy, Clone, Debug)]
+pub struct SpawnedThread {
+    pub id: ObjID,
+    pub repr_slot: Option<usize>,
 }
 
 #[secgate::gatecall]

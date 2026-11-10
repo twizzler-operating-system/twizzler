@@ -104,6 +104,9 @@ pub(crate) struct ThreadManager {
     inner: Mutex<ThreadManagerInner>,
 }
 
+/// Capacity of the swap buffer `ThreadManagerInner::do_thread_gc` trades for `to_cleanup`.
+const GC_SPARE: usize = 4;
+
 impl ThreadManager {
     pub(super) const fn new() -> Self {
         Self {
@@ -117,10 +120,14 @@ impl ThreadManager {
     }
 
     pub fn gc(&self) {
-        let mut inner = self.inner.lock();
-        inner.scan_for_exited_cross();
-        inner.scan_for_exited_except(0);
-        inner.do_thread_gc();
+        let mut spare = Vec::with_capacity(GC_SPARE);
+        {
+            let mut inner = self.inner.lock();
+            inner.scan_for_exited_cross();
+            inner.scan_for_exited_except(0);
+            inner.do_thread_gc(&mut spare);
+        }
+        drop(spare);
     }
 
     /// DIAG: how many cross-compartment threads this compartment is still holding TLS for.
@@ -311,14 +318,16 @@ impl ThreadManagerInner {
         }
     }
 
-    fn do_thread_gc(&mut self) {
+    /// Hand the dead threads to the caller in `spare`, to drop once the lock is released: the drop
+    /// runs mlibc destructors and releases the repr handle, which can take a monitor gate.
+    /// `spare` is reserved by the caller outside the lock and becomes the new `to_cleanup`, so the
+    /// next push does not allocate under it either.
+    fn do_thread_gc(&mut self, spare: &mut Vec<InternalThread>) {
         trace!(
             "starting thread GC round with {} dead threads",
             self.to_cleanup.len()
         );
-        for th in self.to_cleanup.drain(..) {
-            drop(th)
-        }
+        core::mem::swap(&mut self.to_cleanup, spare);
         self.scan_for_exited_cross();
     }
 
@@ -592,15 +601,16 @@ impl ReferenceRuntime {
             )
         };
 
-        let thid: ObjID = {
+        let spawned = {
             let res: Result<_> = monitor_api::monitor_rt_spawn_thread(
                 new_args,
                 dynlink::tls::thread_pointer_from_tcb(tls) as usize,
                 stack_raw,
+                crate::arch::twz_rt_upcall_entry_c as *const () as usize,
             );
 
             match res {
-                Ok(id) => ObjID::from(id),
+                Ok(spawned) => spawned,
                 Err(e) => {
                     // Give back the id, but leak the entry's stack, TLS and args box, which is
                     // what this path did before it published an entry at all. A gate that failed
@@ -625,10 +635,14 @@ impl ReferenceRuntime {
         // The map fails when the thread has already exited and the monitor has deleted its repr,
         // which is a race we lose legitimately for short-lived threads, not an error. A missing
         // handle just means the state has to be read from the object's existence instead.
-        let thread_repr_obj = self
-            .map_object(thid, MapFlags::READ | MapFlags::WRITE)
-            .inspect_err(|e| tracing::debug!("failed to map repr of new thread {}: {}", thid, e))
-            .ok();
+        let thid = spawned.id;
+        let flags = MapFlags::READ | MapFlags::WRITE;
+        let thread_repr_obj = match spawned.repr_slot {
+            Some(slot) => self.adopt_mapping(thid, flags, slot),
+            None => self.map_object(thid, flags),
+        }
+        .inspect_err(|e| tracing::debug!("failed to map repr of new thread {}: {}", thid, e))
+        .ok();
 
         // Unwrap-Ok: the entry was published above and only the gc scans remove entries, which
         // skip a `spawning` one.
@@ -645,6 +659,7 @@ impl ReferenceRuntime {
 
     pub(super) fn impl_join(&self, id: u32, timeout: Option<std::time::Duration>) -> Result<()> {
         let start = std::time::Instant::now();
+        let mut spare = Vec::with_capacity(GC_SPARE);
         // Usually one pass: the thread has a repr handle and we go straight to waiting on it. The
         // loop is for the thread whose repr could not be mapped at spawn time, where there is no
         // wait word to sleep on -- either the object is gone (the thread has exited, so the join
@@ -663,7 +678,9 @@ impl ReferenceRuntime {
                         let repr_id = thread.objid();
                         if repr_is_gone(repr_id) {
                             inner.prep_cleanup(id);
-                            inner.do_thread_gc();
+                            inner.do_thread_gc(&mut spare);
+                            drop(inner);
+                            drop(spare);
                             return Ok(());
                         }
                         repr_id
@@ -690,9 +707,13 @@ impl ReferenceRuntime {
                 .wait_until(ExecutionState::Exited, timeout)
                 .ok_or(TwzError::TIMED_OUT)?;
             if state == ExecutionState::Exited {
-                let mut inner = THREAD_MGR.inner.lock();
-                inner.prep_cleanup(id);
-                inner.do_thread_gc();
+                let mut spare = Vec::with_capacity(GC_SPARE);
+                {
+                    let mut inner = THREAD_MGR.inner.lock();
+                    inner.prep_cleanup(id);
+                    inner.do_thread_gc(&mut spare);
+                }
+                drop(spare);
                 return Ok(());
             }
         }

@@ -415,7 +415,7 @@ impl super::Monitor {
 
         {
             let (ref comps, ref comphandles) =
-                *crate::lockdiag::watched(self.comp_lookup.read(super::reentrant_key()?));
+                *crate::lockdiag::watched_read_all(&self.comp_lookup, super::reentrant_key()?);
             if let Ok(info) = build(comps, comphandles, None)? {
                 return Ok(info);
             }
@@ -423,7 +423,7 @@ impl super::Monitor {
 
         // Cold: count the libraries once, cache it, and answer from the same read.
         let (_, ref comps, ref dynlink, _, ref comphandles) =
-            *crate::lockdiag::watched(self.locks.read(super::reentrant_key()?));
+            *crate::lockdiag::watched_read_all(&self.locks, super::reentrant_key()?);
         let comp_id = desc
             .map(|comp| comphandles.lookup(instance, comp).map(|ch| ch.instance))
             .unwrap_or(Some(instance))
@@ -473,7 +473,7 @@ impl super::Monitor {
         // library's gates. See `RunComp::gate_cache`.
         {
             let (ref comps, ref comphandles) =
-                *crate::lockdiag::watched(self.comp_lookup.read(super::reentrant_key()?));
+                *crate::lockdiag::watched_read_all(&self.comp_lookup, super::reentrant_key()?);
             let comp_id = desc
                 .map(|comp| comphandles.lookup(instance, comp).map(|ch| ch.instance))
                 .unwrap_or(Some(instance))
@@ -484,7 +484,7 @@ impl super::Monitor {
         }
 
         let (_, ref comps, ref dynlink, _, ref comphandles) =
-            *crate::lockdiag::watched(self.locks.read(super::reentrant_key()?));
+            *crate::lockdiag::watched_read_all(&self.locks, super::reentrant_key()?);
         let comp_id = desc
             .map(|comp| comphandles.lookup(instance, comp).map(|ch| ch.instance))
             .unwrap_or(Some(instance))
@@ -522,7 +522,7 @@ impl super::Monitor {
         compartment: ObjID,
     ) -> Result<Descriptor, TwzError> {
         let (ref mut comps, ref mut ch) =
-            *crate::lockdiag::watched(self.comp_lookup.lock(super::reentrant_key()?));
+            *crate::lockdiag::watched_lock_all(&self.comp_lookup, super::reentrant_key()?);
         let comp = comps.get_mut(compartment)?;
         comp.inc_use_count();
         ch.insert(
@@ -547,7 +547,7 @@ impl super::Monitor {
         comp: ObjID,
     ) -> Result<Descriptor, TwzError> {
         let (ref mut comps, ref mut ch) =
-            *crate::lockdiag::watched(self.comp_lookup.lock(ThreadKey::get().unwrap()));
+            *crate::lockdiag::watched_lock_all(&self.comp_lookup, ThreadKey::get().unwrap());
         let comp = comps.get_mut(comp)?;
         comp.inc_use_count();
         ch.insert(
@@ -583,7 +583,7 @@ impl super::Monitor {
         name: &str,
     ) -> Result<Descriptor, TwzError> {
         let (ref mut comps, ref mut ch) =
-            *crate::lockdiag::watched(self.comp_lookup.lock(ThreadKey::get().unwrap()));
+            *crate::lockdiag::watched_lock_all(&self.comp_lookup, ThreadKey::get().unwrap());
         let comp = comps.get_name_mut(name)?;
         comp.inc_use_count();
         ch.insert(
@@ -603,8 +603,9 @@ impl super::Monitor {
         flags: u64,
     ) -> (u64, u64) {
         let Some(instance) = ({
-            let comphandles = crate::lockdiag::watched(
-                self._compartment_handles.write(ThreadKey::get().unwrap()),
+            let comphandles = crate::lockdiag::watched_write(
+                self._compartment_handles,
+                ThreadKey::get().unwrap(),
             );
             let comp_id = desc
                 .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
@@ -630,7 +631,7 @@ impl super::Monitor {
             // a read of the whole collection -- which includes `dynlink`, held for a write across a
             // median 31 ms compartment load.
             let (ref comps, ref comphandles) =
-                *crate::lockdiag::watched(self.comp_lookup.read(super::reentrant_key()?));
+                *crate::lockdiag::watched_read_all(&self.comp_lookup, super::reentrant_key()?);
             let comp_id = desc
                 .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
                 .unwrap_or(Some(caller))
@@ -655,7 +656,7 @@ impl super::Monitor {
             // a read of the whole collection -- which includes `dynlink`, held for a write across a
             // median 31 ms compartment load.
             let (ref comps, ref comphandles) =
-                *crate::lockdiag::watched(self.comp_lookup.read(super::reentrant_key()?));
+                *crate::lockdiag::watched_read_all(&self.comp_lookup, super::reentrant_key()?);
             let comp_id = desc
                 .map(|comp| comphandles.lookup(caller, comp).map(|ch| ch.instance))
                 .unwrap_or(Some(caller))
@@ -752,7 +753,7 @@ impl super::Monitor {
         // median 6.7 ms of the load that every reader of the lock collection used to queue behind.
         let pending = {
             let mut dynlink =
-                crate::lockdiag::watched(self.dynlink.write(ThreadKey::get().unwrap()));
+                crate::lockdiag::watched_write(self.dynlink, ThreadKey::get().unwrap());
             loader::RunCompLoader::load_graph(
                 *dynlink,
                 compname,
@@ -767,7 +768,7 @@ impl super::Monitor {
         .map_err(|_| GenericError::Internal)?;
 
         let loader = {
-            let dynlink = crate::lockdiag::watched(self.dynlink.read(ThreadKey::get().unwrap()));
+            let dynlink = crate::lockdiag::watched_read(self.dynlink, ThreadKey::get().unwrap());
             pending.relocate_and_finish(*dynlink, compname, mondebug)
         }
         .inspect_err(|e| tracing::error!("failed to relocate new compartment: {}", e))
@@ -775,7 +776,7 @@ impl super::Monitor {
 
         let root_comp = {
             let (_, ref mut cmp, ref mut dynlink, _, _) =
-                &mut *crate::lockdiag::watched(self.locks.lock(ThreadKey::get().unwrap()));
+                &mut *crate::lockdiag::watched_lock_all(&self.locks, ThreadKey::get().unwrap());
 
             let controller = match config.controller {
                 ControllerOption::Inherit => cmp.get(caller)?.controller,
@@ -841,7 +842,7 @@ impl super::Monitor {
         // cleaner wakes on exactly that. Measured at 838 holds of 1-5 ms per pair of runs.
         let queued = {
             let (ref mut cmgr, ref mut comp_handles) =
-                *crate::lockdiag::watched(self.comp_lookup.lock(key));
+                *crate::lockdiag::watched_lock_all(&self.comp_lookup, key);
             match comp_handles.remove(caller, desc) {
                 Some(comp) => {
                     tracing::trace!(
@@ -864,7 +865,7 @@ impl super::Monitor {
                 return;
             };
             let (ref tmgr, ref mut cmgr, ref mut dynlink, _, _) =
-                *crate::lockdiag::watched(self.locks.lock(key));
+                *crate::lockdiag::watched_lock_all(&self.locks, key);
             cmgr.process_cleanup_queue(tmgr, &mut *dynlink)
         };
         drop(comps);
@@ -876,19 +877,19 @@ impl super::Monitor {
         instance: ObjID,
         f: impl FnOnce(u64) -> Option<u64>,
     ) -> bool {
-        let cmp = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
+        let cmp = crate::lockdiag::watched_read(self.comp_mgr, ThreadKey::get().unwrap());
         cmp.update_compartment_flags(instance, f)
     }
 
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn load_compartment_flags(&self, instance: ObjID) -> u64 {
-        let cmp = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
+        let cmp = crate::lockdiag::watched_read(self.comp_mgr, ThreadKey::get().unwrap());
         cmp.load_compartment_flags(instance)
     }
 
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn read_flags_and_signals(&self, instance: ObjID) -> (u64, u64) {
-        let cmp = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
+        let cmp = crate::lockdiag::watched_read(self.comp_mgr, ThreadKey::get().unwrap());
         let flags = cmp.load_compartment_flags(instance);
         let signals = cmp
             .get(instance)
@@ -900,7 +901,7 @@ impl super::Monitor {
     #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
     pub fn wait_for_compartment_state_change(&self, instance: ObjID, state: u64) {
         let mut sl = {
-            let cmp = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
+            let cmp = crate::lockdiag::watched_read(self.comp_mgr, ThreadKey::get().unwrap());
             let Ok(sl) = cmp.wait_for_compartment_state_change(instance, state) else {
                 return;
             };

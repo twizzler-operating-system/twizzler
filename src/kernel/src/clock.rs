@@ -630,10 +630,12 @@ pub fn register_timeout_callback(
     thread: ThreadRef,
     sleep_gen: u64,
 ) -> TimeoutKey {
-    let timeout = TimeoutOnce::new(cb, thread, sleep_gen);
+    thread.tw_fired_ns.store(0, Ordering::Relaxed);
+    let timeout = TimeoutOnce::new(cb, thread.clone(), sleep_gen);
     let (key, kick) = {
         let mut tq = TIMEOUT_QUEUE.lock();
         let (key, expire_ns) = tq.insert(time, timeout);
+        thread.tw_deadline_ns.store(expire_ns, Ordering::Relaxed);
         // A deadline sooner than the bsp's programmed wake would otherwise wait out that wake
         // (up to a full tick) — the quantization that made every sub-ms sleep cost ~1ms.
         //
@@ -817,6 +819,7 @@ pub mod bsp_watchdog {
 pub fn schedule_oneshot_tick(next: u64) {
     let time = ticks_to_nano(next).unwrap();
     NEXT_TICK.store(next, Ordering::SeqCst);
+    note_oneshot_due(time);
     crate::arch::schedule_oneshot_tick(time);
 }
 
@@ -824,7 +827,66 @@ pub fn schedule_oneshot_tick(next: u64) {
 /// per-cpu tick stats (0 for a sub-tick wake); the arch layer takes nanoseconds directly.
 fn schedule_oneshot_nanos(time: Nanoseconds) {
     NEXT_TICK.store(time / NANOS_PER_TICK, Ordering::SeqCst);
+    note_oneshot_due(time);
     crate::arch::schedule_oneshot_tick(time);
+}
+
+/// Record when this cpu's oneshot must have fired by. The arch layer may shorten `time`, never
+/// lengthen it, so this is an upper bound.
+fn note_oneshot_due(time: Nanoseconds) {
+    let now = crate::instant::current_ns();
+    if now != 0 {
+        current_processor()
+            .oneshot_due_ns
+            .store(now.saturating_add(time), Ordering::Relaxed);
+    }
+}
+
+/// A oneshot this far past its due time never fired: a halted cpu has no other way to notice.
+const ONESHOT_OVERDUE_NS: u64 = 50_000_000;
+/// Non-bsp hardticks during which `BSP_TICK` may stand still before the bsp is kicked.
+const BSP_STALL_TICKS: u32 = 64;
+
+/// Re-arm this cpu's oneshot if its last arm is overdue. Called on every pass of the idle loop,
+/// i.e. each time the cpu comes out of a halt: an arm QEMU TCG never delivered (`armloss`) leaves
+/// a halted cpu with no timer at all, and nothing but the next wake -- an ipi -- reaches it.
+pub fn rearm_if_overdue() {
+    let p = current_processor();
+    let due = p.oneshot_due_ns.load(Ordering::Relaxed);
+    if due == 0 {
+        return;
+    }
+    let now = crate::instant::current_ns();
+    if now <= due.saturating_add(ONESHOT_OVERDUE_NS) {
+        return;
+    }
+    armloss::note(now - due);
+    static REPORTS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    if REPORTS.fetch_add(1, Ordering::Relaxed) < 4 {
+        emerglogln!(
+            "[armloss] cpu {} oneshot {} ms overdue on idle wake; rearming",
+            p.id,
+            (now - due) / 1_000_000
+        );
+    }
+    crate::interrupt::with_disabled(|| schedule_oneshot_tick(1));
+}
+
+/// From a non-bsp hardtick: kick the bsp when its tick has stopped, so it leaves its halt and
+/// `rearm_if_overdue` runs there. Only timeouts are advanced on the bsp, so a bsp with no timer
+/// stops every timed sleep in the system while other cpus keep ticking.
+fn kick_bsp_if_stalled() {
+    let p = current_processor();
+    let tick = BSP_TICK.load(Ordering::Relaxed);
+    if p.bsp_tick_seen.swap(tick, Ordering::Relaxed) != tick {
+        p.bsp_tick_same.store(0, Ordering::Relaxed);
+        return;
+    }
+    if p.bsp_tick_same.fetch_add(1, Ordering::Relaxed) + 1 < BSP_STALL_TICKS {
+        return;
+    }
+    p.bsp_tick_same.store(0, Ordering::Relaxed);
+    crate::processor::mp::get_processor(p.bsp_id()).wakeup(true);
 }
 
 /// Pull the bsp's programmed wake in if the nearest timeout deadline is sooner — the "signal CPU
@@ -913,6 +975,9 @@ pub fn oneshot_clock_hardtick() {
         None
     };
 
+    if bsp_next_ns.is_none() {
+        kick_bsp_if_stalled();
+    }
     // Backstop for the requeue list. A waker can only park a thread there when it can't schedule
     // it directly (the target is critical, or hasn't set sync_sleep_done yet), and the waker's own
     // requeue_all() skips it for the same reason. The sleeper's claim_own_wakeup() covers the

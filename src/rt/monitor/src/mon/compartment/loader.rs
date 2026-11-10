@@ -647,7 +647,7 @@ impl Monitor {
         suspend_on_start: bool,
     ) -> Result<(), TwzError> {
         let deps = {
-            let cmp = crate::lockdiag::watched(self.comp_mgr.read(ThreadKey::get().unwrap()));
+            let cmp = crate::lockdiag::watched_read(self.comp_mgr, ThreadKey::get().unwrap());
             let rc = cmp.get(instance)?;
 
             if mondebug {
@@ -706,7 +706,7 @@ impl Monitor {
             }
             let info = {
                 let (ref mut tmgr, ref mut cmp, ref mut dynlink, _, _) =
-                    *crate::lockdiag::watched(self.locks.lock(ThreadKey::get().unwrap()));
+                    *crate::lockdiag::watched_lock_all(&self.locks, ThreadKey::get().unwrap());
                 let rc = cmp.get_mut(instance)?;
 
                 let _start = Instant::now();

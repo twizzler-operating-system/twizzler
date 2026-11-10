@@ -75,6 +75,84 @@ const MAX_FRAMES: usize = 100;
 /// here is bounded.
 static SYMBOLIZE_LOCK: crate::spinlock::Spinlock<()> = crate::spinlock::Spinlock::new(());
 
+fn print_frame(frame_nr: usize, ip: *mut u8, symbolize: bool) {
+    if !symbolize {
+        emerglogln!("{:4} - {:18p}", frame_nr, ip);
+    } else {
+        // Resolve this instruction pointer to a symbol name
+        let _ = backtracer_core::resolve(
+            if let Some(ctx) = DEBUG_CTX.poll().map(|d| &d.ctx) {
+                Some(ctx)
+            } else {
+                None
+            },
+            0,
+            ip,
+            |symbol| {
+                let name = symbol.name();
+                if let Some(addr) = symbol.addr() {
+                    emerglogln!(
+                        "{:4}: {:18p} - {}",
+                        frame_nr,
+                        addr,
+                        if let Some(ref name) = name {
+                            name
+                        } else {
+                            "??"
+                        }
+                    )
+                } else {
+                    emerglogln!(
+                        "{:4}:                 ?? - {}",
+                        frame_nr,
+                        if let Some(ref name) = name {
+                            name
+                        } else {
+                            "??"
+                        }
+                    )
+                }
+                if let Some(filename) = symbol.filename() {
+                    if let Some(linenr) = symbol.lineno() {
+                        emerglogln!("                               at {}:{}", filename, linenr);
+                    }
+                }
+            },
+        );
+    }
+}
+
+/// Symbolize the kernel frames of a thread that is not running, from the registers `__do_switch`
+/// saved for it. Frame pointers are followed only while they stay inside `stack`, so a stale or
+/// corrupt chain ends the walk instead of faulting the walker.
+pub fn backtrace_saved(rip: u64, rbp: u64, stack: core::ops::Range<u64>) {
+    let _symbolize_guard = (!is_panicing()).then(|| SYMBOLIZE_LOCK.lock());
+    let mut ip = rip;
+    let mut bp = rbp;
+    for frame_nr in 0..MAX_FRAMES {
+        if VirtAddr::new(ip).ok().is_none_or(|x| !x.is_kernel()) {
+            break;
+        }
+        print_frame(frame_nr, ip as *mut u8, true);
+        if bp < stack.start || bp.saturating_add(16) > stack.end || bp % 8 != 0 {
+            break;
+        }
+        // Safety: `bp` and `bp + 8` lie inside a kernel stack, which stays mapped for the life of
+        // the kernel.
+        let (next_bp, ret) = unsafe {
+            (
+                core::ptr::read_volatile(bp as *const u64),
+                core::ptr::read_volatile((bp + 8) as *const u64),
+            )
+        };
+        if next_bp <= bp {
+            break;
+        }
+        ip = ret;
+        bp = next_bp;
+    }
+}
+
 pub fn backtrace(symbolize: bool, entry_point: Option<backtracer_core::EntryPoint>) {
     let _symbolize_guard = if symbolize && !is_panicing() {
         Some(SYMBOLIZE_LOCK.lock())
@@ -91,54 +169,7 @@ pub fn backtrace(symbolize: bool, entry_point: Option<backtracer_core::EntryPoin
             return false;
         }
 
-        if !symbolize {
-            emerglogln!("{:4} - {:18p}", frame_nr, ip);
-        } else {
-            // Resolve this instruction pointer to a symbol name
-            let _ = backtracer_core::resolve(
-                if let Some(ctx) = DEBUG_CTX.poll().map(|d| &d.ctx) {
-                    Some(ctx)
-                } else {
-                    None
-                },
-                0,
-                ip,
-                |symbol| {
-                    let name = symbol.name();
-                    if let Some(addr) = symbol.addr() {
-                        emerglogln!(
-                            "{:4}: {:18p} - {}",
-                            frame_nr,
-                            addr,
-                            if let Some(ref name) = name {
-                                name
-                            } else {
-                                "??"
-                            }
-                        )
-                    } else {
-                        emerglogln!(
-                            "{:4}:                 ?? - {}",
-                            frame_nr,
-                            if let Some(ref name) = name {
-                                name
-                            } else {
-                                "??"
-                            }
-                        )
-                    }
-                    if let Some(filename) = symbol.filename() {
-                        if let Some(linenr) = symbol.lineno() {
-                            emerglogln!(
-                                "                               at {}:{}",
-                                filename,
-                                linenr
-                            );
-                        }
-                    }
-                },
-            );
-        }
+        print_frame(frame_nr, ip, symbolize);
         frame_nr += 1;
 
         if frame_nr > MAX_FRAMES {

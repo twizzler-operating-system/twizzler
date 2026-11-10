@@ -553,6 +553,9 @@ fn start_schedmon() {
                 );
                 pass += 1;
                 crate::processor::sched::schedmon_dump(pass);
+                // The idle-loop scan never runs while a runnable thread hogs a single cpu, which
+                // is exactly when a thread that stopped moving needs naming.
+                crate::thread::check_system_hang();
             }
         },
     );
@@ -580,6 +583,9 @@ pub fn idle_main() -> ! {
     );
     let mut iter = 0u32;
     loop {
+        // First thing out of a halt: a timer arm that never arrived leaves this cpu with no tick,
+        // and the ipi that woke it is the only chance to notice.
+        crate::clock::rearm_if_overdue();
         // Deliver wakeups parked on the requeue list. A signal that lands between a waiter's
         // setup_wait and its finish_blocking finds the waiter still critical and defers the
         // wakeup (add_to_requeue); any later requeue_all delivers it, but a system quiescing at

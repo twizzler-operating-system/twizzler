@@ -7,7 +7,7 @@ use std::{
         mpsc::{Receiver, Sender},
         Arc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use secgate::TwzError;
@@ -31,9 +31,29 @@ use crate::mon::get_monitor;
 /// is cheaper than an unwatched thread.
 const WAKE_DEPTH: usize = 8;
 
+/// Age past which the young worker hands a tracked thread to the old one, and how often it looks.
+///
+/// Every wake re-arms a sleep on each tracked thread, ~1k cycles apiece in the kernel, and a spawn
+/// wakes the cleaner twice (track, then exit). Split by age, a spawn storm wakes only the young
+/// worker, whose set is the threads spawned in the last second; the long-lived service threads sit
+/// in the old worker's set, re-armed once per handoff at most.
+const MIGRATE_AGE: Duration = Duration::from_secs(1);
+
 /// Tracks threads that do not exit cleanly, so their monitor-internal resources can be cleaned up.
 pub(crate) struct ThreadCleaner {
+    young: Worker,
+    old: Worker,
+}
+
+/// One cleaner thread and its queue.
+struct Worker {
     _thread: std::thread::JoinHandle<()>,
+    send: Sender<WaitOp>,
+    inner: Pin<Arc<ThreadCleanerData>>,
+}
+
+/// The old worker's queue, as the young worker sees it.
+struct Handoff {
     send: Sender<WaitOp>,
     inner: Pin<Arc<ThreadCleanerData>>,
 }
@@ -50,8 +70,10 @@ struct ThreadCleanerData {
 
 // All the threads we are tracking.
 struct Waits {
-    /// Tracked threads. Parallel to `ops[1..]`.
+    /// Tracked threads. Parallel to `ops[1..]` and `since`.
     entries: Vec<ManagedThread>,
+    /// When each entry was added.
+    since: Vec<Instant>,
     /// Position of each thread in `entries`.
     idx: HashMap<ObjID, usize>,
     /// The sleep ops handed to `sys_thread_sync`, maintained in step with `entries` rather than
@@ -70,15 +92,14 @@ enum WaitOp {
     Remove(ObjID),
 }
 
-impl ThreadCleaner {
-    /// Makes a new ThreadCleaner.
-    pub(crate) fn new() -> Self {
+impl Worker {
+    fn new(name: &str, handoff: Option<Handoff>) -> Self {
         let (send, recv) = std::sync::mpsc::channel();
         let data = Arc::pin(ThreadCleanerData::default());
         let inner = data.clone();
         let thread = std::thread::Builder::new()
-            .name("thread-exit cleanup tracker".into())
-            .spawn(move || cleaner_thread_main(data, recv))
+            .name(name.into())
+            .spawn(move || cleaner_thread_main(data, recv, handoff))
             .unwrap();
         Self {
             send,
@@ -87,34 +108,57 @@ impl ThreadCleaner {
         }
     }
 
+    fn handoff(&self) -> Handoff {
+        Handoff {
+            send: self.send.clone(),
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl ThreadCleaner {
+    /// Makes a new ThreadCleaner.
+    pub(crate) fn new() -> Self {
+        let old = Worker::new("thread-exit cleanup tracker (long-lived)", None);
+        let young = Worker::new("thread-exit cleanup tracker", Some(old.handoff()));
+        Self { young, old }
+    }
+
     /// Track a thread. If that thread exits, the cleanup thread will remove the exited thread from
     /// tracking and from the global thread manager.
     pub fn track(&self, th: ManagedThread) {
         tracing::debug!("tracking thread {}", th.id);
-        let depth = self.queued();
-        let _ = self.send.send(WaitOp::Add(th));
-        self.inner.notify(depth >= WAKE_DEPTH);
+        self.young
+            .inner
+            .send(&self.young.send, WaitOp::Add(th), true);
     }
 
     /// Untrack a thread. Threads removed this way do not trigger a removal from the global thread
     /// manager.
-    pub fn untrack(&self, id: ObjID) {
-        let depth = self.queued();
-        let _ = self.send.send(WaitOp::Remove(id));
-        self.inner.notify(depth >= WAKE_DEPTH);
-    }
-
-    /// Count an op *before* it is sent, and report the resulting depth.
     ///
-    /// Before the send, not after: the cleaner decrements this as it drains, and if it drained an
-    /// op that had not been counted yet the counter would underflow -- leaving `depth` permanently
-    /// past [`WAKE_DEPTH`] and every spawn back to issuing a wake syscall, silently.
-    fn queued(&self) -> usize {
-        self.inner.pending.fetch_add(1, Ordering::SeqCst) + 1
+    /// Sent to both workers, and wakes neither: its only caller is the cleanup of a thread a
+    /// worker has already taken out of its set, so the other worker holds no entry for it.
+    pub fn untrack(&self, id: ObjID) {
+        for w in [&self.young, &self.old] {
+            w.inner.send(&w.send, WaitOp::Remove(id), false);
+        }
     }
 }
 
 impl ThreadCleanerData {
+    /// Queue `op`, notifying the worker if `wake` (or if the queue is past [`WAKE_DEPTH`]).
+    ///
+    /// Counted *before* the send: the worker decrements `pending` as it drains, and draining an op
+    /// that had not been counted yet would underflow it -- leaving the depth permanently past
+    /// [`WAKE_DEPTH`] and every spawn back to issuing a wake syscall, silently.
+    fn send(&self, send: &Sender<WaitOp>, op: WaitOp, wake: bool) {
+        let depth = self.pending.fetch_add(1, Ordering::SeqCst) + 1;
+        let _ = send.send(op);
+        if wake || depth >= WAKE_DEPTH {
+            self.notify(depth >= WAKE_DEPTH);
+        }
+    }
+
     /// Notify the cleanup thread that new items are on the queue.
     ///
     /// The wake syscall is only needed when the cleaner is parked, and this was issuing one per
@@ -149,6 +193,7 @@ impl Waits {
     fn new(notify: &AtomicU64) -> Self {
         Self {
             entries: Vec::new(),
+            since: Vec::new(),
             idx: HashMap::new(),
             ops: vec![ThreadSync::new_sleep(ThreadSyncSleep::new(
                 ThreadSyncReference::Virtual(notify),
@@ -164,11 +209,13 @@ impl Waits {
         match self.idx.get(&th.id).copied() {
             Some(i) => {
                 self.entries[i] = th;
+                self.since[i] = Instant::now();
                 self.ops[i + 1] = op;
             }
             None => {
                 self.idx.insert(th.id, self.entries.len());
                 self.entries.push(th);
+                self.since.push(Instant::now());
                 self.ops.push(op);
             }
         }
@@ -177,6 +224,7 @@ impl Waits {
     fn remove(&mut self, id: ObjID) -> Option<ManagedThread> {
         let i = self.idx.remove(&id)?;
         let th = self.entries.swap_remove(i);
+        self.since.swap_remove(i);
         self.ops.swap_remove(i + 1);
         // `swap_remove` moved the last entry into this slot, in both vectors alike.
         if let Some(moved) = self.entries.get(i) {
@@ -201,6 +249,21 @@ impl Waits {
         }
     }
 
+    /// Move every entry older than [`MIGRATE_AGE`] out of the set.
+    fn take_old(&mut self, out: &mut Vec<ManagedThread>) {
+        let mut i = 0;
+        while i < self.entries.len() {
+            if self.since[i].elapsed() >= MIGRATE_AGE {
+                let id = self.entries[i].id;
+                if let Some(th) = self.remove(id) {
+                    out.push(th);
+                }
+            } else {
+                i += 1;
+            }
+        }
+    }
+
     fn process_queue(&mut self, recv: &mut Receiver<WaitOp>, data: &ThreadCleanerData) -> bool {
         let mut did_work = false;
         while let Ok(wo) = recv.try_recv() {
@@ -217,7 +280,13 @@ impl Waits {
     }
 }
 
-fn cleaner_thread_main(data: Pin<Arc<ThreadCleanerData>>, mut recv: Receiver<WaitOp>) {
+fn cleaner_thread_main(
+    data: Pin<Arc<ThreadCleanerData>>,
+    mut recv: Receiver<WaitOp>,
+    handoff: Option<Handoff>,
+) {
+    let mut last_handoff = Instant::now();
+    let mut aged = Vec::new();
     // TODO (dbittman): when we have support for async thread events, we can use that API.
     let mut cleanups = Vec::new();
     let mut waits = Waits::new(&data.notify);
@@ -237,10 +306,10 @@ fn cleaner_thread_main(data: Pin<Arc<ThreadCleanerData>>, mut recv: Receiver<Wai
         // use_count > 0, i.e. someone never dropped a handle. This says who and at what count.
         diag_tick += 1;
         // Gated whole: skipping the census also skips its lock traffic, not just the lines.
-        if diag_tick % 64 == 0 && crate::diag_enabled() {
+        if handoff.is_some() && diag_tick % 64 == 0 && crate::diag_enabled() {
             let monitor = get_monitor();
             let key = happylock::ThreadKey::get().unwrap();
-            let cmgr = crate::lockdiag::watched(monitor.comp_mgr.read(key));
+            let cmgr = crate::lockdiag::watched_read(monitor.comp_mgr, key);
             let mut total = 0usize;
             let mut exited = 0usize;
             let mut held = 0usize;
@@ -331,13 +400,13 @@ fn cleaner_thread_main(data: Pin<Arc<ThreadCleanerData>>, mut recv: Receiver<Wai
             let monitor = get_monitor();
             {
                 let key = happylock::ThreadKey::get().unwrap();
-                let mut tmgr = crate::lockdiag::watched(monitor.thread_mgr.write(key));
+                let mut tmgr = crate::lockdiag::watched_write(monitor.thread_mgr, key);
                 tmgr.do_remove(&th);
             }
             let comps = {
                 let key = happylock::ThreadKey::get().unwrap();
                 let (ref tmgr, ref mut cmgr, ref mut dynlink, _, _) =
-                    *crate::lockdiag::watched(monitor.locks.lock(key));
+                    *crate::lockdiag::watched_lock_all(&monitor.locks, key);
                 for comp in cmgr.compartments_mut() {
                     comp.clean_per_thread_data(th.id);
                 }
@@ -353,7 +422,19 @@ fn cleaner_thread_main(data: Pin<Arc<ThreadCleanerData>>, mut recv: Receiver<Wai
         // Build the next spawn's supervisor TLS region here rather than on that spawn's own
         // critical path. This thread is the one place in the monitor that can take the lock
         // collection with nobody waiting on the result.
-        super::refill_ready_tls();
+        if handoff.is_some() {
+            super::refill_ready_tls();
+        }
+        if let Some(h) = &handoff {
+            if last_handoff.elapsed() >= MIGRATE_AGE {
+                last_handoff = Instant::now();
+                waits.take_old(&mut aged);
+                let n = aged.len();
+                for (i, th) in aged.drain(..).enumerate() {
+                    h.inner.send(&h.send, WaitOp::Add(th), i + 1 == n);
+                }
+            }
+        }
 
         // Check for notifications, and sleep. `parked` is stored before `notify` is read, which is
         // what lets `ThreadCleanerData::notify` skip its syscall while this thread is awake.

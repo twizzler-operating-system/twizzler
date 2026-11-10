@@ -1646,6 +1646,7 @@ fn want_of(flags: FrameAllocFlags) -> framecache::Want {
 ///
 /// **Must run with interrupts enabled**: the zeroing below is a 4 KiB memset.
 fn finish_cached_alloc(frame: FrameRef, flags: FrameAllocFlags, needs_zeroing: bool) -> FrameRef {
+    check_overlap(frame, "framecache-alloc");
     // The gauge decrement happened in the cache; this only clears the tripwire bit. Splitting them
     // is deliberate -- the cache knows its own depth, and having two owners increment one counter
     // is how the old pool's accounting became unreadable.
@@ -1736,6 +1737,7 @@ fn cache_freed_frame_hinted(frame: FrameRef, known_zero: bool) -> bool {
 /// points can serve a pooled frame under the same rules. **Must run with interrupts enabled**:
 /// the zeroing below is a 4 KiB memset.
 fn finish_parked_alloc(frame: FrameRef, flags: FrameAllocFlags) -> FrameRef {
+    check_overlap(frame, "pool-alloc");
     {
         // Only a frame that came off the *free* path is dirty. A precharged one was allocated
         // zeroed and nobody has written it -- `is_zeroed()` cannot tell them apart, because

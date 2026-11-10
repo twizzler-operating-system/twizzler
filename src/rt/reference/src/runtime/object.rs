@@ -171,6 +171,29 @@ impl ReferenceRuntime {
         res
     }
 
+    /// Record a mapping the monitor already made for this compartment at `slot`, as `map_object`
+    /// would after its gate returned. Falls back to `map_object` while another thread has the key
+    /// in flight.
+    pub fn adopt_mapping(&self, id: ObjID, flags: MapFlags, slot: usize) -> Result<ObjectHandle> {
+        let key = ObjectMapKey(id.into(), flags);
+        let mut mgr = self.object_manager.lock();
+        let handle = match mgr.cached(key) {
+            Some(handle) => handle,
+            None if mgr.begin_inflight(key) => {
+                mgr.end_inflight(key);
+                mgr.insert_mapped(key, slot)
+            }
+            None => {
+                drop(mgr);
+                return self.map_object(id, flags);
+            }
+        };
+        let pending = mgr.begin_unmaps();
+        drop(mgr);
+        self.finish_unmaps(pending);
+        Ok(handle)
+    }
+
     pub fn create_rtobj(&self) -> Result<ObjID> {
         let tie_id = monitor_api::get_comp_config().sctx;
         let mut create = ObjectCreate::default();

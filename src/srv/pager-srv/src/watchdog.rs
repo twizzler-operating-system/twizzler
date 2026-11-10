@@ -241,6 +241,12 @@ const QUEUE_DIAG_EVERY: Duration = Duration::from_secs(20);
 /// the same log.
 const PHASE_REPORT_EVERY: Duration = Duration::from_secs(2);
 
+/// Nanoseconds since the first call, for stamps that only ever get subtracted from each other.
+pub(crate) fn epoch_nanos() -> u64 {
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    EPOCH.get_or_init(Instant::now).elapsed().as_nanos() as u64
+}
+
 /// Whether the `pager` diagnostic class was requested via `TWZ_DIAG` (comma list, or `all`).
 /// Same contract as `twizzler_net::diag_enabled`, which pager-srv does not depend on; init logs
 /// the value at boot, so a log without NVMEQ/PHASETICK heartbeats provably means "off".
@@ -380,6 +386,9 @@ fn sampler_main() {
                 ""
             }
         );
+        if let Some(ctx) = crate::PAGER_CTX.get() {
+            tracing::warn!("pager watchdog:   {}", ctx.data.pool_lock_report());
+        }
         for (n, entry) in active.values_mut().enumerate() {
             let age = now.duration_since(entry.start);
             if n < MAX_REPORTED {

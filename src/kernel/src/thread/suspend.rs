@@ -13,10 +13,9 @@ use crate::{
     once::Once,
     processor::{
         ipi::ipi_exec,
-        sched::{SchedFlags, schedule, schedule_resched},
+        sched::{SchedFlags, schedule, schedule_resched, schedule_thread},
     },
     spinlock::Spinlock,
-    syscall::sync::{add_to_requeue, requeue_all},
     thread::current_thread_ref,
 };
 
@@ -122,11 +121,11 @@ impl Thread {
     pub fn unsuspend_thread(self: &ThreadRef) -> bool {
         let mut suspended_threads = suspended_threads().lock();
         if suspended_threads.find_mut(&self.objid()).remove().is_some() {
-            // Just throw it on a queue, it'll cleanup its own flag mess.
             drop(suspended_threads);
-            self.set_sync_sleep_done();
-            add_to_requeue(self.clone());
-            requeue_all();
+            // Directly, not through the DONE token: a stale token (a waker's give-back that
+            // outlived the sleep) must never resume a thread still on the list above, so the
+            // token paths refuse `Suspended` and this is the only way back to the run queue.
+            schedule_thread(self.clone());
             true
         } else {
             false

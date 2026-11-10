@@ -14,7 +14,7 @@ use twizzler_abi::syscall::{
 };
 use twizzler_rt_abi::object::ObjID;
 
-use super::MapInfo;
+use super::{MapInfo, UnmapOnDrop};
 use crate::mon::get_monitor;
 
 /// Backlog depth at which the unmapper boosts itself; it releases again at `DEBOOST_AT`.
@@ -273,6 +273,23 @@ impl Unmapper {
         if self.sender.send(UnmapCommand::DeleteInstance(id)).is_err() {
             self.backlog.fetch_sub(1, Ordering::Relaxed);
             tracing::warn!("failed to enqueue delete of instance {}", id);
+        }
+    }
+
+    /// Enqueue the unmap of a slot whose last shared handle was dropped. Not counted in
+    /// [`SLOT_UNMAPS_SENT`], which pairs with exclusive handles.
+    pub(super) fn background_unmap_last(&self, unmap: UnmapOnDrop) {
+        let slot = unmap.slot;
+        self.backlog.fetch_add(1, Ordering::Relaxed);
+        if self.sender.send(UnmapCommand::SlotUnmap(slot)).is_ok() {
+            core::mem::forget(unmap);
+        } else {
+            self.backlog.fetch_sub(1, Ordering::Relaxed);
+            tracing::warn!(
+                "failed to enqueue Unmap of slot {} onto cleaner thread; unmapping inline",
+                slot
+            );
+            drop(unmap);
         }
     }
 

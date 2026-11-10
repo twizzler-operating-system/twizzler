@@ -42,6 +42,7 @@ impl CompThread {
             entry,
             arg,
             suspend: suspend_on_start,
+            upcall_self: 0,
         };
         let mon = dynlink.get_compartment_mut(MONITOR_COMPARTMENT_ID).unwrap();
         let mt = tmgr

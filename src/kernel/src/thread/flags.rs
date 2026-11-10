@@ -2,7 +2,7 @@ use core::sync::atomic::Ordering;
 
 use twizzler_abi::upcall::UpcallInfo;
 
-use super::{Thread, current_thread_ref, locktrack::diag, priority::Priority};
+use super::{Thread, current_thread_ref, locktrack::diag, priority::Priority, synctrace};
 
 /// A thread crossing the user/kernel boundary must not hold a critical count: user code cannot be
 /// in a critical section, so a nonzero count at either edge is a leak from some earlier kernel
@@ -270,20 +270,27 @@ impl Thread {
         (p != 0).then(|| unsafe { &*(p as *const core::panic::Location<'static>) })
     }
 
+    #[track_caller]
     pub fn set_sync_sleep(&self) {
         self.flags.fetch_or(THREAD_IS_SYNC_SLEEP, Ordering::SeqCst);
+        self.sync_note(synctrace::SET_SYNC, 0);
     }
 
+    #[track_caller]
     pub fn reset_sync_sleep(&self) -> bool {
         let old = self
             .flags
             .fetch_and(!THREAD_IS_SYNC_SLEEP, Ordering::SeqCst);
-        (old & THREAD_IS_SYNC_SLEEP) != 0
+        let was = (old & THREAD_IS_SYNC_SLEEP) != 0;
+        self.sync_note(synctrace::RESET_SYNC, was as u16);
+        was
     }
 
+    #[track_caller]
     pub fn set_sync_sleep_done(&self) {
         self.flags
             .fetch_or(THREAD_IS_SYNC_SLEEP_DONE, Ordering::SeqCst);
+        self.sync_note(synctrace::SET_DONE, 0);
     }
 
     /// Whether this thread still owns its in-flight thread-sync park. A waker's claim consumes
@@ -299,11 +306,14 @@ impl Thread {
         self.flags.load(Ordering::SeqCst) & THREAD_IS_SYNC_SLEEP_DONE != 0
     }
 
+    #[track_caller]
     pub fn reset_sync_sleep_done(&self) -> bool {
         let old = self
             .flags
             .fetch_and(!THREAD_IS_SYNC_SLEEP_DONE, Ordering::SeqCst);
-        (old & THREAD_IS_SYNC_SLEEP_DONE) != 0
+        let was = (old & THREAD_IS_SYNC_SLEEP_DONE) != 0;
+        self.sync_note(synctrace::RESET_DONE, was as u16);
+        was
     }
 
     pub fn set_timed_wait(&self, set: bool) {
