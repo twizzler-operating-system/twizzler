@@ -13,7 +13,7 @@ use twizzler_abi::{
     object::{NULLPAGE_SIZE, ObjID},
 };
 use twizzler_rt_abi::error::{ArgumentError, GenericError, ObjectError, ResourceError};
-use volatile::map_field;
+use volatile::{VolatilePtr, map_field};
 
 use crate::{
     device::DeviceRef,
@@ -43,6 +43,30 @@ struct PcieKernelInfo {
 
 fn ecam_offset(bus: u8, device: u8, function: u8) -> usize {
     (bus as usize) << 20 | (device as usize) << 15 | (function as usize) << 12
+}
+
+/// Size a memory BAR, returning (base, size, prefetchable); all zero for I/O BARs. `hi` is the
+/// upper dword of a 64-bit BAR. The caller keeps the device from decoding while this runs.
+fn probe_bar(lo: VolatilePtr<'_, u32>, hi: Option<VolatilePtr<'_, u32>>) -> (u64, u64, u32) {
+    let lo_data = lo.read();
+    if lo_data & 1 != 0 {
+        return (0, 0, 0);
+    }
+    lo.write(0xffffffff);
+    let lo_mask = lo.read() & 0xfffffff0;
+    lo.write(lo_data);
+    let pref = (lo_data >> 3) & 1;
+    let base = (lo_data & 0xfffffff0) as u64;
+    match hi {
+        Some(hi) => {
+            let hi_data = hi.read();
+            hi.write(0xffffffff);
+            let mask = (hi.read() as u64) << 32 | lo_mask as u64;
+            hi.write(hi_data);
+            ((hi_data as u64) << 32 | base, (!mask).wrapping_add(1), pref)
+        }
+        None => (base, (!lo_mask).wrapping_add(1) as u64, pref),
+    }
 }
 
 static DEVS: Mutex<BTreeMap<ObjID, PcieKernelInfo>> = Mutex::new(BTreeMap::new());
@@ -80,46 +104,30 @@ fn register_device(
     };
     let cfg = cfg.as_mut_ptr();
     let mut bars = Vec::new();
-    match map_field!(cfg.header_type).read() {
+    match map_field!(cfg.header_type).read() & 0x7f {
         0 => {
-            let mut cfg = unsafe {
+            let mut dcfg = unsafe {
                 volatile::VolatileRef::from_mut_ref(
                     cfg_va.as_mut_ptr::<PcieDeviceHeader>().as_mut().unwrap(),
                 )
             };
+            let dcfg = dcfg.as_mut_ptr();
 
-            let cfg = cfg.as_mut_ptr();
-
+            // Sizing writes all-ones to live BARs; keep the device from decoding meanwhile.
+            let cmd = map_field!(cfg.command).read();
+            map_field!(cfg.command).write(cmd & !0x3);
             let mut bar_idx = 0;
             while bar_idx < 6 {
-                let bar = get_bar(cfg, bar_idx);
-                let bar_data = bar.read();
-                bar.write(0xffffffff);
-                let sz = (!(bar.read() & 0xfffffff0)).wrapping_add(1);
-                bar.write(bar_data);
-                let ty = (bar_data >> 1) & 3;
-                let pref = (bar_data >> 3) & 1;
-                if bar_data & 1 != 0 {
+                let lo = get_bar(dcfg, bar_idx);
+                let is_64 = lo.read() & 0x7 == 0x4 && bar_idx < 5;
+                bars.push(probe_bar(lo, is_64.then(|| get_bar(dcfg, bar_idx + 1))));
+                if is_64 {
                     bars.push((0, 0, 0));
-                } else {
-                    if ty == 2 {
-                        // TODO: does the second BAR contribute to sz?
-                        bar_idx += 1;
-
-                        let bar2 = get_bar(cfg, bar_idx);
-                        let bar2_data = bar2.read();
-                        bars.push((
-                            ((bar2_data as u64 & 0xffffffff) << 32) | bar_data as u64 & 0xfffffff0,
-                            sz,
-                            pref,
-                        ));
-                        bars.push((0, 0, 0));
-                    } else {
-                        bars.push((bar_data as u64 & 0xfffffff0, sz, pref));
-                    }
+                    bar_idx += 1;
                 }
                 bar_idx += 1;
             }
+            map_field!(cfg.command).write(cmd);
         }
         1 => {
             let mut cfg = unsafe {
@@ -130,30 +138,12 @@ fn register_device(
             let cfg = cfg.as_mut_ptr();
             let bar0 = map_field!(cfg.bar0);
             let bar1 = map_field!(cfg.bar1);
-            let bar0_backup = bar0.read();
-            let bar1_backup = bar1.read();
-
-            bar0.write(0xffffffff);
-            let sz = (!(bar0.read() & 0xfffffff0)).wrapping_add(1);
-            bar0.write(bar0_backup);
-
-            bar1.write(0xffffffff);
-            let sz2 = (!(bar1.read() & 0xfffffff0)).wrapping_add(1);
-            bar1.write(bar1_backup);
-            let ty = (bar0_backup >> 1) & 3;
-            let pref = (bar0_backup >> 3) & 1;
-            if ty == 2 {
-                // TODO: does the second BAR contribute to sz?
-                bars.push((
-                    ((bar1_backup as u64 & 0xfffffff0) << 32) | bar0_backup as u64 & 0xfffffff0,
-                    sz,
-                    pref,
-                ));
+            if bar0.read() & 0x7 == 0x4 {
+                bars.push(probe_bar(bar0, Some(bar1)));
                 bars.push((0, 0, 0));
             } else {
-                let pref2 = (bar1_backup >> 3) & 1;
-                bars.push((bar0_backup as u64 & 0xfffffff0, sz, pref));
-                bars.push((bar1_backup as u64 & 0xfffffff0, sz2, pref2));
+                bars.push(probe_bar(bar0, None));
+                bars.push(probe_bar(bar1, None));
             }
         }
         _ => {
@@ -187,19 +177,35 @@ fn register_device(
         0xff,
     );
 
-    for bar in bars.iter().enumerate() {
-        if bar.1.0 != 0 {
-            dev.add_mmio(
-                PhysAddr::new(bar.1.0).unwrap(),
-                PhysAddr::new(bar.1.0 + bar.1.1 as u64).unwrap(),
-                if bar.1.2 != 0 {
-                    PREFETCH_CACHE_TYPE
-                } else {
-                    CacheType::MemoryMappedIO
-                },
-                bar.0 as u64,
-            );
+    for (idx, &(addr, size, pref)) in bars.iter().enumerate() {
+        if addr == 0 || size == 0 {
+            continue;
         }
+        let (Ok(start), Some(Ok(end))) = (
+            PhysAddr::new(addr),
+            addr.checked_add(size).map(PhysAddr::new),
+        ) else {
+            log::warn!(
+                "pcie {:x}:{:x}.{:x}: BAR{} at {:#x} (+{:#x}) is not addressable, skipping",
+                bus,
+                device,
+                function,
+                idx,
+                addr,
+                size
+            );
+            continue;
+        };
+        dev.add_mmio(
+            start,
+            end,
+            if pref != 0 {
+                PREFETCH_CACHE_TYPE
+            } else {
+                CacheType::MemoryMappedIO
+            },
+            idx as u64,
+        );
     }
 
     DEVS.lock().insert(

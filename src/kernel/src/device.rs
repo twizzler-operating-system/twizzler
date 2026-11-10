@@ -289,10 +289,23 @@ impl Device {
 
     pub fn add_mmio(&self, start: PhysAddr, end: PhysAddr, ct: CacheType, info: u64) {
         let obj = crate::obj::Object::new_kernel();
-        log::debug!("add_mmio: {:?} - {:?} ({} MB)", start, end, (end - start) / (1024 * 1024));
-        obj.map_phys(MMIO_OFFSET, start, end, ct).unwrap();
+        log::debug!(
+            "add_mmio: {:?} - {:?} ({} MB)",
+            start,
+            end,
+            (end - start) / (1024 * 1024)
+        );
+        let length = obj.map_phys(MMIO_OFFSET, start, end, ct).unwrap() as u64;
+        if length != (end - start) as u64 {
+            log::warn!(
+                "add_mmio: {:?} - {:?} truncated to {} MB",
+                start,
+                end,
+                length >> 20
+            );
+        }
         let mmio_info = MmioInfo {
-            length: (end - start) as u64,
+            length,
             cache_type: CacheType::Uncacheable,
             info,
         };

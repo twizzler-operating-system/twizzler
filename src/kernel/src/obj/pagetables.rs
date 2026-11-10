@@ -1506,17 +1506,18 @@ impl ObjectPageTable {
 }
 
 impl Object {
+    /// Returns the length mapped, which may be shorter than the range asked for.
     pub fn map_phys(
         &self,
         offset: usize,
         start: PhysAddr,
         end: PhysAddr,
         ct: CacheType,
-    ) -> Result<(), TwzError> {
+    ) -> Result<usize, TwzError> {
         let mut pt = self.lock_page_tables();
         let mut len = (end.raw() - start.raw()) as usize;
         if len == 0 {
-            return Ok(());
+            return Ok(0);
         }
         // TODO: temporary limit
         if len >= (512 * 1024 * 1024) {
@@ -1533,7 +1534,7 @@ impl Object {
         let mut consist = Consistency::new_object_tables();
         let r = pt.mapper.map(cursor, &mut phys, &mut consist, &mut fa);
         pt.run_consistency(consist);
-        r
+        r.map(|_| len)
     }
 
     pub fn add_frame(&self, pn: PageNumber, frame: FrameRef) {

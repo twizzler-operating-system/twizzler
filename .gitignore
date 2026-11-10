@@ -9,3 +9,6 @@ src/data
 toolchain/src/rust/library/twizzler-abis
 Makefile
 .direnv/
+
+# Private NVIDIA driver work; becomes a submodule later.
+/third-party/elephance/nvidia/
