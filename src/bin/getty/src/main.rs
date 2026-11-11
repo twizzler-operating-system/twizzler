@@ -8,8 +8,8 @@
 //! the pty instead of the shell and the guest shuts down when it exits.
 
 use std::{
-    sync::atomic::{AtomicBool, Ordering},
-    time::Instant,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    time::{Duration, Instant},
 };
 
 use monitor_api::{CompartmentFlags, CompartmentLoader, MonitorState, NewCompartmentFlags};
@@ -17,8 +17,9 @@ use tracing::warn;
 use twizzler_abi::{
     object::ObjID,
     syscall::{
-        sys_ctrl, KernelConsoleReadFlags, KernelConsoleWriteFlags, ObjectCreate, SysCtrlCmd,
-        SysCtrlFlags,
+        sys_ctrl, sys_thread_sync, KernelConsoleReadFlags, KernelConsoleWriteFlags, ObjectCreate,
+        SysCtrlCmd, SysCtrlFlags, ThreadSync, ThreadSyncFlags, ThreadSyncOp, ThreadSyncReference,
+        ThreadSyncSleep, ThreadSyncWake,
     },
 };
 use twizzler_io::pty::DEFAULT_TERMIOS;
@@ -27,6 +28,11 @@ use twizzler_rt_abi::error::TwzError;
 /// Set once the terminal sends an in-band resize notification, which proves it honors mode 2048
 /// and will report every subsequent resize unprompted. Until then we fall back to polling it.
 static INBAND_RESIZE: AtomicBool = AtomicBool::new(false);
+
+/// Counts requests to `pty-console` to report, in [`DRAINED`], once the pty is empty and what it
+/// held is on the console. Program output is otherwise lost when the guest shuts down under it.
+static DRAIN: AtomicU64 = AtomicU64::new(0);
+static DRAINED: AtomicU64 = AtomicU64::new(0);
 
 /// Set by `--syncexit`: run `SysCtrlCmd::SyncAll` before an autostart shutdown and print how long
 /// it took, so the writeback an autostart run otherwise discards is visible in its wall time.
@@ -183,24 +189,36 @@ fn main() {
     let _ = std::thread::Builder::new()
         .name("pty-console".into())
         .spawn(move || loop {
+            // Sampled before the read: an empty read then covers everything the requester wrote.
+            let drain = DRAIN.load(Ordering::SeqCst);
             let mut buf = [0; 1024];
-            let mut ioc = twizzler_rt_abi::io::IoCtx::default();
+            let mut ioc = twizzler_rt_abi::io::IoCtx::default().nonblocking(true);
             // Never unwrap: this thread is the *only* path from any program's stdout to the
             // console, and it has no supervisor. The unwrap this replaces turned one transient
             // read error into permanent, silent loss of all console output for the rest of the
             // boot -- which reads as a hung or mute system rather than as a failed read.
-            let count = match twizzler_rt_abi::io::twz_rt_fd_pread(server_fd, &mut buf, &mut ioc) {
-                Ok(count) => count,
-                Err(_) => continue,
-            };
-            if count == 0 {
+            let count =
+                twizzler_rt_abi::io::twz_rt_fd_pread(server_fd, &mut buf, &mut ioc).unwrap_or(0);
+            if count > 0 {
+                twizzler_abi::syscall::sys_kernel_console_write(
+                    twizzler_abi::syscall::KernelConsoleSource::Console,
+                    &buf[0..count],
+                    KernelConsoleWriteFlags::empty(),
+                );
                 continue;
             }
-            twizzler_abi::syscall::sys_kernel_console_write(
-                twizzler_abi::syscall::KernelConsoleSource::Console,
-                &buf[0..count],
-                KernelConsoleWriteFlags::empty(),
-            );
+            DRAINED.store(drain, Ordering::SeqCst);
+            // Until the pty has data or another drain is asked for.
+            let Ok((word, value, ready)) = twizzler_rt_abi::io::twz_rt_fd_waitpoint(
+                server_fd,
+                twizzler_rt_abi::bindings::WAIT_READ,
+            ) else {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            };
+            if !ready {
+                let _ = sys_thread_sync(&mut [sleep_on(word, value), sleep_on(&DRAIN, drain)], None);
+            }
         })
         .unwrap();
 
@@ -378,6 +396,32 @@ fn run_autostart(autostart: &str, autostart_args: &[String]) {
     });
 }
 
+fn sleep_on(word: *const AtomicU64, value: u64) -> ThreadSync {
+    ThreadSync::new_sleep(ThreadSyncSleep::new(
+        ThreadSyncReference::Virtual(word),
+        value,
+        ThreadSyncOp::Equal,
+        ThreadSyncFlags::empty(),
+    ))
+}
+
+/// Returns once `pty-console` has sent everything written to the pty so far. Bounded, so that a
+/// relay that is not answering cannot keep the guest up.
+fn drain_console() {
+    let request = DRAIN.fetch_add(1, Ordering::SeqCst) + 1;
+    let _ = sys_thread_sync(
+        &mut [ThreadSync::new_wake(ThreadSyncWake::new(
+            ThreadSyncReference::Virtual(&DRAIN),
+            usize::MAX,
+        ))],
+        None,
+    );
+    let start = Instant::now();
+    while DRAINED.load(Ordering::SeqCst) < request && start.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 /// Take the guest down. Every exit from `run_autostart` goes through here, including the two
 /// failures -- the whole point of the function is that the boot ends when the program does, and a
 /// path that returns instead hands the harness a timeout to interpret.
@@ -404,6 +448,7 @@ fn shutdown(code: u32) {
         twizzler_abi::syscall::sys_debug_perfmark(false);
         let _ = sys_ctrl(SysCtrlCmd::DebugDump, None, SysCtrlFlags::empty(), 0, 0, 0);
     }
+    drain_console();
     #[allow(deprecated)]
     twizzler_abi::syscall::sys_debug_shutdown(code);
 }
