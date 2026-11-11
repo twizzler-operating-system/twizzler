@@ -105,13 +105,22 @@ name = "baz"
 command = ["scripts/build-baz.sh"]
 # Optional: the build, and the disk files that name it, are skipped while this is absent.
 requires = "baz/CMakeLists.txt"
+# Optional: one output directory for all profiles, for output that does not depend on one.
+shared = false
 ```
 
 The command runs after the userspace collection with `TWIZZLER_ROOT` (the repository),
 `TWIZZLER_TOOLCHAIN`, `TWIZZLER_SYSROOT`, `TWIZZLER_TRIPLE`, `TWIZZLER_PROFILE` and
 `TWIZZLER_OUT_DIR` set, all paths absolute. It writes only under `TWIZZLER_OUT_DIR`
-(`target/external/<triple>/<profile>/<name>`); a disk file with a `build` key takes its `from`
-relative to that directory. A failing command fails the build.
+(`target/external/<triple>/<profile>/<name>`, with `shared` in place of the profile for a shared
+build); a disk file with a `build` key takes its `from` relative to that directory. A failing
+command fails the build.
+
+A disk-files entry with `from-dir` in place of `from` stages every file under that directory,
+keeping the layout, below the directory `to`. This is for output whose file names are only known
+once it is built; an empty or missing directory is an error unless the entry is optional.
+Disk files that already have the source's size and modification time in the image are not
+written again.
 
 `initrd` and `disk-files` must come before `[packages]`, or TOML makes them part of that table.
 Package names must be unique across the root table and all bundles. A bundle whose directory or

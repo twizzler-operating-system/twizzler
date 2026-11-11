@@ -70,6 +70,39 @@ fn install_file(ext4: &ext4_lwext4::Ext4Fs, src: &Path, dest: &str) -> anyhow::R
     set_image_mtime(dest, src_file.metadata()?.modified()?)
 }
 
+/// [`install_file`], unless the image already has `dest` with the size and mtime of `src`. For
+/// data that is large and rarely changes; a file rewritten in place by the guest keeps its mtime
+/// (lwext4 never updates one) and would not be restored by this.
+fn install_file_if_changed(ext4: &ext4_lwext4::Ext4Fs, src: &Path, dest: &str) -> anyhow::Result<()> {
+    let meta = src.metadata()?;
+    let secs = meta
+        .modified()?
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    if ext4.exists(dest) {
+        let have = ext4.metadata(dest)?;
+        if have.size == meta.len() && have.mtime == secs {
+            return Ok(());
+        }
+    }
+    install_file(ext4, src, dest)
+}
+
+/// Every file under `dir`, with its path relative to `dir`, in name order.
+fn walk_files(dir: &Path, rel: &Path, out: &mut Vec<(PathBuf, PathBuf)>) -> anyhow::Result<()> {
+    let mut entries: Vec<_> = std::fs::read_dir(dir)?.collect::<Result<_, _>>()?;
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let rel = rel.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            walk_files(&entry.path(), &rel, out)?;
+        } else {
+            out.push((entry.path(), rel));
+        }
+    }
+    Ok(())
+}
+
 /// Where `copy_twizzler_build` stages the `#[test]` binaries. The guest reaches these as
 /// `/pkg/twizzler/test`, via the `/pkg -> /ext/sysroot/pkg` symlink `init` sets up; keep this in
 /// step with the first entry of `unittest`'s `SEARCH_DIRS`.
@@ -314,6 +347,19 @@ fn disk_files(
             );
             continue;
         }
+        if file.dir {
+            let mut files = Vec::new();
+            walk_files(&src, Path::new(""), &mut files)
+                .with_context(|| format!("disk-files directory `{}`", src.display()))?;
+            // An empty directory is a file list that silently matched nothing.
+            if files.is_empty() {
+                anyhow::bail!("disk-files directory `{}` is empty", src.display());
+            }
+            for (path, rel) in files {
+                out.push((path, format!("{}/{}", to.trim_end_matches('/'), rel.display())));
+            }
+            continue;
+        }
         if !src.is_file() {
             anyhow::bail!("disk-files entry `{}` is not a file", src.display());
         }
@@ -446,7 +492,7 @@ pub fn copy_twizzler_build(
                 let _ = make_dir(&ext4, &acc);
             }
         }
-        install_file(&ext4, &src, &dest)?;
+        install_file_if_changed(&ext4, &src, &dest)?;
     }
 
     Ok(())

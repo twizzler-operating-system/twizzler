@@ -26,6 +26,8 @@ pub struct DiskFile {
     pub optional: bool,
     /// Name of the external build that produces this file.
     pub build: Option<String>,
+    /// `from` is a directory, staged recursively under the directory `to`.
+    pub dir: bool,
 }
 
 /// A bundle `[[build]]` entry: something built by a command of the bundle's own rather than by
@@ -37,6 +39,8 @@ pub struct ExternalBuild {
     pub command: Vec<String>,
     /// Relative to the repo root. The build is skipped while this path is absent.
     pub requires: Option<PathBuf>,
+    /// One output directory for every profile.
+    pub shared: bool,
 }
 
 impl ExternalBuild {
@@ -48,7 +52,10 @@ impl ExternalBuild {
     pub fn out_dir(&self, config: &crate::BuildConfig) -> PathBuf {
         Path::new("target/external")
             .join(config.twz_triple().to_string())
-            .join(config.profile.to_string())
+            .join(match self.shared {
+                true => "shared".to_string(),
+                false => config.profile.to_string(),
+            })
             .join(&self.name)
     }
 }
@@ -62,11 +69,14 @@ impl DiskFile {
                 .with_context(|| format!("disk-files entry needs a string `{}`", key))
         };
         let build = item.get("build").and_then(|v| v.as_str());
+        let dir = item.get("from-dir").is_some();
+        let from = field(if dir { "from-dir" } else { "from" })?;
         Ok(DiskFile {
             from: match build {
-                Some(_) => PathBuf::from(field("from")?),
-                None => base.join(field("from")?),
+                Some(_) => PathBuf::from(from),
+                None => base.join(from),
             },
+            dir,
             build: build.map(str::to_string),
             to: field("to")?.to_string(),
             optional: item
@@ -184,6 +194,10 @@ fn load_bundle(tp: &mut ThirdParty, dir: &Path) -> anyhow::Result<()> {
                     .get("requires")
                     .and_then(|v| v.as_str())
                     .map(|p| dir.join(p)),
+                shared: item
+                    .get("shared")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
             });
         }
     }
