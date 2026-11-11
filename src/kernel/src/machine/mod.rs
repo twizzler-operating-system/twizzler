@@ -32,8 +32,8 @@ impl KernelConsoleHardware for MachineConsoleHardware {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn pump(&self) -> bool {
-        serial::pump(self.debug)
+    fn pump(&self, wait: bool) -> bool {
+        serial::pump(self.debug, wait)
     }
 
     #[cfg(target_arch = "x86_64")]

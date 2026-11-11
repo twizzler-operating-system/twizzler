@@ -87,8 +87,9 @@ pub trait KernelConsoleHardware {
         self.write(data, flags)
     }
 
-    /// Sends a bounded piece of what `queue` held. Returns whether any remains.
-    fn pump(&self) -> bool {
+    /// Sends a bounded piece of what `queue` held. Returns whether any remains. Without `wait`
+    /// it does not block on hardware that is still busy with the last piece.
+    fn pump(&self, _wait: bool) -> bool {
         false
     }
 
@@ -400,7 +401,7 @@ extern "C" fn tx_drain() {
     loop {
         let guard = TX_LOCK.lock();
         // Not `||`: both ports get a burst.
-        if NORMAL_CONSOLE.hardware.pump() | DEBUG_CONSOLE.hardware.pump() {
+        if NORMAL_CONSOLE.hardware.pump(false) | DEBUG_CONSOLE.hardware.pump(false) {
             drop(guard);
             schedule(SchedFlags::REINSERT | SchedFlags::YIELD | SchedFlags::PREEMPT);
         } else if TX_DRAINED.has_waiters() {
@@ -441,7 +442,9 @@ pub fn write_bytes(
     } else {
         drop(guard);
     }
-    while console.hardware.pump() {}
+    while console.hardware.pump(true) {}
+    // This may have sent other writers' bytes too.
+    TX_DRAINED.signal();
     if flags.contains(KernelConsoleWriteFlags::DONT_BUFFER) {
         return Ok(());
     }

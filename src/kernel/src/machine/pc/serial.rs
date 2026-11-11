@@ -177,10 +177,14 @@ impl SerialPort {
         true
     }
 
-    /// Sends one burst of queued bytes. Returns whether any remain.
-    fn pump(&mut self) -> bool {
+    /// Sends one burst of queued bytes. Returns whether any remain. Without `wait`, a uart that
+    /// is still sending the last burst is left alone and the queue stays as it is.
+    fn pump(&mut self, wait: bool) -> bool {
         if self.tx_len == 0 {
             return false;
+        }
+        if !wait && !self.line_sts().contains(LineStsFlags::OUTPUT_EMPTY) {
+            return true;
         }
         if !self.wait_for_tx() {
             self.tx_len = 0;
@@ -457,7 +461,7 @@ fn port(debug: bool) -> &'static SimpleLock<SerialPort> {
 /// Synchronous. Queued bytes go out first, so output stays in the order it was written.
 pub fn write(data: &[u8], _flags: crate::log::KernelConsoleWriteFlags, debug: bool) {
     let mut serial = port(debug).lock();
-    while serial.pump() {}
+    while serial.pump(true) {}
     let _ = serial.write_str(unsafe { core::str::from_utf8_unchecked(data) });
 }
 
@@ -466,7 +470,7 @@ pub fn write(data: &[u8], _flags: crate::log::KernelConsoleWriteFlags, debug: bo
 pub fn queue(data: &[u8], debug: bool) {
     let mut serial = port(debug).lock();
     if data.len() > TX_QUEUE_LEN - serial.tx_len {
-        while serial.pump() {}
+        while serial.pump(true) {}
         let _ = serial.write_str(unsafe { core::str::from_utf8_unchecked(data) });
         return;
     }
@@ -478,8 +482,9 @@ pub fn queue(data: &[u8], debug: bool) {
 }
 
 /// Sends one burst of queued bytes, interrupts off only for that long. Returns whether any remain.
-pub fn pump(debug: bool) -> bool {
-    port(debug).lock().pump()
+/// With `wait` it waits for the uart to take the burst; without, a busy uart gets nothing.
+pub fn pump(debug: bool, wait: bool) -> bool {
+    port(debug).lock().pump(wait)
 }
 
 pub fn pending(debug: bool) -> bool {
