@@ -32,6 +32,13 @@ pub struct PcieCapabilityHeader {
     pub next: u8,
 }
 
+const MSI_ENABLE: u16 = 1 << 0;
+const MSI_MME: u16 = 7 << 4;
+const MSI_64BIT: u16 = 1 << 7;
+const MSI_MASKABLE: u16 = 1 << 8;
+const COMMAND_INTX_DISABLE: u16 = 1 << 10;
+
+/// The 64-bit layout; without 64-bit addressing `msg_data` and `mask` sit 4 bytes lower.
 #[derive(Debug, Copy, Clone)]
 #[repr(C, packed(4))]
 pub struct MsiCapability {
@@ -206,10 +213,42 @@ impl Device {
 
     fn allocate_msi_interrupt(
         &self,
-        _msi: &VolatilePtr<'_, MsiCapability, ReadWrite>,
-        _vec: InterruptVector,
+        cfg: &MmioObject,
+        msi: VolatilePtr<'_, MsiCapability, ReadWrite>,
+        vec: InterruptVector,
+        inum: usize,
+        cpu: Option<u32>,
     ) -> Result<u32> {
-        todo!()
+        // Only one message is ever enabled.
+        if inum != 0 {
+            return Err(TwzError::INVALID_ARGUMENT);
+        }
+        let (msg_addr, msg_data) = self.msi_msg(vec, false, cpu)?;
+        let ctrl = map_field!(msi.msg_ctrl).read() & !(MSI_ENABLE | MSI_MME);
+        map_field!(msi.msg_ctrl).write(ctrl);
+        map_field!(msi.msg_addr_low).write(msg_addr as u32);
+        // Without 64-bit addressing the data register takes the place of the upper address.
+        let (data, mask) = if ctrl & MSI_64BIT != 0 {
+            map_field!(msi.msg_addr_hi).write((msg_addr >> 32) as u32);
+            (0x0c, 0x10)
+        } else {
+            if msg_addr >> 32 != 0 {
+                return Err(TwzError::NOT_SUPPORTED);
+            }
+            (0x08, 0x0c)
+        };
+        let base = msi.as_raw_ptr().cast::<u8>();
+        unsafe {
+            base.add(data).cast::<u16>().write_volatile(msg_data as u16);
+            if ctrl & MSI_MASKABLE != 0 {
+                base.add(mask).cast::<u32>().write_volatile(0);
+            }
+        }
+        let mut hdr = unsafe { cfg.get_mmio_offset_mut::<PcieFunctionHeader>(0) };
+        let hdr = hdr.as_mut_ptr();
+        map_field!(hdr.command).update(|c| c | COMMAND_INTX_DISABLE);
+        map_field!(msi.msg_ctrl).write(ctrl | MSI_ENABLE);
+        Ok(0)
     }
 
     fn allocate_pcie_interrupt(
@@ -233,13 +272,13 @@ impl Device {
         }
         for cap in self.pcie_capabilities(&mm).ok_or(TwzError::NOT_SUPPORTED)? {
             if let PcieCapability::Msi(mut m) = cap {
-                return self.allocate_msi_interrupt(&m.as_mut_ptr(), vec);
+                return self.allocate_msi_interrupt(&mm, m.as_mut_ptr(), vec, inum, cpu);
             }
         }
         Err(TwzError::NOT_SUPPORTED)
     }
 
-    /// Stop the device raising MSI-X entry `inum`. Only MSI-X is ever allocated.
+    /// Stop the device raising slot `inum`: the MSI-X entry is masked, or plain MSI disabled.
     fn mask_pcie_interrupt(&self, inum: usize) -> Result<()> {
         let mm = self.find_mmio_bar(0xff).ok_or(TwzError::NOT_SUPPORTED)?;
         for cap in self.pcie_capabilities(&mm).ok_or(TwzError::NOT_SUPPORTED)? {
@@ -249,6 +288,17 @@ impl Device {
                     // A read flushes the posted write, so the mask is in effect on return.
                     let _ = map_field!(entry.vec_ctrl).read();
                 });
+            }
+        }
+        for cap in self.pcie_capabilities(&mm).ok_or(TwzError::NOT_SUPPORTED)? {
+            if let PcieCapability::Msi(mut m) = cap {
+                if inum != 0 {
+                    return Err(TwzError::INVALID_ARGUMENT);
+                }
+                let msi = m.as_mut_ptr();
+                map_field!(msi.msg_ctrl).update(|c| c & !MSI_ENABLE);
+                let _ = map_field!(msi.msg_ctrl).read();
+                return Ok(());
             }
         }
         Err(TwzError::NOT_SUPPORTED)
