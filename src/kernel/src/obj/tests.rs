@@ -1,4 +1,4 @@
-use twizzler_abi::{device::CacheType, object::Protections, syscall::MapFlags};
+use twizzler_abi::{device::CacheType, kso::PinFlags, object::Protections, syscall::MapFlags};
 
 use crate::{
     memory::{
@@ -74,7 +74,9 @@ fn pin_over_a_large_page_reports_every_page() {
     };
 
     let count = 4;
-    let (pages, _) = obj.pin(PageNumber::from_offset(region), count).unwrap();
+    let (pages, _) = obj
+        .pin(PageNumber::from_offset(region), count, PinFlags::empty())
+        .unwrap();
     assert_eq!(pages.len(), count);
     for (i, pair) in pages.windows(2).enumerate() {
         assert_eq!(
