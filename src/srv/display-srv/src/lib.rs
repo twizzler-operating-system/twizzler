@@ -107,8 +107,7 @@ pub fn start_display() -> Result<()> {
         current_info.1
     );
 
-    let Ok(fb) = gpu.with_device(|g| g.setup_framebuffer().map(|p| (p.as_mut_ptr(), p.len())))
-    else {
+    let Ok(fb) = gpu.setup_framebuffer() else {
         tracing::error!("failed to setup framebuffer");
         return Err(TwzError::NOT_SUPPORTED);
     };

@@ -8,7 +8,8 @@ use std::{
 use twizzler_driver::dma::{Access, DmaOptions, DmaPool, DmaSliceRegion, SyncMode, DMA_PAGE_SIZE};
 use virtio_drivers::{BufferDirection, Hal, PhysAddr, PAGE_SIZE};
 
-const MAX_CONTIGUOUS_PAGES: usize = 512;
+/// The most pages the kernel pins as one physical run.
+pub(crate) const MAX_CONTIGUOUS_PAGES: usize = 512;
 
 struct TwzHalStatic {
     host_to_device: DmaPool,
@@ -71,13 +72,9 @@ unsafe impl Hal for TwzHal {
     fn dma_alloc(pages: usize, direction: BufferDirection) -> (PhysAddr, NonNull<u8>) {
         if pages > 1 {
             let twzhal = get_twz_hal().lock().unwrap();
-            // The caller takes the first page's address for the whole allocation. Past what one
-            // contiguous pin covers it gets scattered pages, and the device reads the wrong ones.
-            let pool = if pages <= MAX_CONTIGUOUS_PAGES {
-                &twzhal.contiguous
-            } else {
-                twzhal.get_dma_pool(direction)
-            };
+            // The caller takes the first page's address for the whole allocation.
+            assert!(pages <= MAX_CONTIGUOUS_PAGES, "dma_alloc: {pages} pages");
+            let pool = &twzhal.contiguous;
             let mut dma_slice = pool.allocate_array(pages * PAGE_SIZE, 0u8).unwrap();
 
             let pin = dma_slice.pin().unwrap();
