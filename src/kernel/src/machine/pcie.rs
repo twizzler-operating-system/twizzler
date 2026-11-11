@@ -39,17 +39,16 @@ fn ecam_offset(bus: u8, device: u8, function: u8) -> usize {
     (bus as usize) << 20 | (device as usize) << 15 | (function as usize) << 12
 }
 
-/// Size a memory BAR, returning (base, size, prefetchable); all zero for I/O BARs. `hi` is the
-/// upper dword of a 64-bit BAR. The caller keeps the device from decoding while this runs.
-fn probe_bar(lo: VolatilePtr<'_, u32>, hi: Option<VolatilePtr<'_, u32>>) -> (u64, u64, u32) {
+/// Size a memory BAR, returning (base, size); both zero for I/O BARs. `hi` is the upper dword of
+/// a 64-bit BAR. The caller keeps the device from decoding while this runs.
+fn probe_bar(lo: VolatilePtr<'_, u32>, hi: Option<VolatilePtr<'_, u32>>) -> (u64, u64) {
     let lo_data = lo.read();
     if lo_data & 1 != 0 {
-        return (0, 0, 0);
+        return (0, 0);
     }
     lo.write(0xffffffff);
     let lo_mask = lo.read() & 0xfffffff0;
     lo.write(lo_data);
-    let pref = (lo_data >> 3) & 1;
     let base = (lo_data & 0xfffffff0) as u64;
     match hi {
         Some(hi) => {
@@ -57,9 +56,9 @@ fn probe_bar(lo: VolatilePtr<'_, u32>, hi: Option<VolatilePtr<'_, u32>>) -> (u64
             hi.write(0xffffffff);
             let mask = (hi.read() as u64) << 32 | lo_mask as u64;
             hi.write(hi_data);
-            ((hi_data as u64) << 32 | base, (!mask).wrapping_add(1), pref)
+            ((hi_data as u64) << 32 | base, (!mask).wrapping_add(1))
         }
-        None => (base, (!lo_mask).wrapping_add(1) as u64, pref),
+        None => (base, (!lo_mask).wrapping_add(1) as u64),
     }
 }
 
@@ -116,7 +115,7 @@ fn register_device(
                 let is_64 = lo.read() & 0x7 == 0x4 && bar_idx < 5;
                 bars.push(probe_bar(lo, is_64.then(|| get_bar(dcfg, bar_idx + 1))));
                 if is_64 {
-                    bars.push((0, 0, 0));
+                    bars.push((0, 0));
                     bar_idx += 1;
                 }
                 bar_idx += 1;
@@ -134,7 +133,7 @@ fn register_device(
             let bar1 = map_field!(cfg.bar1);
             if bar0.read() & 0x7 == 0x4 {
                 bars.push(probe_bar(bar0, Some(bar1)));
-                bars.push((0, 0, 0));
+                bars.push((0, 0));
             } else {
                 bars.push(probe_bar(bar0, None));
                 bars.push(probe_bar(bar1, None));
@@ -171,7 +170,7 @@ fn register_device(
         0xff,
     );
 
-    for (idx, &(addr, size, _)) in bars.iter().enumerate() {
+    for (idx, &(addr, size)) in bars.iter().enumerate() {
         if addr == 0 || size == 0 {
             continue;
         }
