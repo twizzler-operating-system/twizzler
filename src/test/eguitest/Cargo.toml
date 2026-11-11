@@ -1,0 +1,14 @@
+[package]
+name = "eguitest"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+twizzler = { workspace = true }
+twizzler-display = { workspace = true }
+secgate = { workspace = true }
+# 0.33 and later need a bitflags newer than the one twizzler-rt-abi pins.
+egui = { version = "0.32", default-features = false, features = ["default_fonts"] }
+
+[package.metadata]
+twizzler-build = "test"

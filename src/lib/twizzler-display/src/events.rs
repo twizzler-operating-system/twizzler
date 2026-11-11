@@ -33,6 +33,30 @@ pub mod codes {
     pub const BTN_LEFT: u32 = 0x110;
     pub const BTN_RIGHT: u32 = 0x111;
     pub const BTN_MIDDLE: u32 = 0x112;
+    pub const KEY_BACKSPACE: u32 = 14;
+    pub const KEY_TAB: u32 = 15;
+    pub const KEY_LEFTCTRL: u32 = 29;
+    pub const KEY_LEFTSHIFT: u32 = 42;
+    pub const KEY_RIGHTSHIFT: u32 = 54;
+    pub const KEY_RIGHTCTRL: u32 = 97;
+    pub const KEY_HOME: u32 = 102;
+    pub const KEY_END: u32 = 107;
+    pub const KEY_DELETE: u32 = 111;
+
+    /// The character a key types on a US keyboard, if it types one.
+    pub fn us_char(code: u32, shift: bool) -> Option<char> {
+        const ROWS: [(u32, &str, &str); 5] = [
+            (2, "1234567890-=", "!@#$%^&*()_+"),
+            (16, "qwertyuiop[]", "QWERTYUIOP{}"),
+            (30, "asdfghjkl;'`", "ASDFGHJKL:\"~"),
+            (43, "\\zxcvbnm,./", "|ZXCVBNM<>?"),
+            (57, " ", " "),
+        ];
+        ROWS.iter().find_map(|&(first, plain, shifted)| {
+            let row = if shift { shifted } else { plain };
+            row.chars().nth(code.checked_sub(first)? as usize)
+        })
+    }
 }
 
 /// Pointer positions are in pixels relative to the window's top left corner; a window that holds
