@@ -393,8 +393,8 @@ static TX_LOCK: Spinlock<()> = Spinlock::new(());
 static TX_QUEUED: CondVar = CondVar::new();
 static TX_DRAINED: CondVar = CondVar::new();
 
-/// How long a userspace write waits for idle time to send it before sending it itself. A byte
-/// costs a vm exit (~12us under qemu), which on one cpu is taken from whatever is running.
+/// How long queued output waits for idle time before it is sent anyway. A byte costs a vm exit
+/// (~12us under qemu), which on one cpu is taken from whatever is running.
 const TX_IDLE_WAIT: Duration = Duration::from_millis(50);
 
 extern "C" fn tx_drain() {
@@ -413,14 +413,29 @@ extern "C" fn tx_drain() {
     }
 }
 
-/// Starts the thread that sends userspace console output when nothing else wants the cpu.
-pub fn start_tx_drain() {
-    crate::thread::entry::start_new_kernel(Priority::BACKGROUND, tx_drain, 0, "console-tx");
+/// Sends what [`tx_drain`] has not got to within [`TX_IDLE_WAIT`]: a busy cpu never runs it.
+extern "C" fn tx_deadline() {
+    loop {
+        let guard = TX_LOCK.lock();
+        if !(NORMAL_CONSOLE.hardware.pending() || DEBUG_CONSOLE.hardware.pending()) {
+            drop(TX_QUEUED.wait(guard));
+            continue;
+        }
+        drop(TX_DRAINED.wait_waiters(guard, Some(TX_IDLE_WAIT), None));
+        while NORMAL_CONSOLE.hardware.pump(true) | DEBUG_CONSOLE.hardware.pump(true) {}
+    }
 }
 
-/// Returns once the bytes have reached the hardware. They are queued as one piece -- the hardware
-/// sends its queue ahead of any kernel print, so nothing lands inside a userspace write -- and
-/// sent by [`tx_drain`], or by the caller in bursts if that has not happened in time.
+/// Starts the threads that send userspace console output: one when nothing else wants the cpu,
+/// one for when that does not happen.
+pub fn start_tx_drain() {
+    crate::thread::entry::start_new_kernel(Priority::BACKGROUND, tx_drain, 0, "console-tx");
+    crate::thread::entry::start_new_kernel(Priority::USER, tx_deadline, 0, "console-tx-late");
+}
+
+/// Queues the bytes as one piece and returns. The hardware sends its queue ahead of any kernel
+/// print, so nothing lands inside a userspace write; and the writer must not sleep here, or the
+/// pieces of a line it writes in several calls are separated by whoever runs meanwhile.
 pub fn write_bytes(
     target: KernelConsoleSource,
     slice: &[u8],
@@ -431,20 +446,11 @@ pub fn write_bytes(
         KernelConsoleSource::Buffer => return Err(TwzError::Io(IoError::DeviceError)),
         KernelConsoleSource::DebugConsole => &DEBUG_CONSOLE,
     };
-    // Queued under the lock, so `tx_drain` either sees the bytes or is already waiting.
+    // Queued under the lock, so the tx threads either see the bytes or are already waiting.
     let guard = TX_LOCK.lock();
     console.hardware.queue(slice, flags);
     drop(guard);
     TX_QUEUED.signal();
-    let guard = TX_LOCK.lock();
-    if console.hardware.pending() {
-        drop(TX_DRAINED.wait_waiters(guard, Some(TX_IDLE_WAIT), None));
-    } else {
-        drop(guard);
-    }
-    while console.hardware.pump(true) {}
-    // This may have sent other writers' bytes too.
-    TX_DRAINED.signal();
     if flags.contains(KernelConsoleWriteFlags::DONT_BUFFER) {
         return Ok(());
     }
