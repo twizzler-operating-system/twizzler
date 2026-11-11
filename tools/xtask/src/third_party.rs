@@ -9,8 +9,8 @@ use cargo::core::Workspace;
 use cargo_toml::Value;
 
 /// A `[workspace.metadata.third-party]` entry whose path holds this file instead of a
-/// `Cargo.toml` is a bundle: the file lists the packages, initrd entries and disk files, with
-/// paths relative to the bundle directory.
+/// `Cargo.toml` is a bundle: the file lists the packages, external builds, initrd entries and disk
+/// files, with paths relative to the bundle directory.
 pub const BUNDLE_MANIFEST: &str = "twizzler-third-party.toml";
 
 pub enum Source {
@@ -20,10 +20,37 @@ pub enum Source {
 }
 
 pub struct DiskFile {
-    /// Relative to the repo root.
+    /// Relative to the repo root, or to the output directory of `build` when that is set.
     pub from: PathBuf,
     pub to: String,
     pub optional: bool,
+    /// Name of the external build that produces this file.
+    pub build: Option<String>,
+}
+
+/// A bundle `[[build]]` entry: something built by a command of the bundle's own rather than by
+/// cargo. See `build::run_external_builds` for what the command is given.
+pub struct ExternalBuild {
+    pub name: String,
+    /// The bundle directory, relative to the repo root. The command runs here.
+    pub dir: PathBuf,
+    pub command: Vec<String>,
+    /// Relative to the repo root. The build is skipped while this path is absent.
+    pub requires: Option<PathBuf>,
+}
+
+impl ExternalBuild {
+    pub fn present(&self) -> bool {
+        self.requires.as_ref().is_none_or(|p| p.exists())
+    }
+
+    /// Relative to the repo root.
+    pub fn out_dir(&self, config: &crate::BuildConfig) -> PathBuf {
+        Path::new("target/external")
+            .join(config.twz_triple().to_string())
+            .join(config.profile.to_string())
+            .join(&self.name)
+    }
 }
 
 impl DiskFile {
@@ -34,8 +61,13 @@ impl DiskFile {
                 .and_then(|v| v.as_str())
                 .with_context(|| format!("disk-files entry needs a string `{}`", key))
         };
+        let build = item.get("build").and_then(|v| v.as_str());
         Ok(DiskFile {
-            from: base.join(field("from")?),
+            from: match build {
+                Some(_) => PathBuf::from(field("from")?),
+                None => base.join(field("from")?),
+            },
+            build: build.map(str::to_string),
             to: field("to")?.to_string(),
             optional: item
                 .get("optional")
@@ -53,6 +85,7 @@ pub struct ThirdParty {
     pub initrd: Vec<String>,
     /// Bundle-declared disk files.
     pub disk_files: Vec<DiskFile>,
+    pub builds: Vec<ExternalBuild>,
 }
 
 pub fn third_party(workspace: &Workspace) -> anyhow::Result<&'static ThirdParty> {
@@ -124,9 +157,45 @@ fn load_bundle(tp: &mut ThirdParty, dir: &Path) -> anyhow::Result<()> {
             tp.initrd.push(name.to_string());
         }
     }
+    if let Some(list) = manifest.get("build") {
+        for item in list.as_array().context("build must be an array of tables")? {
+            let name = item
+                .get("name")
+                .and_then(|v| v.as_str())
+                .context("build entry needs a string `name`")?;
+            if tp.builds.iter().any(|b| b.name == name) {
+                bail!("external build {} is defined more than once", name);
+            }
+            let command: Vec<String> = item
+                .get("command")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect();
+            if command.is_empty() {
+                bail!("build {} needs a `command` array of strings", name);
+            }
+            tp.builds.push(ExternalBuild {
+                name: name.to_string(),
+                dir: dir.to_path_buf(),
+                command,
+                requires: item
+                    .get("requires")
+                    .and_then(|v| v.as_str())
+                    .map(|p| dir.join(p)),
+            });
+        }
+    }
     if let Some(list) = manifest.get("disk-files") {
         for item in list.as_array().context("disk-files must be an array")? {
-            tp.disk_files.push(DiskFile::parse(item, dir)?);
+            let file = DiskFile::parse(item, dir)?;
+            if let Some(build) = &file.build {
+                if !tp.builds.iter().any(|b| b.name == *build) {
+                    bail!("disk-files entry names unknown build {}", build);
+                }
+            }
+            tp.disk_files.push(file);
         }
     }
     Ok(())

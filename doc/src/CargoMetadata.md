@@ -92,6 +92,27 @@ foo = { path = "foo" }
 bar = { path = "tools/bar" }
 ```
 
+A bundle can also build things cargo cannot, with a command of its own:
+
+```{toml}
+disk-files = [
+    { build = "baz", from = "bin/baz", to = "/sysroot/pkg/mybundle/bin/baz" },
+]
+
+[[build]]
+name = "baz"
+# Run in the bundle directory on every build, so it should do nothing when up to date.
+command = ["scripts/build-baz.sh"]
+# Optional: the build, and the disk files that name it, are skipped while this is absent.
+requires = "baz/CMakeLists.txt"
+```
+
+The command runs after the userspace collection with `TWIZZLER_ROOT` (the repository),
+`TWIZZLER_TOOLCHAIN`, `TWIZZLER_SYSROOT`, `TWIZZLER_TRIPLE`, `TWIZZLER_PROFILE` and
+`TWIZZLER_OUT_DIR` set, all paths absolute. It writes only under `TWIZZLER_OUT_DIR`
+(`target/external/<triple>/<profile>/<name>`); a disk file with a `build` key takes its `from`
+relative to that directory. A failing command fails the build.
+
 `initrd` and `disk-files` must come before `[packages]`, or TOML makes them part of that table.
 Package names must be unique across the root table and all bundles. A bundle whose directory or
 manifest is absent is skipped with a note, like any other absent path.

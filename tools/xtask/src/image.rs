@@ -557,7 +557,7 @@ pub(crate) fn do_make_image(cli: ImageOptions) -> anyhow::Result<ImageInfo> {
     // `disk` subcommand, qemu's fresh-image path) cannot invert it.
     let _staging_lock = crate::imagelock::staging_lock(&triple, cli.config.profile)?;
     let _image_lock = crate::imagelock::image_lock(&disk_image)?;
-    copy_twizzler_build(&comp, &triple, &disk_image)?;
+    copy_twizzler_build(&comp, &cli.config, &disk_image)?;
 
     let initrd_files = build_initrd(&cli, &comp)?;
     let initrd_files = strip_initrd_files(&initrd_files, &comp)?;

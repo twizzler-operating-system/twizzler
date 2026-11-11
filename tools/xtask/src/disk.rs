@@ -272,6 +272,7 @@ fn uuhelper_utils(repo_root: &Path) -> anyhow::Result<Vec<String>> {
 /// here instead, unless the entry says `optional = true` (files not every checkout has).
 fn disk_files(
     build: &TwizzlerCompilation,
+    config: &crate::BuildConfig,
     repo_root: &Path,
 ) -> anyhow::Result<Vec<(PathBuf, String)>> {
     let workspace = build.borrow_user_workspace();
@@ -287,14 +288,29 @@ fn disk_files(
             entries.push(DiskFile::parse(item, Path::new(""))?);
         }
     }
-    let bundled = &crate::third_party::third_party(workspace)?.disk_files;
+    let third_party = crate::third_party::third_party(workspace)?;
     let mut out = Vec::new();
-    for DiskFile { from, to, optional } in entries.iter().chain(bundled) {
-        let src = repo_root.join(from);
+    for file in entries.iter().chain(&third_party.disk_files) {
+        let DiskFile {
+            from, to, optional, ..
+        } = file;
+        let src = match &file.build {
+            Some(name) => {
+                let Some(ext) = third_party.builds.iter().find(|b| b.name == *name) else {
+                    anyhow::bail!("disk-files entry names unknown build {}", name);
+                };
+                // Already noted when the build itself was skipped.
+                if !ext.present() {
+                    continue;
+                }
+                repo_root.join(ext.out_dir(config)).join(from)
+            }
+            None => repo_root.join(from),
+        };
         if *optional && !src.exists() {
             eprintln!(
                 "note: skipping optional disk file {} (not present)",
-                from.display()
+                src.display()
             );
             continue;
         }
@@ -308,9 +324,10 @@ fn disk_files(
 
 pub fn copy_twizzler_build(
     build: &TwizzlerCompilation,
-    triple: &Triple,
+    config: &crate::BuildConfig,
     path: &Path,
 ) -> anyhow::Result<()> {
+    let triple = &config.twz_triple();
     copy_sysroot(triple, path, false)?;
     let device = ext4_lwext4::FileBlockDevice::open(path)?;
     let ext4 = ext4_lwext4::Ext4Fs::mount(device, false)?;
@@ -418,7 +435,7 @@ pub fn copy_twizzler_build(
     }
 
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    for (src, dest) in disk_files(build, &repo_root)? {
+    for (src, dest) in disk_files(build, config, &repo_root)? {
         // lwext4 has no recursive mkdir, and `to` may name a directory nothing else creates.
         // Existing directories are not an error here (the staging above relies on the same).
         if let Some(parent) = Path::new(&dest).parent().and_then(|p| p.to_str()) {

@@ -212,6 +212,49 @@ fn build_third_party<'a>(
         .collect()
 }
 
+/// Runs each bundle's `[[build]]` command, in the bundle directory.
+///
+/// The command gets `TWIZZLER_ROOT`, `TWIZZLER_TOOLCHAIN`, `TWIZZLER_SYSROOT`, `TWIZZLER_TRIPLE`,
+/// `TWIZZLER_PROFILE` and `TWIZZLER_OUT_DIR` (paths absolute), and leaves what `disk-files` names
+/// under the last one. It runs on every build, so it has to be incremental itself. This goes
+/// after the userspace collection, which is what puts the current runtime in the sysroot.
+fn run_external_builds(
+    workspace: &Workspace,
+    build_config: &crate::BuildConfig,
+) -> anyhow::Result<()> {
+    let root = current_dir()?;
+    let toolchain = crate::toolchain::get_toolchain_path()?.canonicalize()?;
+    let triple = build_config.twz_triple().to_string();
+    for ext in &crate::third_party::third_party(workspace)?.builds {
+        if !ext.present() {
+            eprintln!(
+                "note: skipping external build {} ({} not present)",
+                ext.name,
+                ext.requires.as_ref().unwrap().display()
+            );
+            continue;
+        }
+        crate::print_status_line(&format!("external: {}", ext.name), Some(build_config));
+        let out_dir = root.join(ext.out_dir(build_config));
+        std::fs::create_dir_all(&out_dir)?;
+        let status = std::process::Command::new(&ext.command[0])
+            .args(&ext.command[1..])
+            .current_dir(root.join(&ext.dir))
+            .env("TWIZZLER_ROOT", &root)
+            .env("TWIZZLER_TOOLCHAIN", &toolchain)
+            .env("TWIZZLER_SYSROOT", toolchain.join("sysroots").join(&triple))
+            .env("TWIZZLER_TRIPLE", &triple)
+            .env("TWIZZLER_PROFILE", build_config.profile.to_string())
+            .env("TWIZZLER_OUT_DIR", &out_dir)
+            .status()
+            .map_err(|e| anyhow::anyhow!("external build {}: {}: {}", ext.name, ext.command[0], e))?;
+        if !status.success() {
+            anyhow::bail!("external build {} failed ({})", ext.name, status);
+        }
+    }
+    Ok(())
+}
+
 fn build_tools<'a>(
     workspace: &'a Workspace,
     mode: CompileMode,
@@ -659,7 +702,13 @@ fn compile(
         |w| build_twizzler(w, mode, &bc, other_options),
         |w, uc| maybe_build_tests_dynamic(w, &bc, uc, other_options),
         |w| maybe_build_kernel_tests(w, &bc, other_options),
-        |w| build_third_party(w, mode, &bc, other_options),
+        |w| {
+            let compilations = build_third_party(w, mode, &bc, other_options)?;
+            if other_options.build_twizzler && matches!(mode, CompileMode::Build) {
+                run_external_builds(w, &bc)?;
+            }
+            Ok(compilations)
+        },
     )?))
 }
 
