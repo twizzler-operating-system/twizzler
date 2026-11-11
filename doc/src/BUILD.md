@@ -143,11 +143,11 @@ which will compile several "collections" of packages:
   2. The kernel.
   3. The userspace applications.
 
-By default all will be built in debug mode, which will run very slow. You can build for release mode
-with:
+By default all will be built in release mode. Debug mode, which runs much slower but leaves
+workspace crates unoptimized, is available with:
 
 ```
-cargo build-all --profile release
+cargo build-all --profile debug
 ```
 
 ## Step 3: Running Twizzler
@@ -158,10 +158,10 @@ You can start Twizzler in Qemu by running
 cargo start-qemu
 ```
 
-which will bootup a qemu instance. If you want to run the release mode version, you can run
+which will bootup a qemu instance. If you want to run the debug mode version, you can run
 
 ```
-cargo start-qemu --profile release
+cargo start-qemu --profile debug
 ```
 
 

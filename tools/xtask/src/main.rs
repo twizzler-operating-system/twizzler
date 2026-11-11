@@ -82,13 +82,13 @@ impl Display for Profile {
 
 impl Default for Profile {
     fn default() -> Self {
-        Self::Debug
+        Self::Release
     }
 }
 
 #[derive(Args, Debug, Clone, Copy)]
 struct BuildConfig {
-    #[clap(short, long, value_enum, default_value_t = Profile::Debug, help = "Select build profile.")]
+    #[clap(short, long, value_enum, default_value_t = Profile::Release, help = "Select build profile.")]
     pub profile: Profile,
     #[clap(short, long, value_enum, default_value_t = Arch::X86_64, help = "Select target architecture.")]
     pub arch: Arch,
