@@ -92,6 +92,23 @@ fn pattern(args: &[u32]) {
     hold("pattern");
 }
 
+/// A block moves over the pattern. Each frame draws only the block and the spot it left, and
+/// damages a larger area around both, relying on the buffer still holding the previous frame.
+fn partial(args: &[u32]) {
+    let window = open(args, 0);
+    full(&window, 1, None);
+    let pos = |i: u32| Rect::new(40 + 24 * i, 50 + 16 * i, 32, 32);
+    for i in 1..=5 {
+        window.window_buffer.update_buffer(|mut buf, w, h| {
+            fill(&mut buf, w, h, pos(i - 1), None);
+            fill(&mut buf, w, h, pos(i), Some(BLOCK));
+            buf.damage(Rect::new(pos(i).x - 40, pos(i).y - 32, 88, 80));
+        });
+        window.window_buffer.flip();
+    }
+    hold("partial");
+}
+
 /// More damage rects in one frame than a buffer records separately.
 fn rects(args: &[u32]) {
     let window = open(args, 0);
@@ -161,8 +178,9 @@ fn reconf(args: &[u32]) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let modes: [(&str, fn(&[u32])); 5] = [
+    let modes: [(&str, fn(&[u32])); 6] = [
         ("pattern", pattern),
+        ("partial", partial),
         ("rects", rects),
         ("clip", clip),
         ("overlap", overlap),

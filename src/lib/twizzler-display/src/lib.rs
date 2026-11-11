@@ -441,18 +441,22 @@ impl BufferObject {
             flags = base.flags.load(Ordering::SeqCst);
         }
 
+        // The buffer the compositor read becomes ours: bring it up to date with the frame being
+        // presented, so both hold the same content outside what is drawn next.
         let (src_buffer, dst_buffer) = if flags & DBF_PHASE != 0 {
-            (&base.buffers[0], &base.buffers[1])
-        } else {
             (&base.buffers[1], &base.buffers[0])
+        } else {
+            (&base.buffers[0], &base.buffers[1])
         };
 
         let w = src_buffer.width.load(Ordering::Acquire);
         let h = src_buffer.height.load(Ordering::Acquire);
-        for dmg in unsafe { src_buffer.damage() } {
-            for y in dmg.y..(dmg.y + dmg.h.min(h - dmg.y)) {
+        let bounds = Rect::new(0, 0, w, h);
+        let damage = unsafe { src_buffer.damage() };
+        for dmg in damage.iter().filter_map(|d| d.intersect(&bounds)) {
+            let len = dmg.w as usize;
+            for y in dmg.y..(dmg.y + dmg.h) {
                 let start = (y * w + dmg.x) as usize;
-                let len = dmg.w.min(w - dmg.x) as usize;
                 let src = &unsafe { src_buffer.buffer().as_slice() }[start..(start + len)];
                 let dst =
                     &mut unsafe { dst_buffer.buffer_mut().as_slice_mut() }[start..(start + len)];
