@@ -477,8 +477,9 @@ impl Object {
 
         // Without the page-table lock and without waiting: zeroing is slow, and on a fragmented
         // machine a level-1 frame may never turn up.
-        let (head, _) = try_alloc_split_frames(FrameAllocFlags::empty(), PHYS_LEVEL_LAYOUTS[1])
+        let (head, len) = try_alloc_split_frames(FrameAllocFlags::empty(), PHYS_LEVEL_LAYOUTS[1])
             .ok_or(ResourceError::OutOfMemory)?;
+        assert_eq!(len, PHYS_LEVEL_LAYOUTS[1].size());
         let start = head.start_address();
         let frame_at =
             |i: usize| get_frame(start.offset(i * PageNumber::PAGE_SIZE).unwrap()).unwrap();
