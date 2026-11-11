@@ -72,3 +72,6 @@
 	path = src/ports/brush
 	url = ../../twizzler-operating-system/brush.git
 	branch = twizzler
+[submodule "third-party/elephance"]
+	path = third-party/elephance
+	url = git@github.com:elephance/twizzler-third-party.git
