@@ -75,9 +75,10 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
     cmd.env("DESTDIR", &install_dir);
 
     let cflags = format!(
-        "-target {} --sysroot {} -fPIC",
+        "-target {} --sysroot {} -fPIC {}",
         triple,
         sysroot_dir.display(),
+        super::opt_flags()
     );
     // The --with-*-prefix flags only feed libssh2's own checks; the compiler still needs the
     // non-standard sysroot pkg paths spelled out.

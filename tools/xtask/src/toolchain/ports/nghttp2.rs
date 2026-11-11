@@ -71,9 +71,10 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         .arg("--disable-python-bindings");
 
     let cflags = format!(
-        "-target {} --sysroot {} -fPIC",
+        "-target {} --sysroot {} -fPIC {}",
         triple,
         sysroot_dir.display(),
+        super::opt_flags()
     );
 
     cmd.env("PKG_CONFIG_PATH", "/bin/false");

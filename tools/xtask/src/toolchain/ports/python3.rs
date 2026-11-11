@@ -42,10 +42,15 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         .arg("--with-static-libpython=no")
         .arg("--disable-ipv6");
 
+    let opt = match super::opt_flags() {
+        "-O2" => "-O2",
+        _ => "-Og -g -D__DEBUG__ -D__Debug__",
+    };
     let cflags = format!(
-        "-target {} --sysroot {} -Og -fPIC -g -D__DEBUG__ -D__Debug__",
+        "-target {} --sysroot {} -fPIC {}",
         triple,
-        sysroot_dir.display()
+        sysroot_dir.display(),
+        opt
     );
 
     cmd.env("PKG_CONFIG", "");

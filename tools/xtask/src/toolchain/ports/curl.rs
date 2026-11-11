@@ -101,9 +101,10 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
     cmd.env("DESTDIR", &install_dir);
 
     let cflags = format!(
-        "-target {} --sysroot {} -fPIC",
+        "-target {} --sysroot {} -fPIC {}",
         triple,
         sysroot_dir.display(),
+        super::opt_flags()
     );
 
     cmd.env("PKG_CONFIG_PATH", "/bin/false");

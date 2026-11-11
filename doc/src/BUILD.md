@@ -104,7 +104,7 @@ of which take a long time. At the end, you should see a "ready!" message.
 ## Step 2: (optional) Building third-party ports.
 
 This step is optional, but provides additional common utilities for the Twizzler system.
-Note that many of them currently are compiled in debug mode while we continue to develop libc support.
+They are built optimized by default; pass `--profile debug` to `cargo toolchain ports` for unoptimized builds with debug info.
 
 Currently supported ports include:
 

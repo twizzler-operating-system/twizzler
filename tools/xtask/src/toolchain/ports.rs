@@ -89,7 +89,20 @@ pub struct PortOptions {
         help = "Build only the named ports, without first building what they depend on."
     )]
     pub no_deps: bool,
+    #[clap(long, value_enum, default_value_t = crate::Profile::Release, help = "Select build profile.")]
+    pub profile: crate::Profile,
     pub ports: Vec<String>,
+}
+
+static PROFILE: std::sync::OnceLock<crate::Profile> = std::sync::OnceLock::new();
+
+/// Optimization flags for the profile `ports` was invoked with, for recipes that set CFLAGS
+/// themselves (which also stops autoconf from adding its own `-g -O2`).
+pub fn opt_flags() -> &'static str {
+    match PROFILE.get() {
+        Some(crate::Profile::Release) | None => "-O2",
+        Some(_) => "-O0 -g",
+    }
 }
 
 /// Known ports: name, the ports it must be built after, and whether `@all` includes it.
@@ -141,6 +154,7 @@ pub fn list_ports() -> anyhow::Result<()> {
 }
 
 pub fn build_and_install_ports(cli: &PortOptions) -> anyhow::Result<()> {
+    let _ = PROFILE.set(cli.profile);
     let triple = Triple::new(cli.arch, Machine::Unknown, Host::Twizzler, None);
     if cli.ports.is_empty() {
         return list_ports();

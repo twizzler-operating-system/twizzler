@@ -57,7 +57,12 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
 
     cmd.arg("--prefix=/pkg/zlib");
 
-    let cflags = format!("-target {} --sysroot {}", triple, sysroot_dir.display());
+    let cflags = format!(
+        "-target {} --sysroot {} {}",
+        triple,
+        sysroot_dir.display(),
+        super::opt_flags()
+    );
 
     cmd.env("PKG_CONFIG", "");
     cmd.env("CFLAGS", &cflags);
