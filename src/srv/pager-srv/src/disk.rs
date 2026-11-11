@@ -179,11 +179,9 @@ impl PagedDevice for Disk {
             );
 
             let range = PhysRange::new(alloc.0, alloc.0 + PAGE * alloc.1 as u64);
-            let mut mem = PagedPhysMem::new(range);
-            if page.as_hole().is_some() {
-                mem.set_completed();
-            }
-            phys_list.push(mem);
+            // Never marked complete here, even over a hole: the allocation is sized to the request,
+            // not to this device page, so it can run on into data that `page_in` still has to read.
+            phys_list.push(PagedPhysMem::new(range));
 
             if inner_cursor + alloc.1 as usize >= page.nr_pages() {
                 inner_cursor = 0;
