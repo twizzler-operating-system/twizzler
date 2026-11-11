@@ -3,6 +3,7 @@
 use std::{
     cell::UnsafeCell,
     sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, Instant},
 };
 
 use twizzler::{
@@ -220,6 +221,23 @@ impl EventQueue {
             ThreadSyncOp::Equal,
             ThreadSyncFlags::empty(),
         ))
+    }
+
+    /// Block until an event arrives or `timeout` has passed.
+    pub fn wait_timeout(&self, timeout: Duration) -> Option<Event> {
+        let end = Instant::now() + timeout;
+        loop {
+            if let Some(ev) = self.poll() {
+                return Some(ev);
+            }
+            let left = end.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return None;
+            }
+            if let Some(sleep) = self.waitpoint() {
+                let _ = sys_thread_sync(&mut [ThreadSync::new_sleep(sleep)], Some(left));
+            }
+        }
     }
 
     /// Block until an event arrives.
