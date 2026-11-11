@@ -237,6 +237,9 @@ impl Device {
         }
         let (msg_addr, msg_data) = self.msi_msg(vec, false, cpu)?;
         let ctrl = map_field!(msi.msg_ctrl).read() & !(MSI_ENABLE | MSI_MME);
+        if ctrl & MSI_64BIT == 0 && msg_addr >> 32 != 0 {
+            return Err(TwzError::NOT_SUPPORTED);
+        }
         map_field!(msi.msg_ctrl).write(ctrl);
         map_field!(msi.msg_addr_low).write(msg_addr as u32);
         // Without 64-bit addressing the data register takes the place of the upper address.
@@ -244,9 +247,6 @@ impl Device {
             map_field!(msi.msg_addr_hi).write((msg_addr >> 32) as u32);
             (0x0c, 0x10)
         } else {
-            if msg_addr >> 32 != 0 {
-                return Err(TwzError::NOT_SUPPORTED);
-            }
             (0x08, 0x0c)
         };
         let base = msi.as_raw_ptr().cast::<u8>();
@@ -270,7 +270,7 @@ impl Device {
         cpu: Option<u32>,
     ) -> Result<u32> {
         // Prefer MSI-X
-        let mm = self.find_mmio_bar(0xff).unwrap();
+        let mm = self.find_mmio_bar(0xff).ok_or(TwzError::NOT_SUPPORTED)?;
         for cap in self.pcie_capabilities(&mm).ok_or(TwzError::NOT_SUPPORTED)? {
             if let PcieCapability::MsiX(mut m) = cap {
                 for msitest in self.pcie_capabilities(&mm).ok_or(TwzError::NOT_SUPPORTED)? {
