@@ -1,0 +1,13 @@
+[package]
+name = "bartest"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+twizzler-abi = { path = "../../lib/twizzler-abi" }
+twizzler-driver = { workspace = true }
+twizzler-rt-abi = { path = "../../abi/rt-abi" }
+twizzler-runtime = { workspace = true }
+
+[package.metadata]
+twizzler-build = "test"

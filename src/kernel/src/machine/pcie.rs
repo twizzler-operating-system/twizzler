@@ -316,6 +316,28 @@ fn kaction(
         }
         PcieKactionSpecific::AllocateInterrupt => allocate_interrupt(device, arg, arg2),
         PcieKactionSpecific::FreeInterrupt => free_interrupt(device, arg2),
+        PcieKactionSpecific::SetBarCacheType => {
+            // Cached types are refused: the device changes this memory underneath any cache.
+            let ct = [
+                CacheType::WriteCombining,
+                CacheType::Uncacheable,
+                CacheType::MemoryMappedIO,
+            ]
+            .into_iter()
+            .find(|ct| *ct as u64 == arg2)
+            .ok_or(ArgumentError::InvalidArgument)?;
+            // BARs only: config space is registered as 0xff, and a segment's mmio is its ECAM.
+            if arg >= 6
+                || DEVS
+                    .lock()
+                    .get(&device.objid())
+                    .is_none_or(|k| k.seg_dev.objid() == device.objid())
+            {
+                return Err(ArgumentError::InvalidArgument.into());
+            }
+            device.set_mmio_cache_type(arg, ct)?;
+            Ok(KactionValue::U64(0))
+        }
     }
 }
 

@@ -56,6 +56,13 @@ pub fn init(tls: VirtAddr) {
         x86::msr::wrmsr(x86::msr::IA32_STAR, (0x13 << 48) | (0x8 << 32));
         x86::msr::wrmsr(x86::msr::IA32_FMASK, 0xffffffff);
     }
+    assert!(
+        x86::cpuid::CpuId::new()
+            .get_feature_info()
+            .is_some_and(|f| f.has_pat())
+    );
+    // No flush: nothing is mapped through an entry this changes.
+    unsafe { x86::msr::wrmsr(x86::msr::IA32_PAT, super::memory::pagetables::PAT) };
     /* unsafe {
         x86_64::registers::segmentation::FS::set_reg(SegmentSelector::new(
             0,

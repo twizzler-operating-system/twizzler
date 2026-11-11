@@ -629,3 +629,88 @@ fn object_copy_zeroes_and_copies() {
     let untouched: u8 = src.read_at(ps).unwrap();
     assert_eq!(untouched, 0x5a, "copy disturbed its source");
 }
+
+/// The cache type of a physical mapping changes in place, and write-combining is refused where a
+/// large entry could not encode it.
+#[twizzler_kernel_macros::kernel_test]
+fn set_cache_type_of_phys_mapping() {
+    use crate::memory::PhysAddr;
+
+    let region = PHYS_LEVEL_LAYOUTS[1].size();
+    // Never accessed, and far above any frame.
+    let phys = PhysAddr::new(1 << 38).unwrap();
+    let cache_types = |obj: &ObjectRef, offset: usize, len: usize| {
+        let mut pt = obj.lock_page_tables();
+        let v: alloc::vec::Vec<_> = pt
+            .readmap(offset as u64, len)
+            .map(|mi| {
+                (
+                    mi.paddr().raw() - mi.vaddr().raw(),
+                    mi.len(),
+                    mi.settings().cache(),
+                )
+            })
+            .collect();
+        v
+    };
+
+    // Like a BAR: `MMIO_OFFSET` puts the range out of phase, so every entry is last-level.
+    let offset = twizzler_abi::device::MMIO_OFFSET;
+    let len = 2 * region;
+    let obj = create_blank_object();
+    obj.map_phys(
+        offset,
+        phys,
+        phys.offset(len).unwrap(),
+        CacheType::MemoryMappedIO,
+    )
+    .unwrap();
+    // Decodes as Uncacheable on x86, MemoryMappedIO on aarch64.
+    let before = cache_types(&obj, offset, len);
+    assert_eq!(before.len(), len / PageNumber::PAGE_SIZE);
+    for _ in 0..2 {
+        obj.set_cache_type(offset, len, CacheType::WriteCombining)
+            .unwrap();
+        let wc = cache_types(&obj, offset, len);
+        assert_eq!(wc.len(), before.len());
+        for (wc, before) in wc.iter().zip(&before) {
+            assert_eq!((wc.0, wc.1), (before.0, before.1));
+            #[cfg(target_arch = "x86_64")]
+            assert_eq!(wc.2, CacheType::WriteCombining);
+        }
+    }
+    obj.set_cache_type(offset, len, CacheType::MemoryMappedIO)
+        .unwrap();
+    assert_eq!(cache_types(&obj, offset, len), before);
+    // Nothing outside the range is touched or created.
+    assert!(cache_types(&obj, offset + len, region).is_empty());
+
+    let obj = create_blank_object();
+    obj.map_phys(
+        region,
+        phys,
+        phys.offset(len).unwrap(),
+        CacheType::MemoryMappedIO,
+    )
+    .unwrap();
+    let before = cache_types(&obj, region, len);
+    assert_eq!(before.len(), 2);
+    assert!(
+        obj.set_cache_type(region, len, CacheType::WriteCombining)
+            .is_err()
+    );
+    assert_eq!(cache_types(&obj, region, len), before);
+
+    let obj = create_blank_object();
+    obj.map_phys(
+        region,
+        phys,
+        phys.offset(len).unwrap(),
+        CacheType::WriteCombining,
+    )
+    .unwrap();
+    assert_eq!(
+        cache_types(&obj, region, len).len(),
+        len / PageNumber::PAGE_SIZE
+    );
+}

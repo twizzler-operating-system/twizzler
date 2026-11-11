@@ -4,7 +4,7 @@ use std::ptr::NonNull;
 
 pub use twizzler_abi::device::bus::pcie::*;
 use twizzler_abi::{
-    device::InterruptVector,
+    device::{CacheType, InterruptVector},
     kso::{
         pack_kaction_int_alloc, InterruptAllocateOptions, InterruptPriority, KactionCmd,
         KactionFlags,
@@ -165,6 +165,18 @@ impl Device {
             idx += 1;
         }
         None
+    }
+
+    /// Set the cache type of BAR `bar`, for every mapping of it. Accesses racing with the switch
+    /// see either type. Only uncached types and write-combining are accepted.
+    pub fn set_bar_cache_type(&self, bar: usize, ct: CacheType) -> Result<()> {
+        self.kaction(
+            KactionCmd::Specific(PcieKactionSpecific::SetBarCacheType.into()),
+            bar as u64,
+            KactionFlags::empty(),
+            ct as u64,
+        )?;
+        Ok(())
     }
 
     /// Run `f` on entry `inum` of the MSI-X table `msix` describes.

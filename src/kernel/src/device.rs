@@ -30,6 +30,8 @@ use crate::{
 
 pub struct DeviceInner {
     sub_objects: Vec<(SubObjectType, ObjectRef)>,
+    /// (info, mapped length) of each mmio sub-object; the copy in the object is user-writable.
+    mmio: Vec<(u64, usize, ObjectRef)>,
     children: Vec<DeviceRef>,
 }
 
@@ -220,6 +222,7 @@ pub fn create_busroot(
     let device = Arc::new(Device {
         inner: Mutex::new(DeviceInner {
             sub_objects: Vec::new(),
+            mmio: Vec::new(),
             children: Vec::new(),
         }),
         kaction,
@@ -248,6 +251,7 @@ pub fn create_device(
     let device = Arc::new(Device {
         inner: Mutex::new(DeviceInner {
             sub_objects: Vec::new(),
+            mmio: Vec::new(),
             children: Vec::new(),
         }),
         kaction,
@@ -313,10 +317,25 @@ impl Device {
         };
         obj.write_base(&mmio_info).unwrap();
         crate::obj::register_object(obj.clone());
-        self.inner
-            .lock()
-            .sub_objects
-            .push((SubObjectType::Mmio, obj));
+        let mut inner = self.inner.lock();
+        inner.mmio.push((info, length as usize, obj.clone()));
+        inner.sub_objects.push((SubObjectType::Mmio, obj));
+    }
+
+    /// Change the cache type of the mmio sub-object whose [MmioInfo::info] is `info`.
+    pub fn set_mmio_cache_type(&self, info: u64, ct: CacheType) -> Result<()> {
+        let inner = self.inner.lock();
+        let (_, length, obj) = inner
+            .mmio
+            .iter()
+            .find(|m| m.0 == info)
+            .ok_or(ArgumentError::InvalidArgument)?;
+        obj.set_cache_type(MMIO_OFFSET, *length, ct)?;
+        obj.write_base(&MmioInfo {
+            length: *length as u64,
+            cache_type: ct,
+            info,
+        })
     }
 
     pub fn add_child(&self, child: DeviceRef) {

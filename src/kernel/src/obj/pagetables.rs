@@ -1529,12 +1529,42 @@ impl Object {
         if need > 0 {
             fa.precharge(need, FrameAllocFlags::WAIT_OK);
         }
-        let mut phys =
-            ContiguousProvider::new(start, len, MappingSettings::default_user().with_cache(ct));
+        let settings = MappingSettings::default_user().with_cache(ct);
+        let mut phys = if ct == CacheType::WriteCombining {
+            // x86 can only encode write-combining in last-level entries.
+            ContiguousProvider::new_of_page_size(start, len, PageNumber::PAGE_SIZE, settings)
+        } else {
+            ContiguousProvider::new(start, len, settings)
+        };
         let mut consist = Consistency::new_object_tables();
         let r = pt.mapper.map(cursor, &mut phys, &mut consist, &mut fa);
         pt.run_consistency(consist);
         r.map(|_| len)
+    }
+
+    /// Change the cache type of a range mapped by [Self::map_phys], in place: entries stay
+    /// present, and every context mapping the object is invalidated before this returns.
+    pub fn set_cache_type(&self, offset: usize, len: usize, ct: CacheType) -> Result<(), TwzError> {
+        let mut pt = self.lock_page_tables();
+        // x86 can only encode write-combining in last-level entries.
+        if ct == CacheType::WriteCombining
+            && pt
+                .readmap(offset as u64, len)
+                .any(|mi| mi.len() > PageNumber::PAGE_SIZE)
+        {
+            return Err(TwzError::NOT_SUPPORTED);
+        }
+        let cursor = MappingCursor::new(VirtAddr::new(offset as u64).unwrap(), len);
+        let mut fa = take_or_new_frame_allocator();
+        let mut consist = Consistency::new_object_tables();
+        let r = pt.mapper.change(
+            cursor,
+            &MappingSettings::default_user().with_cache(ct),
+            &mut consist,
+            &mut fa,
+        );
+        pt.run_consistency(consist);
+        r
     }
 
     pub fn add_frame(&self, pn: PageNumber, frame: FrameRef) {

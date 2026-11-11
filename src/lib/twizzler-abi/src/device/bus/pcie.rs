@@ -46,6 +46,9 @@ pub enum PcieKactionSpecific {
     AllocateInterrupt = 1,
     /// Free an allocated interrupt. The device must no longer be able to raise it.
     FreeInterrupt = 2,
+    /// Set the cache type of a BAR's mapping: arg is the BAR index, arg2 the
+    /// [crate::device::CacheType]. Applies to every mapping of the BAR's mmio object.
+    SetBarCacheType = 3,
 }
 
 impl From<PcieKactionSpecific> for u32 {
@@ -62,6 +65,7 @@ impl TryFrom<u32> for PcieKactionSpecific {
             0 => PcieKactionSpecific::RegisterDevice,
             1 => PcieKactionSpecific::AllocateInterrupt,
             2 => PcieKactionSpecific::FreeInterrupt,
+            3 => PcieKactionSpecific::SetBarCacheType,
             _ => return Err(ArgumentError::InvalidArgument.into()),
         })
     }

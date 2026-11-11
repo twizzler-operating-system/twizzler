@@ -451,6 +451,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bartest"
+version = "0.1.0"
+dependencies = [
+ "twizzler-abi",
+ "twizzler-driver",
+ "twizzler-rt-abi",
+ "twizzler-runtime",
+]
+
+[[package]]
 name = "base16ct"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
