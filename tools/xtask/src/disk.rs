@@ -266,7 +266,7 @@ fn uuhelper_utils(repo_root: &Path) -> anyhow::Result<Vec<String>> {
 ///
 /// Entries name one file each rather than globbing a directory. A glob that silently matches
 /// nothing is how a file stops shipping without anyone noticing, so a missing source is an error
-/// here instead.
+/// here instead, unless the entry says `optional = true` (files not every checkout has).
 fn disk_files(
     build: &TwizzlerCompilation,
     repo_root: &Path,
@@ -291,6 +291,14 @@ fn disk_files(
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("disk-files entry needs a string `to`"))?;
         let src = repo_root.join(from);
+        let optional = item
+            .get("optional")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if optional && !src.exists() {
+            eprintln!("note: skipping optional disk file {} (not present)", from);
+            continue;
+        }
         if !src.is_file() {
             anyhow::bail!("disk-files entry `{}` is not a file", src.display());
         }
