@@ -24,12 +24,6 @@ use crate::{
     processor::mp::with_each_active_processor,
 };
 
-/// Prefetchable BARs are device memory on aarch64; only x86 tolerates a cacheable mapping.
-#[cfg(target_arch = "x86_64")]
-const PREFETCH_CACHE_TYPE: CacheType = CacheType::WriteThrough;
-#[cfg(not(target_arch = "x86_64"))]
-const PREFETCH_CACHE_TYPE: CacheType = CacheType::MemoryMappedIO;
-
 #[derive(Clone)]
 struct PcieKernelInfo {
     seg_dev: DeviceRef,
@@ -177,7 +171,7 @@ fn register_device(
         0xff,
     );
 
-    for (idx, &(addr, size, pref)) in bars.iter().enumerate() {
+    for (idx, &(addr, size, _)) in bars.iter().enumerate() {
         if addr == 0 || size == 0 {
             continue;
         }
@@ -199,11 +193,9 @@ fn register_device(
         dev.add_mmio(
             start,
             end,
-            if pref != 0 {
-                PREFETCH_CACHE_TYPE
-            } else {
-                CacheType::MemoryMappedIO
-            },
+            // Prefetchable BARs too: devices update that memory themselves, so reads must not
+            // be served from cache.
+            CacheType::MemoryMappedIO,
             idx as u64,
         );
     }

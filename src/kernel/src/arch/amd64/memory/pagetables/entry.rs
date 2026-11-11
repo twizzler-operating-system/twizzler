@@ -189,10 +189,11 @@ impl From<&MappingSettings> for EntryFlags {
         let c = match settings.cache() {
             CacheType::WriteBack => EntryFlags::empty(),
             CacheType::WriteThrough => EntryFlags::WRITE_THROUGH,
-            CacheType::WriteCombining => EntryFlags::empty(),
-            CacheType::Uncacheable => EntryFlags::CACHE_DISABLE,
-            // MMIO wants strong uncacheable on x86.
-            CacheType::MemoryMappedIO => EntryFlags::CACHE_DISABLE,
+            // PCD|PWT is strong UC in the power-on PAT; PCD alone is only UC-. That PAT has no WC
+            // entry, so write-combining falls back to uncached.
+            CacheType::WriteCombining | CacheType::Uncacheable | CacheType::MemoryMappedIO => {
+                EntryFlags::CACHE_DISABLE | EntryFlags::WRITE_THROUGH
+            }
         };
         let mut p = EntryFlags::empty();
         if settings.perms().contains(Protections::WRITE) {
@@ -222,5 +223,32 @@ impl From<&MappingSettings> for EntryFlags {
             EntryFlags::empty()
         };
         p | c | f | u | w | pr
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use twizzler_abi::device::CacheType;
+    use twizzler_kernel_macros::kernel_test;
+
+    use super::EntryFlags;
+    use crate::memory::pagetables::MappingSettings;
+
+    #[kernel_test]
+    fn test_cache_type_encoding() {
+        use CacheType::*;
+        for (ct, decoded) in [
+            (WriteBack, WriteBack),
+            (WriteThrough, WriteThrough),
+            (WriteCombining, Uncacheable),
+            (Uncacheable, Uncacheable),
+            (MemoryMappedIO, Uncacheable),
+        ] {
+            let flags = EntryFlags::from(&MappingSettings::default_cachetype(ct));
+            assert_eq!(flags.cache_type(), decoded);
+            // The PAT bit is HUGE_PAGE in a 4 KiB entry and bit 12 in a larger one.
+            assert_eq!(flags.bits() & (1 << 7 | 1 << 12), 0);
+            assert_eq!((flags | EntryFlags::huge()).settings().cache(), decoded);
+        }
     }
 }

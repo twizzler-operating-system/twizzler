@@ -308,7 +308,7 @@ impl Device {
         }
         let mmio_info = MmioInfo {
             length,
-            cache_type: CacheType::Uncacheable,
+            cache_type: ct,
             info,
         };
         obj.write_base(&mmio_info).unwrap();
