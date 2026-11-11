@@ -10,7 +10,13 @@ use twizzler_rt_abi::{
     error::{IoError, TwzError},
 };
 
-use crate::{condvar::CondVar, interrupt, spinlock::Spinlock};
+use crate::{
+    condvar::CondVar,
+    interrupt,
+    processor::sched::{SchedFlags, schedule},
+    spinlock::Spinlock,
+    thread::priority::Priority,
+};
 
 const KEC_BUFFER_LEN: usize = 4096;
 const MAX_SINGLE_WRITE: usize = KEC_BUFFER_LEN / 2;
@@ -75,6 +81,20 @@ static KERNEL_CONSOLE_MAIN: KernelConsoleInner = KernelConsoleInner {
 
 pub trait KernelConsoleHardware {
     fn write(&self, data: &[u8], flags: KernelConsoleWriteFlags);
+
+    /// Like `write`, but the hardware may hold the bytes until `pump` or the next `write`.
+    fn queue(&self, data: &[u8], flags: KernelConsoleWriteFlags) {
+        self.write(data, flags)
+    }
+
+    /// Sends a bounded piece of what `queue` held. Returns whether any remains.
+    fn pump(&self) -> bool {
+        false
+    }
+
+    fn pending(&self) -> bool {
+        false
+    }
 }
 
 struct KernelConsoleRef<T: KernelConsoleHardware + 'static, M: MessageLevel + 'static> {
@@ -368,25 +388,64 @@ impl<T: KernelConsoleHardware, M: MessageLevel> KernelConsole<T, M> {
     }
 }
 
-/// One write, of the whole slice, deliberately: `serial::write` holds the port lock across the
-/// entire call, so this is what makes a userspace console write atomic -- at any length, with no
-/// lock taken here. Splitting it (to bound anything, or to take the console lock per piece) would
-/// give that up. The kernel's own prints are what had to be fixed to match; see [`LineWriter`].
+static TX_LOCK: Spinlock<()> = Spinlock::new(());
+static TX_QUEUED: CondVar = CondVar::new();
+static TX_DRAINED: CondVar = CondVar::new();
+
+/// How long a userspace write waits for idle time to send it before sending it itself. A byte
+/// costs a vm exit (~12us under qemu), which on one cpu is taken from whatever is running.
+const TX_IDLE_WAIT: Duration = Duration::from_millis(50);
+
+extern "C" fn tx_drain() {
+    loop {
+        let guard = TX_LOCK.lock();
+        // Not `||`: both ports get a burst.
+        if NORMAL_CONSOLE.hardware.pump() | DEBUG_CONSOLE.hardware.pump() {
+            drop(guard);
+            schedule(SchedFlags::REINSERT | SchedFlags::YIELD | SchedFlags::PREEMPT);
+        } else if TX_DRAINED.has_waiters() {
+            drop(guard);
+            TX_DRAINED.signal();
+        } else {
+            drop(TX_QUEUED.wait(guard));
+        }
+    }
+}
+
+/// Starts the thread that sends userspace console output when nothing else wants the cpu.
+pub fn start_tx_drain() {
+    crate::thread::entry::start_new_kernel(Priority::BACKGROUND, tx_drain, 0, "console-tx");
+}
+
+/// Returns once the bytes have reached the hardware. They are queued as one piece -- the hardware
+/// sends its queue ahead of any kernel print, so nothing lands inside a userspace write -- and
+/// sent by [`tx_drain`], or by the caller in bursts if that has not happened in time.
 pub fn write_bytes(
     target: KernelConsoleSource,
     slice: &[u8],
     flags: KernelConsoleWriteFlags,
 ) -> Result<()> {
-    let writer = match target {
-        KernelConsoleSource::Console => Ok(KernelConsoleRef {
-            console: &NORMAL_CONSOLE,
-        }),
-        KernelConsoleSource::Buffer => Err(TwzError::Io(IoError::DeviceError)),
-        KernelConsoleSource::DebugConsole => Ok(KernelConsoleRef {
-            console: &DEBUG_CONSOLE,
-        }),
-    }?;
-    writer.write(slice, flags)
+    let console = match target {
+        KernelConsoleSource::Console => &NORMAL_CONSOLE,
+        KernelConsoleSource::Buffer => return Err(TwzError::Io(IoError::DeviceError)),
+        KernelConsoleSource::DebugConsole => &DEBUG_CONSOLE,
+    };
+    // Queued under the lock, so `tx_drain` either sees the bytes or is already waiting.
+    let guard = TX_LOCK.lock();
+    console.hardware.queue(slice, flags);
+    drop(guard);
+    TX_QUEUED.signal();
+    let guard = TX_LOCK.lock();
+    if console.hardware.pending() {
+        drop(TX_DRAINED.wait_waiters(guard, Some(TX_IDLE_WAIT), None));
+    } else {
+        drop(guard);
+    }
+    while console.hardware.pump() {}
+    if flags.contains(KernelConsoleWriteFlags::DONT_BUFFER) {
+        return Ok(());
+    }
+    console.inner.write_buffer(slice, flags)
 }
 
 pub fn read_bytes(

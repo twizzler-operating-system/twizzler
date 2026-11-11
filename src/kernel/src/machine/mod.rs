@@ -25,6 +25,21 @@ impl KernelConsoleHardware for MachineConsoleHardware {
     fn write(&self, data: &[u8], flags: crate::log::KernelConsoleWriteFlags) {
         serial::write(data, flags, self.debug);
     }
+
+    #[cfg(target_arch = "x86_64")]
+    fn queue(&self, data: &[u8], _flags: crate::log::KernelConsoleWriteFlags) {
+        serial::queue(data, self.debug);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn pump(&self) -> bool {
+        serial::pump(self.debug)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn pending(&self) -> bool {
+        serial::pending(self.debug)
+    }
 }
 
 impl MachineConsoleHardware {

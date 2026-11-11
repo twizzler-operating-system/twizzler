@@ -527,6 +527,7 @@ extern "C" fn boot_sequence() {
         test_main();
     }
     start_new_init();
+    log::start_tx_drain();
     let _ = crate::thread::entry::start_new_kernel(
         Priority::BACKGROUND,
         background_worker,

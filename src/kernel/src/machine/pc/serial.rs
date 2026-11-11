@@ -12,7 +12,13 @@ use crate::{
 
 pub struct SerialPort {
     port: u16,
+    tx: [u8; TX_QUEUE_LEN],
+    tx_head: usize,
+    tx_len: usize,
 }
+
+/// Bytes of userspace output held for [`pump`]. One pty relay write (1024) fits.
+const TX_QUEUE_LEN: usize = 2048;
 
 /// Cycles to wait for the uart to accept a byte before dropping it.
 ///
@@ -67,7 +73,12 @@ impl SerialPort {
     /// # Safety
     /// The supplied port must be a correct, functioning serial port on the system.
     pub unsafe fn new(port: u16) -> Self {
-        Self { port }
+        Self {
+            port,
+            tx: [0; TX_QUEUE_LEN],
+            tx_head: 0,
+            tx_len: 0,
+        }
     }
 
     /// Write register.
@@ -164,6 +175,24 @@ impl SerialPort {
             core::hint::spin_loop();
         }
         true
+    }
+
+    /// Sends one burst of queued bytes. Returns whether any remain.
+    fn pump(&mut self) -> bool {
+        if self.tx_len == 0 {
+            return false;
+        }
+        if !self.wait_for_tx() {
+            self.tx_len = 0;
+            return false;
+        }
+        let n = self.tx_len.min(TX_BURST.load(Ordering::Relaxed) as usize);
+        for _ in 0..n {
+            unsafe { self.write_reg(Self::DATA, self.tx[self.tx_head]) };
+            self.tx_head = (self.tx_head + 1) % TX_QUEUE_LEN;
+        }
+        self.tx_len -= n;
+        self.tx_len > 0
     }
 
     pub fn receive(&mut self) -> u8 {
@@ -421,16 +450,38 @@ pub fn interrupt_handler() {
     report_isr_rate(iid1, count1, iid2, count2);
 }
 
+fn port(debug: bool) -> &'static SimpleLock<SerialPort> {
+    if debug { serial2() } else { serial1() }
+}
+
+/// Synchronous. Queued bytes go out first, so output stays in the order it was written.
 pub fn write(data: &[u8], _flags: crate::log::KernelConsoleWriteFlags, debug: bool) {
-    unsafe {
-        if debug {
-            let _ = serial2()
-                .lock()
-                .write_str(core::str::from_utf8_unchecked(data));
-        } else {
-            let _ = serial1()
-                .lock()
-                .write_str(core::str::from_utf8_unchecked(data));
-        }
+    let mut serial = port(debug).lock();
+    while serial.pump() {}
+    let _ = serial.write_str(unsafe { core::str::from_utf8_unchecked(data) });
+}
+
+/// Holds `data` for [`pump`], whole so that no other write lands inside it. Without room for all
+/// of it, sends it now.
+pub fn queue(data: &[u8], debug: bool) {
+    let mut serial = port(debug).lock();
+    if data.len() > TX_QUEUE_LEN - serial.tx_len {
+        while serial.pump() {}
+        let _ = serial.write_str(unsafe { core::str::from_utf8_unchecked(data) });
+        return;
     }
+    for byte in data {
+        let at = (serial.tx_head + serial.tx_len) % TX_QUEUE_LEN;
+        serial.tx[at] = *byte;
+        serial.tx_len += 1;
+    }
+}
+
+/// Sends one burst of queued bytes, interrupts off only for that long. Returns whether any remain.
+pub fn pump(debug: bool) -> bool {
+    port(debug).lock().pump()
+}
+
+pub fn pending(debug: bool) -> bool {
+    port(debug).lock().tx_len > 0
 }
