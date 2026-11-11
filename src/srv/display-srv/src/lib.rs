@@ -18,14 +18,17 @@ use twizzler_abi::{
         ThreadSyncSleep, ThreadSyncWake,
     },
 };
-use twizzler_display::{BufferObject, Rect, WindowConfig};
+use twizzler_display::{BufferObject, EventQueue, Rect, WindowConfig};
 use twizzler_rt_abi::{error::TwzError, Result};
 use virtio_gpu::{DeviceWrapper, TwizzlerTransport};
+
+mod input;
 
 static DISPLAY_INFO: OnceLock<DisplayInfo> = OnceLock::new();
 
 struct DisplayClient {
     window: BufferObject,
+    events: EventQueue,
     config: RwLock<WindowConfig>,
     new_config: RwLock<Option<WindowConfig>>,
 }
@@ -48,6 +51,7 @@ struct DisplayInfo {
     windows: AtomicU64,
     /// Screen areas to recomposite for a created or dropped window.
     damage: Mutex<Vec<Rect>>,
+    input: Mutex<input::InputState>,
 }
 
 impl DisplayInfo {
@@ -124,7 +128,18 @@ pub fn start_display() -> Result<()> {
         buffer: BufferObject::create_new(current_info.0, current_info.1)?,
         windows: AtomicU64::new(0),
         damage: Mutex::new(vec![Rect::full()]),
+        input: Mutex::default(),
     });
+
+    let (wake, woken) = std::sync::mpsc::channel();
+    let inputs = virtio_gpu::get_input_devices(wake);
+    tracing::info!("{} input devices", inputs.len());
+    if !inputs.is_empty() {
+        let _ = std::thread::Builder::new()
+            .name("input".into())
+            .spawn(move || input::input_thread(DISPLAY_INFO.get().unwrap(), inputs, woken))
+            .unwrap();
+    }
 
     let _ = std::thread::Builder::new()
         .name("compositor".into())
@@ -204,6 +219,7 @@ fn compositor_thread() {
     let mut done_comp = Instant::now();
     let mut damage = Vec::new();
     let mut waits: Vec<ThreadSyncSleep> = Vec::new();
+    let mut cursor: Option<(u32, u32)> = None;
     loop {
         damage.clear();
         waits.clear();
@@ -216,6 +232,16 @@ fn compositor_thread() {
         let mut pending = false;
         let handles = info.handles.lock().unwrap();
         damage.append(&mut info.damage.lock().unwrap());
+        let pointer = info.input.lock().unwrap().pointer;
+        if pointer != cursor {
+            damage.extend(
+                [cursor, pointer]
+                    .into_iter()
+                    .flatten()
+                    .map(input::cursor_rect),
+            );
+            cursor = pointer;
+        }
         for h in handles.handles() {
             if let Some(new_config) = h.2.new_config.replace(None).unwrap() {
                 let old_config = h.2.config.replace(new_config).unwrap();
@@ -296,6 +322,9 @@ fn compositor_thread() {
                         client.0.window.read_done(config.w, config.h);
                     }
                 }
+                if let Some(at) = cursor {
+                    input::draw_cursor(fbbuf.as_slice_mut(), fbw, fbh, at, &damage);
+                }
 
                 done_comp = Instant::now();
             });
@@ -339,18 +368,25 @@ pub fn create_window(winfo: WindowConfig) -> Result<(ObjID, u32)> {
     let call_info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let info = DISPLAY_INFO.get().unwrap();
     let bo = BufferObject::create_new(winfo.w, winfo.h)?;
+    let events = EventQueue::create_new()?;
+    let comp = call_info.source_context().unwrap_or(0.into());
     let mut handles = info.handles.lock().unwrap();
     let handle = handles
         .insert(
-            call_info.source_context().unwrap_or(0.into()),
+            comp,
             DisplayClient {
                 window: bo.clone(),
+                events,
                 config: RwLock::new(winfo),
                 new_config: RwLock::new(None),
             },
         )
         .ok_or(TwzError::INVALID_ARGUMENT)?;
     tracing::debug!("created window {:?} as handle {}", winfo, handle);
+    info.input
+        .lock()
+        .unwrap()
+        .set_focus(&handles, Some((comp, handle)));
     info.damage.lock().unwrap().push(Rect::from(winfo));
     drop(handles);
     info.windows_changed();
@@ -362,10 +398,12 @@ pub fn drop_window(handle: u32) -> Result<()> {
     tracing::debug!("dropping window {}", handle);
     let call_info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let info = DISPLAY_INFO.get().unwrap();
+    let comp = call_info.source_context().unwrap_or(0.into());
     let mut handles = info.handles.lock().unwrap();
     let client = handles
-        .remove(call_info.source_context().unwrap_or(0.into()), handle)
+        .remove(comp, handle)
         .ok_or(TwzError::INVALID_ARGUMENT)?;
+    info.input.lock().unwrap().window_dropped((comp, handle));
     let config = *client.config.read().unwrap();
     info.damage.lock().unwrap().push(Rect::from(config));
     drop(handles);
@@ -402,6 +440,17 @@ pub fn get_window_config(handle: u32) -> Result<WindowConfig> {
         .ok_or(TwzError::INVALID_ARGUMENT)?;
     let w = client.config.read().unwrap();
     Ok(*w)
+}
+
+#[secgate::entry(lib = "twizzler-display")]
+pub fn get_window_events(handle: u32) -> Result<ObjID> {
+    let info = DISPLAY_INFO.get().unwrap();
+    let call_info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
+    let handles = info.handles.lock().unwrap();
+    let client = handles
+        .lookup(call_info.source_context().unwrap_or(0.into()), handle)
+        .ok_or(TwzError::INVALID_ARGUMENT)?;
+    Ok(client.events.id())
 }
 
 #[secgate::entry(lib = "twizzler-display")]

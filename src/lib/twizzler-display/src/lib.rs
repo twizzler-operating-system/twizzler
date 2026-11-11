@@ -22,6 +22,9 @@ use twizzler_abi::syscall::{
     ThreadSyncSleep, ThreadSyncWake,
 };
 
+mod events;
+pub use events::{codes, Event, EventQueue, EventQueueBase};
+
 #[derive(Clone)]
 /// An object holding a double-buffered compositor surface for a window.
 pub struct BufferObject {
@@ -489,6 +492,8 @@ pub fn reconfigure_window(handle: u32, wconfig: WindowConfig) -> Result<(), TwzE
 pub fn get_window_config(handle: u32) -> Result<WindowConfig, TwzError> {}
 #[secgate::gatecall]
 pub fn get_display_info() -> Result<WindowConfig, TwzError> {}
+#[secgate::gatecall]
+pub fn get_window_events(handle: u32) -> Result<ObjID, TwzError> {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(C)]
@@ -515,6 +520,11 @@ impl WindowHandle {
     /// Get the current window configuration.
     pub fn get_config(&self) -> Result<WindowConfig, TwzError> {
         get_window_config(self.key)
+    }
+
+    /// The window's input events. Every call returns the same queue, which has one reader.
+    pub fn events(&self) -> Result<EventQueue, TwzError> {
+        EventQueue::open(get_window_events(self.key)?)
     }
 }
 

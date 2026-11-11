@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use secgate::util::Handle;
-use twizzler_display::{BufferMut, Rect, WindowConfig, WindowHandle};
+use twizzler_display::{BufferMut, Event, Rect, WindowConfig, WindowHandle, codes};
 
 static IMG: &'static [u8] = include_bytes!("../img.png");
 
@@ -176,9 +176,47 @@ fn reconf(args: &[u32]) {
     hold("reconf");
 }
 
+/// `gfxtest input [x y w h]...`: a window per group of four (full screen by default), later ones
+/// on top, each printing the input events it receives. Releasing Escape ends it.
+fn input(args: &[u32]) {
+    let windows: Vec<WindowHandle> = if args.is_empty() {
+        vec![open(args, 0)]
+    } else {
+        args.chunks_exact(4)
+            .enumerate()
+            .map(|(z, a)| open(a, z as u32))
+            .collect()
+    };
+    let (done, wait) = std::sync::mpsc::channel();
+    for (i, window) in windows.iter().enumerate() {
+        full(window, 1, Some(0xff202020 + 0x404040 * i as u32));
+        let events = window.events().unwrap();
+        let done = done.clone();
+        std::thread::spawn(move || {
+            loop {
+                let ev = events.wait();
+                println!("gfxtest: window {i} {ev:?}");
+                if matches!(
+                    ev,
+                    Event::Key {
+                        code: codes::KEY_ESC,
+                        pressed: false
+                    }
+                ) {
+                    let _ = done.send(());
+                }
+            }
+        });
+    }
+    println!("gfxtest: input ready");
+    let _ = wait.recv();
+    println!("gfxtest: input done");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let modes: [(&str, fn(&[u32])); 6] = [
+    let modes: [(&str, fn(&[u32])); 7] = [
+        ("input", input),
         ("pattern", pattern),
         ("partial", partial),
         ("rects", rects),

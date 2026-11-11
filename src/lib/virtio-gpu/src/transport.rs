@@ -69,7 +69,18 @@ fn get_device() -> Option<Device> {
 
 impl TwizzlerTransport {
     pub fn new(notifier: std::sync::mpsc::Sender<Option<()>>) -> Result<Self, VirtioPciError> {
-        let device = Arc::new(get_device().expect("failed to find virtio-gpu device"));
+        Self::for_device(
+            get_device().expect("failed to find virtio-gpu device"),
+            notifier,
+        )
+    }
+
+    /// A transport for any virtio PCI device; `notifier` is sent to on each of its interrupts.
+    pub fn for_device(
+        device: Device,
+        notifier: std::sync::mpsc::Sender<Option<()>>,
+    ) -> Result<Self, VirtioPciError> {
+        let device = Arc::new(device);
         let int = device.allocate_interrupt(0).unwrap();
         device
             .repr_mut()
@@ -173,7 +184,7 @@ impl TwizzlerTransport {
         let isr_status = isr_status.ok_or(VirtioPciError::MissingIsrConfig)?;
 
         let _thread = std::thread::Builder::new()
-            .name("virtio-gpu-int".into())
+            .name("virtio-int".into())
             .spawn(move || loop {
                 //for _ in 0..10 {
                 //    for _ in 0..100 {

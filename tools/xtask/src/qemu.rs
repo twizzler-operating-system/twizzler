@@ -384,6 +384,9 @@ impl QemuCommand {
         // qemu-system-aarch64 has no virtio-vga, and that target runs -nographic anyway.
         if self.arch == Arch::X86_64 {
             self.cmd.arg("-vga").arg("virtio");
+            // The tablet reports absolute positions, which is what a VNC or QMP pointer has.
+            self.cmd.args(["-device", "virtio-keyboard-pci"]);
+            self.cmd.args(["-device", "virtio-tablet-pci"]);
         }
 
         // add additional options for qemu
