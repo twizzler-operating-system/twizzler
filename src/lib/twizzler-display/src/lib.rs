@@ -80,12 +80,29 @@ impl Rect {
         }
     }
 
+    fn right(&self) -> u32 {
+        self.x.saturating_add(self.w)
+    }
+
+    fn bottom(&self) -> u32 {
+        self.y.saturating_add(self.h)
+    }
+
+    /// The part of this rect that lies inside `other`, if any.
+    pub fn intersect(&self, other: &Rect) -> Option<Rect> {
+        let x = self.x.max(other.x);
+        let y = self.y.max(other.y);
+        let right = self.right().min(other.right());
+        let bottom = self.bottom().min(other.bottom());
+        (x < right && y < bottom).then(|| Rect::new(x, y, right - x, bottom - y))
+    }
+
     pub fn is_covered_by_any(&self, rects: &[Rect]) -> bool {
         for rect in rects {
             if rect.x <= self.x
                 && rect.y <= self.y
-                && rect.x + rect.w >= self.x + self.w
-                && rect.y + rect.h >= self.y + self.h
+                && rect.right() >= self.right()
+                && rect.bottom() >= self.bottom()
             {
                 return true;
             }
@@ -99,18 +116,8 @@ impl Rect {
         Rect {
             x,
             y,
-            w: rects
-                .iter()
-                .max_by_key(|r| r.x + r.w)
-                .map(|r| r.x + r.w)
-                .unwrap_or(0)
-                - x,
-            h: rects
-                .iter()
-                .max_by_key(|r| r.y + r.h)
-                .map(|r| r.y + r.h)
-                .unwrap_or(0)
-                - y,
+            w: rects.iter().map(Rect::right).max().unwrap_or(0) - x,
+            h: rects.iter().map(Rect::bottom).max().unwrap_or(0) - y,
         }
     }
 }
@@ -244,7 +251,7 @@ impl DisplayBuffer {
     }
 
     unsafe fn append_damage(&self, dmg: Rect) {
-        let current_count = self.damage_count.load(Ordering::SeqCst);
+        let mut current_count = self.damage_count.load(Ordering::SeqCst);
         if current_count == FULL_DAMAGE {
             return;
         }
@@ -252,7 +259,7 @@ impl DisplayBuffer {
         if current_count as usize == NUM_DAMAGE {
             damage[0] = Rect::extent_of(&damage.as_slice()[..(current_count as usize)]);
             self.damage_count.store(1, Ordering::Release);
-            return;
+            current_count = 1;
         }
 
         if dmg.is_covered_by_any(&damage[..(current_count as usize)]) {

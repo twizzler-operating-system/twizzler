@@ -46,6 +46,8 @@ struct DisplayInfo {
     /// case of no windows at all (an empty wait set). Those three were what the 1s idle backstop
     /// was really for; this is the wake they were missing, so the loops can now block outright.
     windows: AtomicU64,
+    /// Screen areas to recomposite for a created or dropped window.
+    damage: Mutex<Vec<Rect>>,
 }
 
 impl DisplayInfo {
@@ -121,6 +123,7 @@ pub fn start_display() -> Result<()> {
         handles: Mutex::new(HandleMgr::new(None)),
         buffer: BufferObject::create_new(current_info.0, current_info.1)?,
         windows: AtomicU64::new(0),
+        damage: Mutex::new(vec![Rect::full()]),
     });
 
     let _ = std::thread::Builder::new()
@@ -133,30 +136,6 @@ pub fn start_display() -> Result<()> {
         .unwrap();
 
     Ok(())
-}
-
-impl DisplayClient {
-    fn compute_client_damage(
-        &self,
-        config: WindowConfig,
-        client_damage: &mut Vec<Rect>,
-        damage: &[Rect],
-    ) {
-        for damage in damage {
-            if damage.x >= config.x
-                && damage.x < config.x + config.w
-                && damage.y >= config.y
-                && damage.y < config.y + config.h
-            {
-                client_damage.push(Rect::new(
-                    damage.x - config.x,
-                    damage.y - config.y,
-                    damage.w.min(config.w - (damage.x - config.x)),
-                    damage.h.min(config.h - (damage.y - config.y)),
-                ));
-            }
-        }
-    }
 }
 
 /// Frame-rate cap once there is something to draw.
@@ -221,11 +200,9 @@ fn render_thread() {
 fn compositor_thread() {
     tracing::debug!("compositor thread started");
     let info = DISPLAY_INFO.get().unwrap();
-    let mut last_window_count = 0;
     let mut done_fill = Instant::now();
     let mut done_comp = Instant::now();
     let mut damage = Vec::new();
-    let mut client_damage = Vec::new();
     let mut waits: Vec<ThreadSyncSleep> = Vec::new();
     loop {
         damage.clear();
@@ -238,6 +215,7 @@ fn compositor_thread() {
         let mut clients = Vec::new();
         let mut pending = false;
         let handles = info.handles.lock().unwrap();
+        damage.append(&mut info.damage.lock().unwrap());
         for h in handles.handles() {
             if let Some(new_config) = h.2.new_config.replace(None).unwrap() {
                 let old_config = h.2.config.replace(new_config).unwrap();
@@ -246,15 +224,19 @@ fn compositor_thread() {
                 damage.push(Rect::from(old_config));
             }
             let config = *h.2.config.read().unwrap();
-            if h.2.window.has_data_for_read() {
+            // Only a buffer whose damage was collected here may be marked read below: the client
+            // can flip a new one in at any point after its previous one was read.
+            let has_data = h.2.window.has_data_for_read();
+            if has_data {
                 pending = true;
-                h.2.window.read_buffer(|b, _, _| {
-                    for dmg in b.damage_rects() {
+                h.2.window.read_buffer(|b, w, h| {
+                    let bounds = Rect::new(0, 0, w.min(config.w), h.min(config.h));
+                    for dmg in b.damage_rects().iter().filter_map(|d| d.intersect(&bounds)) {
                         damage.push(Rect::new(
-                            config.x + dmg.x,
-                            config.y + dmg.y,
-                            dmg.w.min(config.w - dmg.x),
-                            dmg.h.min(config.h - dmg.y),
+                            config.x.saturating_add(dmg.x),
+                            config.y.saturating_add(dmg.y),
+                            dmg.w,
+                            dmg.h,
                         ));
                     }
                 });
@@ -264,21 +246,11 @@ fn compositor_thread() {
             if let Some(w) = h.2.window.read_waitpoint() {
                 waits.push(w);
             }
-            clients.push((h.2, config));
+            clients.push((h.2, config, has_data));
         }
         let done_count = Instant::now();
 
         clients.sort_by_key(|c| c.1.z);
-
-        if clients.len() != last_window_count {
-            tracing::debug!(
-                "window count changed from {} to {}",
-                last_window_count,
-                clients.len()
-            );
-            damage.clear();
-            damage.push(Rect::full());
-        }
 
         // `pending`, not just `!damage.is_empty()`: a client can flip a buffer whose damage set is
         // empty, and that buffer still has to be consumed -- `read_done` below is what clears its
@@ -289,61 +261,39 @@ fn compositor_thread() {
         if did_composite {
             tracing::debug!("damage = {:?}", damage);
             info.buffer.update_buffer(|mut fbbuf, fbw, fbh| {
-                if clients.len() != last_window_count {
-                    fbbuf.as_slice_mut().fill(0);
-                    fbbuf.damage(Rect::full());
-                } else {
-                    for dmg in damage.drain(..) {
-                        fbbuf.damage(dmg);
+                let screen = Rect::new(0, 0, fbw, fbh);
+                for dmg in damage.drain(..).filter_map(|d| d.intersect(&screen)) {
+                    fbbuf.damage(dmg);
+                }
+                // The merged set: all of it is flushed, so all of it is redrawn.
+                damage.extend_from_slice(fbbuf.damage_rects());
+                for dmg in &damage {
+                    for y in dmg.y..(dmg.y + dmg.h) {
+                        let start = (y * fbw + dmg.x) as usize;
+                        fbbuf.as_slice_mut()[start..(start + dmg.w as usize)].fill(0);
                     }
                 }
                 done_fill = Instant::now();
 
                 for client in &clients {
-                    client_damage.clear();
-                    client.0.compute_client_damage(
-                        client.1,
-                        &mut client_damage,
-                        fbbuf.damage_rects(),
-                    );
-                    if !client_damage.is_empty() {
-                        client.0.window.read_buffer(|buf, bufw, bufh| {
-                            for damage in &client_damage {
-                                let mut damage = Rect::new(
-                                    damage.x,
-                                    damage.y,
-                                    damage.w.min(bufw - damage.x),
-                                    damage.h.min(bufh - damage.y),
-                                );
-                                tracing::debug!("client damage {:?}", damage);
-
-                                if client.1.y + damage.y >= fbh {
-                                    continue;
-                                }
-                                if client.1.x + damage.x >= fbw {
-                                    continue;
-                                }
-                                if client.1.y + damage.h >= fbh {
-                                    damage.h = fbh - client.1.y;
-                                }
-                                if client.1.x + damage.w >= fbw {
-                                    damage.w = fbw - client.1.x;
-                                }
-
-                                // Copy each line. In the future, we can do alpha blending.
-                                for y in damage.y..(damage.y + damage.h) {
-                                    let src = &buf.as_slice()[(y * bufw) as usize..];
-                                    let dst = &mut fbbuf.as_slice_mut()
-                                        [((y + client.1.y) * fbw + client.1.x) as usize..];
-                                    (&mut dst[0..(damage.w as usize)])
-                                        .copy_from_slice(&src[0..(damage.w as usize)]);
-                                }
+                    let config = client.1;
+                    client.0.window.read_buffer(|buf, bufw, bufh| {
+                        let bounds =
+                            Rect::new(config.x, config.y, bufw.min(config.w), bufh.min(config.h));
+                        // Copy each line. In the future, we can do alpha blending.
+                        for dmg in damage.iter().filter_map(|d| d.intersect(&bounds)) {
+                            let len = dmg.w as usize;
+                            for y in dmg.y..(dmg.y + dmg.h) {
+                                let src = ((y - config.y) * bufw + (dmg.x - config.x)) as usize;
+                                let dst = (y * fbw + dmg.x) as usize;
+                                fbbuf.as_slice_mut()[dst..(dst + len)]
+                                    .copy_from_slice(&buf.as_slice()[src..(src + len)]);
                             }
-                        });
-                    }
+                        }
+                    });
 
-                    if client.0.window.has_data_for_read() {
-                        client.0.window.read_done(client.1.w, client.1.h);
+                    if client.2 {
+                        client.0.window.read_done(config.w, config.h);
                     }
                 }
 
@@ -351,7 +301,6 @@ fn compositor_thread() {
             });
             info.buffer.flip();
         }
-        last_window_count = clients.len();
         drop(clients);
         drop(handles);
 
@@ -402,6 +351,7 @@ pub fn create_window(winfo: WindowConfig) -> Result<(ObjID, u32)> {
         )
         .ok_or(TwzError::INVALID_ARGUMENT)?;
     tracing::debug!("created window {:?} as handle {}", winfo, handle);
+    info.damage.lock().unwrap().push(Rect::from(winfo));
     drop(handles);
     info.windows_changed();
     Ok((bo.id(), handle))
@@ -413,9 +363,11 @@ pub fn drop_window(handle: u32) -> Result<()> {
     let call_info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let info = DISPLAY_INFO.get().unwrap();
     let mut handles = info.handles.lock().unwrap();
-    handles
+    let client = handles
         .remove(call_info.source_context().unwrap_or(0.into()), handle)
         .ok_or(TwzError::INVALID_ARGUMENT)?;
+    let config = *client.config.read().unwrap();
+    info.damage.lock().unwrap().push(Rect::from(config));
     drop(handles);
     info.windows_changed();
     Ok(())
