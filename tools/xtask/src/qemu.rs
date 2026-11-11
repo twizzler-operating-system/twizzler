@@ -1007,6 +1007,15 @@ pub(crate) fn do_start_qemu(mut cli: QemuOptions) -> anyhow::Result<()> {
                 std::process::exit(33);
             }
         }
-        anyhow::bail!("qemu return with error");
+        match outcome.guest_code {
+            Some(0) => {
+                if cli.repeat {
+                    return do_start_qemu(cli);
+                }
+                Ok(())
+            }
+            Some(code) => anyhow::bail!("guest shut down with code {code}"),
+            None => anyhow::bail!("qemu return with error"),
+        }
     }
 }
