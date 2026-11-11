@@ -233,13 +233,13 @@ impl<'a> BufferMut<'a> {
 impl DisplayBuffer {
     unsafe fn buffer_mut(&self) -> RefSliceMut<'_, u32> {
         let ptr = self.ptr.resolve().as_mut();
-        let slice = RefSliceMut::from_ref(ptr, self.byte_len as usize);
+        let slice = RefSliceMut::from_ref(ptr, self.byte_len as usize / 4);
         slice
     }
 
     unsafe fn buffer(&self) -> RefSlice<'_, u32> {
         let ptr = self.ptr.resolve();
-        let slice = RefSlice::from_ref(ptr, self.byte_len as usize);
+        let slice = RefSlice::from_ref(ptr, self.byte_len as usize / 4);
         slice
     }
 
@@ -282,11 +282,20 @@ impl BufferObject {
         self.obj.id()
     }
 
+    /// Whether a buffer can hold a `w` by `h` surface.
+    pub fn fits(w: u32, h: u32) -> bool {
+        w as u64 <= MAX_W && h as u64 <= MAX_H
+    }
+
     pub fn create_new(w: u32, h: u32) -> Result<Self, TwzError> {
+        if !Self::fits(w, h) {
+            return Err(TwzError::INVALID_ARGUMENT);
+        }
         let builder = ObjectBuilder::default();
         let obj = builder.build_inplace(|mut obj| {
-            let buf1 = obj.static_alloc(0).unwrap();
-            let buf2 = obj.static_alloc(0).unwrap();
+            // Each buffer gets MAX_BUFFER_SIZE, so a resize never moves or overlaps them.
+            let buf1 = obj.static_alloc(0u32).unwrap().offset();
+            let buf2 = buf1 + MAX_BUFFER_SIZE;
 
             let base = DisplayBufferBase {
                 flags: AtomicU64::new(0),
@@ -297,7 +306,7 @@ impl BufferObject {
                         width: AtomicU32::new(w),
                         height: AtomicU32::new(h),
                         byte_len: MAX_BUFFER_SIZE,
-                        ptr: InvPtr::from_raw_parts(0, buf1.offset()),
+                        ptr: InvPtr::from_raw_parts(0, buf1),
                         damage_count: AtomicU64::new(0),
                         damage: UnsafeCell::new([Rect::full(); NUM_DAMAGE]),
                     },
@@ -307,7 +316,7 @@ impl BufferObject {
                         width: AtomicU32::new(w),
                         height: AtomicU32::new(h),
                         byte_len: MAX_BUFFER_SIZE,
-                        ptr: InvPtr::from_raw_parts(0, buf2.offset()),
+                        ptr: InvPtr::from_raw_parts(0, buf2),
                         damage_count: AtomicU64::new(0),
                         damage: UnsafeCell::new([Rect::full(); NUM_DAMAGE]),
                     },

@@ -424,6 +424,9 @@ pub fn drop_window(handle: u32) -> Result<()> {
 #[secgate::entry(lib = "twizzler-display")]
 pub fn reconfigure_window(handle: u32, wconfig: WindowConfig) -> Result<()> {
     tracing::debug!("reconfiguring window {} => {:?}", handle, wconfig);
+    if !BufferObject::fits(wconfig.w, wconfig.h) {
+        return Err(TwzError::INVALID_ARGUMENT);
+    }
     let call_info = secgate::get_caller().ok_or(TwzError::INVALID_ARGUMENT)?;
     let info = DISPLAY_INFO.get().unwrap();
     {
