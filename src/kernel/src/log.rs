@@ -83,8 +83,10 @@ pub trait KernelConsoleHardware {
     fn write(&self, data: &[u8], flags: KernelConsoleWriteFlags);
 
     /// Like `write`, but the hardware may hold the bytes until `pump` or the next `write`.
-    fn queue(&self, data: &[u8], flags: KernelConsoleWriteFlags) {
-        self.write(data, flags)
+    /// Returns false, having taken nothing, when it has to `pump` first.
+    fn queue(&self, data: &[u8], flags: KernelConsoleWriteFlags) -> bool {
+        self.write(data, flags);
+        true
     }
 
     /// Sends a bounded piece of what `queue` held. Returns whether any remains. Without `wait`
@@ -433,9 +435,10 @@ pub fn start_tx_drain() {
     crate::thread::entry::start_new_kernel(Priority::USER, tx_deadline, 0, "console-tx-late");
 }
 
-/// Queues the bytes as one piece and returns. The hardware sends its queue ahead of any kernel
-/// print, so nothing lands inside a userspace write; and the writer must not sleep here, or the
-/// pieces of a line it writes in several calls are separated by whoever runs meanwhile.
+/// Queues the bytes as one piece and returns, sending bursts first while the queue is full. The
+/// hardware sends its queue ahead of any kernel print, so nothing lands inside a userspace write;
+/// and the writer must not sleep here, or the pieces of a line it writes in several calls are
+/// separated by whoever runs meanwhile.
 pub fn write_bytes(
     target: KernelConsoleSource,
     slice: &[u8],
@@ -447,9 +450,14 @@ pub fn write_bytes(
         KernelConsoleSource::DebugConsole => &DEBUG_CONSOLE,
     };
     // Queued under the lock, so the tx threads either see the bytes or are already waiting.
-    let guard = TX_LOCK.lock();
-    console.hardware.queue(slice, flags);
-    drop(guard);
+    loop {
+        let guard = TX_LOCK.lock();
+        if console.hardware.queue(slice, flags) {
+            break;
+        }
+        drop(guard);
+        console.hardware.pump(true);
+    }
     TX_QUEUED.signal();
     if flags.contains(KernelConsoleWriteFlags::DONT_BUFFER) {
         return Ok(());

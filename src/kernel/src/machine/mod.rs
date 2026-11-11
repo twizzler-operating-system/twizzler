@@ -27,8 +27,8 @@ impl KernelConsoleHardware for MachineConsoleHardware {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn queue(&self, data: &[u8], _flags: crate::log::KernelConsoleWriteFlags) {
-        serial::queue(data, self.debug);
+    fn queue(&self, data: &[u8], _flags: crate::log::KernelConsoleWriteFlags) -> bool {
+        serial::queue(data, self.debug)
     }
 
     #[cfg(target_arch = "x86_64")]

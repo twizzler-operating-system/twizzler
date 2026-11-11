@@ -465,20 +465,24 @@ pub fn write(data: &[u8], _flags: crate::log::KernelConsoleWriteFlags, debug: bo
     let _ = serial.write_str(unsafe { core::str::from_utf8_unchecked(data) });
 }
 
-/// Holds `data` for [`pump`], whole so that no other write lands inside it. Without room for all
-/// of it, sends it now.
-pub fn queue(data: &[u8], debug: bool) {
+/// Holds `data` for [`pump`], whole so that no other write lands inside it. Returns false when
+/// there is no room for it yet. Data the queue could never hold is sent now.
+pub fn queue(data: &[u8], debug: bool) -> bool {
     let mut serial = port(debug).lock();
-    if data.len() > TX_QUEUE_LEN - serial.tx_len {
+    if data.len() > TX_QUEUE_LEN {
         while serial.pump(true) {}
         let _ = serial.write_str(unsafe { core::str::from_utf8_unchecked(data) });
-        return;
+        return true;
+    }
+    if data.len() > TX_QUEUE_LEN - serial.tx_len {
+        return false;
     }
     for byte in data {
         let at = (serial.tx_head + serial.tx_len) % TX_QUEUE_LEN;
         serial.tx[at] = *byte;
         serial.tx_len += 1;
     }
+    true
 }
 
 /// Sends one burst of queued bytes, interrupts off only for that long. Returns whether any remain.
