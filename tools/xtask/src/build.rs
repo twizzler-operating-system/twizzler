@@ -6,7 +6,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::anyhow;
 use cargo::{
     core::{
         compiler::{BuildConfig, Compilation, CompileMode, MessageFormat},
@@ -31,6 +30,7 @@ struct OtherOptions {
 }
 
 use crate::{
+    third_party::Source,
     toolchain::BootstrapOptions,
     triple::{valid_targets, Arch, Machine, Triple},
     BuildOptions, CheckOptions, DocOptions, Profile,
@@ -135,44 +135,36 @@ fn build_third_party<'a>(
     let config = user_workspace.gctx();
     let registry = user_workspace.package_registry()?;
     let _g = config.acquire_package_cache_lock(CacheLockMode::MutateExclusive)?;
-    let meta = user_workspace
-        .custom_metadata()
-        .expect("no third-party specification in Cargo.toml")
-        .get("third-party")
-        .expect("no third-party specification in Cargo.toml");
+    let third_party = crate::third_party::third_party(user_workspace)?;
 
-    if meta.as_table().unwrap().is_empty() {
+    if third_party.packages.is_empty() {
         return Ok(vec![]);
     }
     crate::print_status_line("collection: third-party", Some(build_config));
     let mut overrides = Vec::new();
-    let ids: Vec<Option<PackageId>> = meta
-        .as_table()
-        .unwrap()
+    let ids: Vec<Option<PackageId>> = third_party
+        .packages
         .iter()
-        .map(|item| {
-            Ok(if let Some(table) = item.1.as_table() {
-                let path = table
-                    .get("path")
-                    .and_then(|path| path.as_str())
-                    .ok_or(anyhow!("required path key not found, or not a string"))?;
-                let mut cd = current_dir()?;
-                cd.push(path);
-                cd.push("Cargo.toml");
-                if !cd.is_file() {
-                    eprintln!(
-                        "note: skipping third-party package {} (local path {} not present)",
-                        item.0, path
-                    );
-                    return Ok(None);
+        .map(|(name, source)| {
+            anyhow::Ok(match source {
+                Source::Path(path) => {
+                    let cd = current_dir()?.join(path).join("Cargo.toml");
+                    if !cd.is_file() {
+                        eprintln!(
+                            "note: skipping third-party package {} (local path {} not present)",
+                            name,
+                            path.display()
+                        );
+                        return Ok(None);
+                    }
+                    overrides.push(user_workspace.load(&cd)?);
+                    None
                 }
-                let package = user_workspace.load(&cd)?;
-                overrides.push(package);
-                None
-            } else if let Some(s) = item.1.as_str() {
-                Some(PackageId::try_new(item.0, s, SourceId::crates_io(config).unwrap()).unwrap())
-            } else {
-                anyhow::bail!("invalid item");
+                Source::Version(version) => Some(PackageId::try_new(
+                    name,
+                    version,
+                    SourceId::crates_io(config)?,
+                )?),
             })
         })
         .try_collect()?;

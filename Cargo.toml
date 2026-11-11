@@ -144,11 +144,6 @@ test-programs = [
 #    { from = "src/bin/ctl/scripts/shuttest.sh", to = "/sysroot/pkg/twizzler/scripts/shuttest.sh" },
 #    { from = "src/bin/ctl/scripts/persisttest.sh", to = "/sysroot/pkg/twizzler/scripts/persisttest.sh" },
 #]
-disk-files = [
-    { from = "third-party/elephance/nvidia/firmware/615.78.08/gsp_ga10x.bin", to = "/sysroot/pkg/nvidia/firmware/615.78.08/gsp_ga10x.bin", optional = true },
-    { from = "third-party/elephance/nvidia/firmware/615.78.08/ucodes_ga10x.bin", to = "/sysroot/pkg/nvidia/firmware/615.78.08/ucodes_ga10x.bin", optional = true },
-    { from = "third-party/elephance/nvidia/plans/gpt2.tgplan", to = "/sysroot/pkg/nvidia/plans/gpt2.tgplan", optional = true },
-]
 initrd = [
     "crate:bootstrap",
     "crate:init",
@@ -198,13 +193,6 @@ initrd = [
     #"crate:st",
     #"crate:stdnet_test",
     "third-party:kibi",
-    "third-party:elephance",
-    "third-party:nvprobe",
-    "third-party:rmlink",
-    "third-party:nvtest",
-    "third-party:nvllm",
-    "third-party:nvllm-cpu",
-    "third-party:nvshow",
     #"crate:async-test",
 
     #"third-party:hello-world-rs"
@@ -220,13 +208,7 @@ initrd = [
 
 [workspace.metadata.third-party]
 kibi = { path = "src/ports/kibi", version = "0.3.3" }
-elephance = { path = "third-party/elephance/twz" }
-nvprobe = { path = "third-party/elephance/nvidia/nvprobe" }
-rmlink = { path = "third-party/elephance/nvidia/rmlink" }
-nvtest = { path = "third-party/elephance/nvidia/nvtest" }
-nvllm = { path = "third-party/elephance/nvidia/nvllm" }
-nvllm-cpu = { path = "third-party/elephance/nvidia/nvllm-cpu" }
-nvshow = { path = "third-party/elephance/nvidia/nvshow" }
+elephance = { path = "third-party/elephance" }
 
 [workspace.dependencies]
 addr2line = { version = "0.25", default-features = false }

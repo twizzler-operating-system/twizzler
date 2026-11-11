@@ -11,6 +11,7 @@ use cargo::core::compiler::{Compilation, CompileTarget};
 use crate::{
     build::TwizzlerCompilation,
     disk::copy_twizzler_build,
+    third_party::{third_party, Source},
     toolchain::{get_sysroots_path, get_toolchain_path},
     triple::Arch,
     BuildConfig, ImageOptions,
@@ -66,33 +67,20 @@ fn get_third_party_initrd_files(
     if !found.is_empty() {
         return Ok(found);
     }
-    if let Some(path) = third_party_absent_path(comp, crate_name) {
-        eprintln!(
-            "note: skipping initrd entry third-party:{} (looked for {}/Cargo.toml, not present)",
-            crate_name, path
-        );
-        return Ok(vec![]);
+    if let Some(Source::Path(path)) = third_party(comp.borrow_user_workspace())?
+        .packages
+        .get(crate_name)
+    {
+        if !path.join("Cargo.toml").is_file() {
+            eprintln!(
+                "note: skipping initrd entry third-party:{} (looked for {}/Cargo.toml, not present)",
+                crate_name,
+                path.display()
+            );
+            return Ok(vec![]);
+        }
     }
     anyhow::bail!("failed to find initrd third-party crate {}", crate_name)
-}
-
-/// When the third-party metadata entry for `crate_name` names a local path that is
-/// not present (i.e. the build legitimately skipped it), returns that path.
-fn third_party_absent_path(comp: &TwizzlerCompilation, crate_name: &str) -> Option<String> {
-    let path = comp
-        .borrow_user_workspace()
-        .custom_metadata()?
-        .get("third-party")?
-        .as_table()?
-        .get(crate_name)?
-        .as_table()?
-        .get("path")?
-        .as_str()?;
-    if std::path::Path::new(path).join("Cargo.toml").is_file() {
-        None
-    } else {
-        Some(path.to_string())
-    }
 }
 
 fn get_lib_initrd_files(
@@ -351,6 +339,9 @@ fn build_initrd(cli: &ImageOptions, comp: &TwizzlerCompilation) -> anyhow::Resul
                 }
                 x => panic!("invalid initrd spec {}", x),
             }
+        }
+        for name in &third_party(comp.borrow_user_workspace())?.initrd {
+            initrd_files.append(&mut get_third_party_initrd_files(comp, name)?)
         }
 
         // all the tests for init to run. Only the *list* goes in the initrd --

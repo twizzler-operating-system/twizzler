@@ -6,6 +6,7 @@ mod image;
 mod imagelock;
 mod qemu;
 mod test;
+mod third_party;
 mod toolchain;
 mod triple;
 

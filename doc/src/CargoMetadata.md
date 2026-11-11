@@ -48,3 +48,50 @@ doc-all` always cover them, so excluding them from normal builds cannot let them
 
 ## The kernel and xtask
 Both the kernel and xtask themselves set the `package.metadata.twizzler-build` key to "kernel" or "xtask". Programs should not use these values. 
+
+## Third-party packages
+
+Packages that are not workspace members are listed in the root `Cargo.toml` under
+`[workspace.metadata.third-party]`, either as a crates.io version or as a local path:
+
+```{toml}
+[workspace.metadata.third-party]
+hello-world-rs = "*"
+kibi = { path = "src/ports/kibi" }
+```
+
+Each one is compiled for arch-machine-twizzler as its own workspace, from its own manifest. A
+local path that is not present (an uninitialized submodule, say) is skipped with a note. To put a
+package's binaries in the initrd, add `"third-party:<name>"` to `[workspace.metadata] initrd`.
+
+### Bundles
+
+If the path holds a `twizzler-third-party.toml` instead of a `Cargo.toml`, the entry is a
+*bundle*: a directory that describes its own contents, so the root manifest only names the
+directory.
+
+```{toml}
+[workspace.metadata.third-party]
+mybundle = { path = "third-party/mybundle" }
+```
+
+All paths in `third-party/mybundle/twizzler-third-party.toml` are relative to the bundle
+directory:
+
+```{toml}
+# Packages (by name, from [packages] below) whose binaries go in the initrd.
+initrd = ["foo"]
+# Same as the root `[workspace.metadata] disk-files`.
+disk-files = [
+    { from = "data/blob.bin", to = "/sysroot/pkg/mybundle/blob.bin", optional = true },
+]
+
+# Same as the entries of the root `[workspace.metadata.third-party]`.
+[packages]
+foo = { path = "foo" }
+bar = { path = "tools/bar" }
+```
+
+`initrd` and `disk-files` must come before `[packages]`, or TOML makes them part of that table.
+Package names must be unique across the root table and all bundles. A bundle whose directory or
+manifest is absent is skipped with a note, like any other absent path.

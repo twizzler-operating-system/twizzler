@@ -254,7 +254,8 @@ fn uuhelper_utils(repo_root: &Path) -> anyhow::Result<Vec<String>> {
 }
 
 /// Files staged verbatim onto the data disk, from `[workspace.metadata] disk-files` in the root
-/// manifest: `{ from = <repo-relative path>, to = <path in the image> }`.
+/// manifest: `{ from = <repo-relative path>, to = <path in the image> }`, plus those declared by
+/// third-party bundles.
 ///
 /// The initrd cannot carry these -- its entries name built artifacts (`crate:`/`lib:`/
 /// `third-party:`), and it is read whole at boot whether or not anything opens them. The disk is
@@ -271,32 +272,42 @@ fn disk_files(
     build: &TwizzlerCompilation,
     repo_root: &Path,
 ) -> anyhow::Result<Vec<(PathBuf, String)>> {
-    let Some(meta) = build.borrow_user_workspace().custom_metadata() else {
-        return Ok(vec![]);
-    };
-    let Some(list) = meta.get("disk-files") else {
-        return Ok(vec![]);
-    };
-    let list = list
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("disk-files must be an array"))?;
+    let workspace = build.borrow_user_workspace();
+    let mut entries = Vec::new();
+    if let Some(list) = workspace
+        .custom_metadata()
+        .and_then(|m| m.get("disk-files"))
+    {
+        let list = list
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("disk-files must be an array"))?;
+        for item in list {
+            let from = item
+                .get("from")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("disk-files entry needs a string `from`"))?;
+            let to = item
+                .get("to")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("disk-files entry needs a string `to`"))?;
+            let optional = item
+                .get("optional")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            entries.push((Path::new(from), to, optional));
+        }
+    }
+    for f in &crate::third_party::third_party(workspace)?.disk_files {
+        entries.push((&f.from, &f.to, f.optional));
+    }
     let mut out = Vec::new();
-    for item in list {
-        let from = item
-            .get("from")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("disk-files entry needs a string `from`"))?;
-        let to = item
-            .get("to")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("disk-files entry needs a string `to`"))?;
+    for (from, to, optional) in entries {
         let src = repo_root.join(from);
-        let optional = item
-            .get("optional")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
         if optional && !src.exists() {
-            eprintln!("note: skipping optional disk file {} (not present)", from);
+            eprintln!(
+                "note: skipping optional disk file {} (not present)",
+                from.display()
+            );
             continue;
         }
         if !src.is_file() {
