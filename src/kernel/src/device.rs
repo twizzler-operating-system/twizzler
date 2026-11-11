@@ -8,8 +8,8 @@ use twizzler_abi::{
         MmioInfo, SubObjectType,
     },
     kso::{
-        KactionCmd, KactionGenericCmd, KactionValue, KsoHdr, pack_kaction_pin_token_and_len,
-        unpack_kaction_pin_start_and_len,
+        KactionCmd, KactionGenericCmd, KactionValue, KsoHdr, PinFlags,
+        pack_kaction_pin_token_and_len, unpack_kaction_pin_start_and_len,
     },
     object::{NULLPAGE_SIZE, ObjID},
     syscall::PinnedPage,
@@ -85,7 +85,8 @@ pub fn kaction(cmd: KactionCmd, id: Option<ObjID>, arg: u64, arg2: u64) -> Resul
                 obj.release_pin(pin);
                 Ok(KactionValue::U64(0))
             }
-            KactionGenericCmd::PinPages(_np) => {
+            KactionGenericCmd::PinPages(flags) => {
+                let flags = PinFlags::from_bits(flags).ok_or(ArgumentError::InvalidArgument)?;
                 let id = id.ok_or(ArgumentError::InvalidArgument)?;
                 let obj =
                     lookup_object(id, LookupFlags::empty()).ok_or(ObjectError::NoSuchObject)?;
@@ -101,6 +102,7 @@ pub fn kaction(cmd: KactionCmd, id: Option<ObjID>, arg: u64, arg2: u64) -> Resul
                         .try_into()
                         .map_err(|_| ArgumentError::InvalidArgument)?,
                     slice.len(),
+                    flags,
                 )?;
                 let len: u32 = core::cmp::min(pins.len(), len as usize).try_into().unwrap();
 

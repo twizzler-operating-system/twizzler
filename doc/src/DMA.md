@@ -89,6 +89,10 @@ the following flags:
 
  - UNSAFE_MANUAL_COHERENCE: The `with` functions will not perform any coherence operations. The
    driver must manually ensure that memory is coherent.
+ - CONTIGUOUS: Pinning the region backs it with a single physically contiguous run of pages (page
+   `i` of the pin is at the first page's address plus `i` pages), or fails. A region may be at most
+   2 MiB, and must be pinned before its memory is first touched; a `DmaPool` created with this
+   option pins each region as it allocates it.
 
 ### Pinning Memory
 

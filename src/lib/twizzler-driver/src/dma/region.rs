@@ -8,7 +8,7 @@ use twizzler::{
 use twizzler_abi::{
     kso::{
         pack_kaction_pin_start_and_len, unpack_kaction_pin_token_and_len, KactionCmd, KactionFlags,
-        KactionGenericCmd,
+        KactionGenericCmd, PinFlags,
     },
     object::NULLPAGE_SIZE,
     syscall::{sys_kaction, PinnedPage},
@@ -105,6 +105,14 @@ impl<'a, T: DeviceSync> DmaRegion<T> {
         }
     }
 
+    // A contiguous region has to be pinned before the fill faults its pages in.
+    pub(super) fn pin_if_contiguous(&mut self) -> Result<(), TwzError> {
+        if self.options.contains(DmaOptions::CONTIGUOUS) {
+            self.setup_backing()?;
+        }
+        Ok(())
+    }
+
     pub(super) fn fill(&mut self, init: T) {
         let p = self.virt as *mut T;
         unsafe {
@@ -138,8 +146,13 @@ impl<'a, T: DeviceSync> DmaRegion<T> {
         // in the return u64. This is all because of the limited registers in a syscall.
         let start = (self.offset / DMA_PAGE_SIZE) as u64;
         let ptr = pins.as_mut_ptr() as u64;
+        let flags = if self.options.contains(DmaOptions::CONTIGUOUS) {
+            PinFlags::CONTIGUOUS
+        } else {
+            PinFlags::empty()
+        };
         let res = sys_kaction(
-            KactionCmd::Generic(KactionGenericCmd::PinPages(0)),
+            KactionCmd::Generic(KactionGenericCmd::PinPages(flags.bits())),
             Some(self.dma_object().object().id()),
             ptr,
             pack_kaction_pin_start_and_len(start, len).ok_or(GenericError::Other)?,
@@ -282,6 +295,10 @@ impl<'a, T: DeviceSync> DmaSliceRegion<T> {
             region: DmaRegion::new_with_virt(nrbytes, access, options, offset, virt, dma),
             len,
         }
+    }
+
+    pub(super) fn pin_if_contiguous(&mut self) -> Result<(), TwzError> {
+        self.region.pin_if_contiguous()
     }
 
     pub(super) fn fill(&mut self, init: T)

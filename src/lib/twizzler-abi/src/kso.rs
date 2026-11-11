@@ -117,6 +117,15 @@ bitflags::bitflags! {
     }
 }
 
+bitflags::bitflags! {
+    /// Flags carried by [KactionGenericCmd::PinPages].
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct PinFlags: u16 {
+        /// Back the range with a single physically contiguous run of frames.
+        const CONTIGUOUS = 0x1;
+    }
+}
+
 /// A generic kaction command, applies to all KSOs.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[repr(C)]
@@ -127,7 +136,7 @@ pub enum KactionGenericCmd {
     GetChild(u16),
     /// Get a sub-object.
     GetSubObject(u8, u8),
-    /// Pin pages of object memory.
+    /// Pin pages of object memory. The payload is a [PinFlags].
     PinPages(u16),
     /// Release Pin
     ReleasePin,

@@ -4,16 +4,20 @@ use core::{
     sync::atomic::{AtomicU32, AtomicU64},
 };
 
-use twizzler_abi::{meta::MetaInfo, pager::PagerFlags, syscall::PinnedPage};
+use twizzler_abi::{
+    kso::PinFlags, meta::MetaInfo, object::MAX_SIZE, pager::PagerFlags, syscall::PinnedPage,
+};
 use twizzler_rt_abi::{
-    error::{ResourceError, TwzError},
+    error::{ArgumentError, ResourceError, TwzError},
     object::FotEntry,
 };
 
 use crate::{
     memory::{
-        frame::{FrameRef, PHYS_LEVEL_LAYOUTS, max_level_for_addr},
-        tracker::{FrameAllocFlags, FrameAllocator, allocprofile},
+        frame::{FrameRef, PHYS_LEVEL_LAYOUTS, get_frame, max_level_for_addr},
+        tracker::{
+            FrameAllocFlags, FrameAllocator, allocprofile, free_frame, try_alloc_split_frames,
+        },
     },
     obj::{Object, ObjectRef, PageNumber, PtGuard, pagetables::FindFrameFlags},
     thread::current_thread_ref,
@@ -402,7 +406,12 @@ impl Object {
         self: &ObjectRef,
         page: PageNumber,
         count: usize,
+        flags: PinFlags,
     ) -> Result<(Vec<PinnedPage>, u32), TwzError> {
+        let contiguous = flags.contains(PinFlags::CONTIGUOUS);
+        if contiguous {
+            self.populate_contiguous(page, count)?;
+        }
         let mut pages = Vec::new();
         for i in 0..count {
             let page_offset = page.offset(i).as_byte_offset() as u64;
@@ -418,7 +427,86 @@ impl Object {
                 },
             )?;
         }
+        // Checked on what was actually pinned: the range may have been populated before this call,
+        // and the loop above un-shares a COW page by copying it elsewhere.
+        if contiguous
+            && pages.iter().enumerate().any(|(i, p)| {
+                p.physical_address()
+                    != pages[0].physical_address() + (i * PageNumber::PAGE_SIZE) as u64
+            })
+        {
+            return Err(ResourceError::Unavailable.into());
+        }
         Ok((pages, 0))
+    }
+
+    /// If no page of `[page, page + count)` is present, back it with zeroed frames carved from the
+    /// head of one level-1 frame. A fully present range is left alone for [Object::pin] to judge;
+    /// a partly present one cannot be made contiguous without migrating, and is an error.
+    fn populate_contiguous(
+        self: &ObjectRef,
+        page: PageNumber,
+        count: usize,
+    ) -> Result<(), TwzError> {
+        const MAX: usize = PHYS_LEVEL_LAYOUTS[1].size() / PageNumber::PAGE_SIZE;
+        let end = page.num().checked_add(count);
+        // Persistent objects are excluded because reclaim evicts their clean pages, and what the
+        // pager brings back is not contiguous.
+        if count == 0
+            || count > MAX
+            || end.is_none_or(|end| end > MAX_SIZE / PageNumber::PAGE_SIZE)
+            || self.use_pager()
+        {
+            return Err(ArgumentError::InvalidArgument.into());
+        }
+        if count == 1 {
+            return Ok(());
+        }
+        let offset = page.as_byte_offset() as u64;
+        let present = |pt: &mut PtGuard| {
+            (0..count)
+                .filter(|i| !pt.is_empty_at_level(page.offset(*i).as_byte_offset() as u64, 0))
+                .count()
+        };
+        let already = present(&mut self.lock_page_tables());
+        if already == count {
+            return Ok(());
+        } else if already != 0 {
+            return Err(ResourceError::Unavailable.into());
+        }
+
+        // Without the page-table lock and without waiting: zeroing is slow, and on a fragmented
+        // machine a level-1 frame may never turn up.
+        let (head, _) = try_alloc_split_frames(FrameAllocFlags::empty(), PHYS_LEVEL_LAYOUTS[1])
+            .ok_or(ResourceError::OutOfMemory)?;
+        let start = head.start_address();
+        let frame_at =
+            |i: usize| get_frame(start.offset(i * PageNumber::PAGE_SIZE).unwrap()).unwrap();
+        for i in count..MAX {
+            free_frame(frame_at(i));
+        }
+        for i in 0..count {
+            let frame = frame_at(i);
+            frame.zero();
+            frame.set_not_zero();
+        }
+
+        let mut pt = self.lock_page_tables();
+        // `map_pages` skips present entries, so a page that arrived while the lock was down would
+        // leave its frame of the run unreferenced, and the run broken.
+        let r = if present(&mut pt) == 0 {
+            pt.map_pages(offset, start, count)
+        } else {
+            Err(ResourceError::Busy.into())
+        };
+        drop(pt);
+        if r.is_err() {
+            // The mapping holds the only reference to each frame it took.
+            for frame in (0..count).map(frame_at).filter(|f| f.refcount() == 0) {
+                free_frame(frame);
+            }
+        }
+        r
     }
 
     #[track_caller]

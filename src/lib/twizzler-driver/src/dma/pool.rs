@@ -156,6 +156,9 @@ pub mod tests_split_page_range {
 pub(super) struct AllocatableDmaObject {
     dma: DmaObject,
     freelist: Mutex<Vec<SplitPageRange>>,
+    // Freed ranges stay separate, so each free range lies within one earlier contiguous pin or is
+    // untouched, and a contiguous pin of anything carved from it succeeds.
+    no_merge: bool,
 }
 
 /// A pool for allocating DMA regions that all share a common access type and DMA options.
@@ -212,7 +215,9 @@ impl AllocatableDmaObject {
         let mut freelist = self.freelist.lock().unwrap();
         freelist.push(range);
 
-        compact_range_list(&mut freelist);
+        if !self.no_merge {
+            compact_range_list(&mut freelist);
+        }
         // TODO: consider that, if the entire object get free'd, we could delete the object.
     }
 
@@ -231,8 +236,9 @@ impl AllocatableDmaObject {
         })
     }
 
-    fn new(spec: ObjectBuilder<()>) -> Result<AllocatableDmaObject, TwzError> {
+    fn new(spec: ObjectBuilder<()>, no_merge: bool) -> Result<AllocatableDmaObject, TwzError> {
         Ok(AllocatableDmaObject {
+            no_merge,
             // TODO: automatic object deletion.
             dma: DmaObject::new::<EmptyBase>(
                 spec.cast()
@@ -265,7 +271,10 @@ impl DmaPool {
     }
 
     fn new_object(&self) -> Result<Arc<AllocatableDmaObject>, TwzError> {
-        let obj = Arc::new(AllocatableDmaObject::new(self.spec.clone())?);
+        let obj = Arc::new(AllocatableDmaObject::new(
+            self.spec.clone(),
+            self.opts.contains(DmaOptions::CONTIGUOUS),
+        )?);
         Ok(obj)
     }
 
@@ -300,6 +309,7 @@ impl DmaPool {
             range.offset(),
             Some((ado.clone(), range)),
         );
+        reg.pin_if_contiguous()?;
         reg.fill(init);
         Ok(reg)
     }
@@ -321,6 +331,7 @@ impl DmaPool {
             count,
             Some((ado.clone(), range)),
         );
+        reg.pin_if_contiguous()?;
         reg.fill(init);
         Ok(reg)
     }
@@ -342,6 +353,7 @@ impl DmaPool {
             count,
             Some((ado.clone(), range)),
         );
+        reg.pin_if_contiguous()?;
         reg.fill_with(init);
         Ok(reg)
     }

@@ -56,6 +56,9 @@ bitflags::bitflags! {
     pub struct DmaOptions : u64 {
         /// Region functions will not perform automatic coherence.
         const UNSAFE_MANUAL_COHERENCE = 1;
+        /// Pinning the region backs it with one physically contiguous run of pages, or fails. At
+        /// most 2 MiB; the region must be pinned before its memory is first touched.
+        const CONTIGUOUS = 2;
     }
 }
 
