@@ -190,6 +190,7 @@ initrd = [
     #"crate:stdnet_test",
     "third-party:kibi",
     "third-party:elephance",
+    "third-party:nvprobe",
     #"crate:async-test",
 
     #"third-party:hello-world-rs"
@@ -206,6 +207,7 @@ initrd = [
 [workspace.metadata.third-party]
 kibi = { path = "src/ports/kibi", version = "0.3.3" }
 elephance = { path = "third-party/elephance/twz" }
+nvprobe = { path = "third-party/elephance/nvidia/nvprobe" }
 
 [workspace.dependencies]
 addr2line = { version = "0.25", default-features = false }
