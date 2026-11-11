@@ -203,6 +203,7 @@ initrd = [
     "third-party:rmlink",
     "third-party:nvtest",
     "third-party:nvllm",
+    "third-party:nvllm-cpu",
     #"crate:async-test",
 
     #"third-party:hello-world-rs"
@@ -223,6 +224,7 @@ nvprobe = { path = "third-party/elephance/nvidia/nvprobe" }
 rmlink = { path = "third-party/elephance/nvidia/rmlink" }
 nvtest = { path = "third-party/elephance/nvidia/nvtest" }
 nvllm = { path = "third-party/elephance/nvidia/nvllm" }
+nvllm-cpu = { path = "third-party/elephance/nvidia/nvllm-cpu" }
 
 [workspace.dependencies]
 addr2line = { version = "0.25", default-features = false }
