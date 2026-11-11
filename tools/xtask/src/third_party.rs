@@ -26,6 +26,25 @@ pub struct DiskFile {
     pub optional: bool,
 }
 
+impl DiskFile {
+    /// One `disk-files` entry, its `from` relative to `base`.
+    pub fn parse(item: &Value, base: &Path) -> anyhow::Result<Self> {
+        let field = |key| {
+            item.get(key)
+                .and_then(|v| v.as_str())
+                .with_context(|| format!("disk-files entry needs a string `{}`", key))
+        };
+        Ok(DiskFile {
+            from: base.join(field("from")?),
+            to: field("to")?.to_string(),
+            optional: item
+                .get("optional")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        })
+    }
+}
+
 /// The root manifest's third-party table with bundles expanded.
 #[derive(Default)]
 pub struct ThirdParty {
@@ -107,19 +126,7 @@ fn load_bundle(tp: &mut ThirdParty, dir: &Path) -> anyhow::Result<()> {
     }
     if let Some(list) = manifest.get("disk-files") {
         for item in list.as_array().context("disk-files must be an array")? {
-            let field = |key| {
-                item.get(key)
-                    .and_then(|v| v.as_str())
-                    .with_context(|| format!("disk-files entry needs a string `{}`", key))
-            };
-            tp.disk_files.push(DiskFile {
-                from: dir.join(field("from")?),
-                to: field("to")?.to_string(),
-                optional: item
-                    .get("optional")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false),
-            });
+            tp.disk_files.push(DiskFile::parse(item, dir)?);
         }
     }
     Ok(())

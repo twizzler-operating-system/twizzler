@@ -9,7 +9,9 @@ use std::{
 use anyhow::Context as _;
 use ext4_lwext4::{mkfs, OpenFlags};
 
-use crate::{build::TwizzlerCompilation, triple::Triple, DiskCmd, DiskImageOptions};
+use crate::{
+    build::TwizzlerCompilation, third_party::DiskFile, triple::Triple, DiskCmd, DiskImageOptions,
+};
 
 const DISK_IMAGE_SIZE: u64 = 1024 * 1024 * 1024 * 100; // 100 GB
 
@@ -282,28 +284,14 @@ fn disk_files(
             .as_array()
             .ok_or_else(|| anyhow::anyhow!("disk-files must be an array"))?;
         for item in list {
-            let from = item
-                .get("from")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("disk-files entry needs a string `from`"))?;
-            let to = item
-                .get("to")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("disk-files entry needs a string `to`"))?;
-            let optional = item
-                .get("optional")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            entries.push((Path::new(from), to, optional));
+            entries.push(DiskFile::parse(item, Path::new(""))?);
         }
     }
-    for f in &crate::third_party::third_party(workspace)?.disk_files {
-        entries.push((&f.from, &f.to, f.optional));
-    }
+    let bundled = &crate::third_party::third_party(workspace)?.disk_files;
     let mut out = Vec::new();
-    for (from, to, optional) in entries {
+    for DiskFile { from, to, optional } in entries.iter().chain(bundled) {
         let src = repo_root.join(from);
-        if optional && !src.exists() {
+        if *optional && !src.exists() {
             eprintln!(
                 "note: skipping optional disk file {} (not present)",
                 from.display()
