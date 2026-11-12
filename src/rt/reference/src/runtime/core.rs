@@ -102,22 +102,9 @@ impl ReferenceRuntime {
             let id = crate::runtime::thread::with_current_thread(|ct| ct.id());
             if id == 1 {
                 OUR_RUNTIME.close_fds();
-            } else if code != 0 && !self.state().contains(RuntimeState::IS_MONITOR) {
-                // `twz_rt_exit` is overloaded: both thread trampolines (std's `thread_start`,
-                // mlibc's `sys_thread_exit`) end a finished thread through here with code 0, and
-                // `process::exit`/`exit(3)` arrive with any code. A nonzero code from a non-main
-                // thread is therefore always a process-exit request, and POSIX says it ends the
-                // whole process -- without this, only the calling thread died, the main thread
-                // stayed parked on whatever it was waiting for, and the compartment never
-                // finished exiting (spawn-test's watchdog `exit(2)` hung the whole suite).
-                //
-                // `exit(0)` from a non-main thread is indistinguishable from a thread completing
-                // and keeps thread-exit behavior for now. `twz_rt_thread_exit` exists and the
-                // in-tree std/mlibc trampolines use it, but a *shipping* std predating that
-                // change still retires every finished thread through here with code 0 -- treat
-                // all codes as process-exit only once the deployed toolchain is known to carry
-                // the trampoline switch (see unix.md / the bootstrap keep-stage-std pin).
-                //
+            } else if !self.state().contains(RuntimeState::IS_MONITOR) {
+                // A non-main thread reaching here is a process-exit request (`exit(3)`,
+                // `process::exit`); finished threads retire through `thread_exit`.
                 // The fds are closed here because nothing else will: the other threads are killed,
                 // and a pipe end left open keeps its reader from ever seeing EOF.
                 OUR_RUNTIME.close_fds();
