@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use itertools::Itertools;
-use twizzler_abi::device::CacheType;
+use twizzler_abi::{device::CacheType, kso::PinExtent};
 use twizzler_rt_abi::error::TwzError;
 
 use crate::{
@@ -1006,7 +1006,7 @@ impl ObjectPageTable {
     /// One descent, where asking per page was two of them each -- `is_empty_at_level` and then a
     /// `readmap` to tell a 4 KiB entry from the large page covering it. The reader yields only
     /// present entries, so what it does not report is what [`Self::map_pages`] will install.
-    fn tally_present(&mut self, offset: u64, npages: usize) -> InstallTally {
+    pub(super) fn tally_present(&mut self, offset: u64, npages: usize) -> InstallTally {
         let len = npages * PageNumber::PAGE_SIZE;
         let end = offset + len as u64;
         let mut tally = InstallTally::default();
@@ -1025,6 +1025,43 @@ impl ObjectPageTable {
         tally.dup_large = tally.dup_large.min(tally.dup);
         tally.installed = npages - tally.dup;
         tally
+    }
+
+    /// The physical runs backing `[offset, offset + len)` in object order, merged across physically
+    /// adjacent entries, at most `cap` of them, with the bytes they cover from `offset`. `None` if
+    /// the range has a hole inside what those runs would cover.
+    pub fn pin_extents(
+        &mut self,
+        offset: u64,
+        len: usize,
+        cap: usize,
+    ) -> Option<(Vec<PinExtent>, usize)> {
+        let end = offset + len as u64;
+        let mut extents: Vec<PinExtent> = Vec::new();
+        let mut at = offset;
+        for mi in self.readmap(offset, len) {
+            if mi.is_empty() {
+                continue;
+            }
+            let lo = mi.vaddr().raw().max(offset);
+            let hi = (mi.vaddr().raw() + mi.len() as u64).min(end);
+            if lo >= hi {
+                continue;
+            }
+            let phys = mi.paddr().raw() + (lo - mi.vaddr().raw());
+            let full = extents.len() == cap;
+            match extents.last_mut() {
+                Some(last) if lo == at && last.phys + last.len == phys => last.len += hi - lo,
+                _ if full => break,
+                _ if lo != at => return None,
+                _ => extents.push(PinExtent { phys, len: hi - lo }),
+            }
+            at = hi;
+        }
+        if at < end && extents.len() < cap {
+            return None;
+        }
+        Some((extents, (at - offset) as usize))
     }
 
     pub fn readmap(&'_ mut self, offset: u64, len: usize) -> MapReader<'_> {

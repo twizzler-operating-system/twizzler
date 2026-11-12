@@ -110,7 +110,176 @@ impl<'a> Index<usize> for DmaPin<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::dma::{Access, DmaOptions, DmaPool};
+    use twizzler::object::{ObjID, ObjectBuilder, RawObject};
+    use twizzler_abi::{
+        kso::{
+            pack_kaction_pin_start_and_len, KactionCmd, KactionFlags, KactionGenericCmd, PinExtent,
+            PinFlags, PinRequest,
+        },
+        object::NULLPAGE_SIZE,
+        syscall::{sys_kaction, PinnedPage},
+    };
+
+    use crate::dma::{Access, DmaObject, DmaOptions, DmaPool, DMA_PAGE_SIZE};
+
+    const LARGE: usize = 2 * 1024 * 1024;
+    const PAGE: usize = DMA_PAGE_SIZE;
+
+    fn fresh(persist: bool) -> DmaObject {
+        DmaObject::new(
+            ObjectBuilder::<()>::default()
+                .persist(persist)
+                .build(())
+                .unwrap(),
+        )
+    }
+
+    fn raw_pin_range(id: ObjID, offset: usize, len: usize, out: &mut [PinExtent]) -> PinRequest {
+        let mut req = PinRequest::new(offset as u64, len as u64, out);
+        sys_kaction(
+            KactionCmd::Generic(KactionGenericCmd::PinRange(0)),
+            Some(id),
+            &mut req as *mut PinRequest as u64,
+            0,
+            KactionFlags::empty(),
+        )
+        .unwrap();
+        req
+    }
+
+    fn raw_pin_pages(id: ObjID, offset: usize, len: usize) -> Vec<u64> {
+        let mut pins = vec![PinnedPage::new(0); len / PAGE];
+        sys_kaction(
+            KactionCmd::Generic(KactionGenericCmd::PinPages(0)),
+            Some(id),
+            pins.as_mut_ptr() as u64,
+            pack_kaction_pin_start_and_len((offset / PAGE) as u64, len / PAGE).unwrap(),
+            KactionFlags::empty(),
+        )
+        .unwrap();
+        pins.iter().map(|p| p.physical_address()).collect()
+    }
+
+    fn pages(extents: &[PinExtent]) -> Vec<u64> {
+        extents
+            .iter()
+            .flat_map(|e| (0..e.len).step_by(PAGE).map(move |o| e.phys + o))
+            .collect()
+    }
+
+    /// The physical address of byte `offset` of a range pinned from `start`.
+    fn phys_at(extents: &[PinExtent], start: usize, offset: usize) -> u64 {
+        pages(extents)[(offset - start) / PAGE]
+    }
+
+    fn check_merged(extents: &[PinExtent]) {
+        for pair in extents.windows(2) {
+            assert_ne!(pair[0].phys + pair[0].len, pair[1].phys);
+        }
+        assert!(extents
+            .iter()
+            .all(|e| e.len > 0 && e.len % PAGE as u64 == 0 && e.phys % PAGE as u64 == 0));
+    }
+
+    fn fill(obj: &DmaObject, offset: usize, len: usize, seed: u64) {
+        let base = unsafe { obj.object().base_mut_ptr::<u8>().sub(NULLPAGE_SIZE) };
+        for o in (offset..offset + len).step_by(PAGE) {
+            unsafe { (base.add(o) as *mut u64).write_volatile(o as u64 ^ seed) };
+        }
+    }
+
+    fn check(obj: &DmaObject, offset: usize, len: usize, seed: u64) {
+        let base = unsafe { obj.object().base_mut_ptr::<u8>().sub(NULLPAGE_SIZE) };
+        for o in (offset..offset + len).step_by(PAGE) {
+            assert_eq!(
+                unsafe { (base.add(o) as *const u64).read_volatile() },
+                o as u64 ^ seed
+            );
+        }
+    }
+
+    /// [4 KiB, 8 MiB) of a fresh object: every 2 MiB boundary lands on a 2 MiB-aligned physical
+    /// address, the extents are maximal, and the old per-page call agrees.
+    #[test]
+    fn pin_range_fresh_shape() {
+        let obj = fresh(false);
+        let range = PAGE..4 * LARGE;
+        let pin = obj.pin_range(range.clone(), PinFlags::empty()).unwrap();
+        let ext = pin.extents();
+        assert_eq!(ext.iter().map(|e| e.len).sum::<u64>(), range.len() as u64);
+        check_merged(ext);
+        for region in 1..4 {
+            assert_eq!(phys_at(ext, PAGE, region * LARGE) % LARGE as u64, 0);
+            // A large frame is one physical run over the whole region.
+            assert_eq!(
+                phys_at(ext, PAGE, region * LARGE + LARGE - PAGE),
+                phys_at(ext, PAGE, region * LARGE) + (LARGE - PAGE) as u64
+            );
+        }
+        assert_eq!(
+            raw_pin_pages(obj.object().id(), range.start, range.len()),
+            pages(ext)
+        );
+        fill(&obj, range.start, range.len(), 0x77);
+        check(&obj, range.start, range.len(), 0x77);
+        let again = obj.pin_range(range.clone(), PinFlags::empty()).unwrap();
+        assert_eq!(again.extents(), ext);
+    }
+
+    /// A one-extent buffer pins a prefix; continuing from `covered` reaches the same extents.
+    #[test]
+    fn pin_range_small_buffer_continues() {
+        let obj = fresh(false);
+        let range = PAGE..LARGE + 64 * PAGE;
+        // Populated piecewise first, so the range is many small runs.
+        fill(&obj, range.start, range.len(), 1);
+        let all = obj.pin_range(range.clone(), PinFlags::empty()).unwrap();
+        let mut joined = Vec::new();
+        let mut at = range.start;
+        while at < range.end {
+            let mut out = [PinExtent::default(); 1];
+            let req = raw_pin_range(obj.object().id(), at, range.end - at, &mut out);
+            assert_eq!(req.nr, 1);
+            assert!(req.covered > 0 && req.covered as usize <= range.end - at);
+            assert_eq!(out[0].len, req.covered);
+            joined.push(out[0]);
+            at += req.covered as usize;
+        }
+        assert_eq!(joined, all.extents());
+        check(&obj, range.start, range.len(), 1);
+    }
+
+    /// CONTIGUOUS through the extent call: one run, and a whole aligned region is one large frame.
+    #[test]
+    fn pin_range_contiguous() {
+        let obj = fresh(false);
+        let pin = obj.pin_range(PAGE..7 * PAGE, PinFlags::CONTIGUOUS).unwrap();
+        assert_eq!(pin.extents().len(), 1);
+        let pin = obj
+            .pin_range(LARGE..2 * LARGE, PinFlags::CONTIGUOUS)
+            .unwrap();
+        assert_eq!(pin.extents().len(), 1);
+        assert_eq!(pin.extents()[0].phys % LARGE as u64, 0);
+        fill(&obj, LARGE, LARGE, 3);
+        check(&obj, LARGE, LARGE, 3);
+    }
+
+    /// Pinning a pager-backed range brings its pages in.
+    #[test]
+    fn pin_range_pager_backed() {
+        let obj = fresh(true);
+        let range = PAGE..PAGE + 32 * PAGE;
+        fill(&obj, range.start, 4 * PAGE, 9);
+        let pin = obj.pin_range(range.clone(), PinFlags::empty()).unwrap();
+        assert_eq!(
+            pin.extents().iter().map(|e| e.len).sum::<u64>(),
+            range.len() as u64
+        );
+        check_merged(pin.extents());
+        check(&obj, range.start, 4 * PAGE, 9);
+        fill(&obj, range.start, range.len(), 10);
+        check(&obj, range.start, range.len(), 10);
+    }
 
     #[test]
     fn pin_kaction() {

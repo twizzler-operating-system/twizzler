@@ -8,7 +8,7 @@ use twizzler_abi::{
         MmioInfo, SubObjectType,
     },
     kso::{
-        KactionCmd, KactionGenericCmd, KactionValue, KsoHdr, PinFlags,
+        KactionCmd, KactionGenericCmd, KactionValue, KsoHdr, PinExtent, PinFlags, PinRequest,
         pack_kaction_pin_token_and_len, unpack_kaction_pin_start_and_len,
     },
     object::{MAX_SIZE, NULLPAGE_SIZE, ObjID},
@@ -126,6 +126,23 @@ pub fn kaction(cmd: KactionCmd, id: Option<ObjID>, arg: u64, arg2: u64) -> Resul
 
                 let retval = pack_kaction_pin_token_and_len(token, len as usize).unwrap();
                 Ok(KactionValue::U64(retval))
+            }
+            KactionGenericCmd::PinRange(flags) => {
+                let flags = PinFlags::from_bits(flags).ok_or(ArgumentError::InvalidArgument)?;
+                let id = id.ok_or(ArgumentError::InvalidArgument)?;
+                let obj =
+                    lookup_object(id, LookupFlags::empty()).ok_or(ObjectError::NoSuchObject)?;
+                let req = &mut unsafe { create_user_slice::<PinRequest>(arg, 1) }
+                    .ok_or(ArgumentError::InvalidArgument)?[0];
+                let out = unsafe { create_user_slice::<PinExtent>(req.out, req.cap as u64) }
+                    .ok_or(ArgumentError::InvalidArgument)?;
+                let (extents, covered, token) =
+                    obj.pin_range(req.offset as usize, req.len as usize, out.len(), flags)?;
+                out[..extents.len()].copy_from_slice(&extents);
+                req.nr = extents.len() as u32;
+                req.covered = covered as u64;
+                req.token = token;
+                Ok(KactionValue::U64(0))
             }
             KactionGenericCmd::GetKsoRoot => {
                 let ksom = get_kso_manager();

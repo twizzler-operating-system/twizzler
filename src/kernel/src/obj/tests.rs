@@ -1,4 +1,9 @@
-use twizzler_abi::{device::CacheType, kso::PinFlags, object::Protections, syscall::MapFlags};
+use twizzler_abi::{
+    device::CacheType,
+    kso::{PinExtent, PinFlags},
+    object::Protections,
+    syscall::MapFlags,
+};
 
 use crate::{
     memory::{
@@ -713,4 +718,235 @@ fn set_cache_type_of_phys_mapping() {
         cache_types(&obj, region, len).len(),
         len / PageNumber::PAGE_SIZE
     );
+}
+
+const LARGE: usize = PHYS_LEVEL_LAYOUTS[1].size();
+const PAGE: usize = PageNumber::PAGE_SIZE;
+
+/// `(offset, phys, len)` of every entry over the range.
+fn entries(obj: &ObjectRef, offset: usize, len: usize) -> alloc::vec::Vec<(u64, u64, usize)> {
+    obj.lock_page_tables()
+        .readmap(offset as u64, len)
+        .map(|mi| (mi.vaddr().raw(), mi.paddr().raw(), mi.len()))
+        .collect()
+}
+
+fn page_addrs(extents: &[PinExtent]) -> alloc::vec::Vec<u64> {
+    extents
+        .iter()
+        .flat_map(|e| (0..e.len).step_by(PAGE).map(move |o| e.phys + o))
+        .collect()
+}
+
+/// Extents must be the entries, page for page, merged exactly where physically adjacent.
+fn check_extents(obj: &ObjectRef, offset: usize, len: usize, extents: &[PinExtent]) {
+    let range = offset as u64..(offset + len) as u64;
+    let from_entries: alloc::vec::Vec<u64> = entries(obj, offset, len)
+        .into_iter()
+        .flat_map(|(va, pa, l)| (0..l as u64).step_by(PAGE).map(move |o| (va + o, pa + o)))
+        .filter(|(va, _)| range.contains(va))
+        .map(|(_, pa)| pa)
+        .collect();
+    assert_eq!(page_addrs(extents), from_entries);
+    for pair in extents.windows(2) {
+        assert_ne!(
+            pair[0].phys + pair[0].len,
+            pair[1].phys,
+            "extents not merged"
+        );
+    }
+    assert!(
+        extents
+            .iter()
+            .all(|e| e.len > 0 && e.len.is_multiple_of(PAGE as u64))
+    );
+}
+
+/// The [4 KiB, 8 MiB) example: 511 small pages up to the first large boundary, then one large entry
+/// per region, 2 MiB-aligned in physical memory.
+#[twizzler_kernel_macros::kernel_test]
+fn pin_range_fresh_volatile_takes_large_frames() {
+    let obj = create_blank_object();
+    let len = 4 * LARGE - PAGE;
+    let (extents, covered, _) = obj
+        .pin_range(PAGE, len, usize::MAX, PinFlags::empty())
+        .unwrap();
+    assert_eq!(covered, len);
+    check_extents(&obj, PAGE, len, &extents);
+
+    let ents = entries(&obj, PAGE, len);
+    let small = ents.iter().filter(|e| e.0 < LARGE as u64).count();
+    assert_eq!(small, 511);
+    let large: alloc::vec::Vec<_> = ents.iter().filter(|e| e.2 == LARGE).collect();
+    for e in &large {
+        assert!(e.0.is_multiple_of(LARGE as u64) && e.1.is_multiple_of(LARGE as u64));
+    }
+    // A region without a free large frame is 512 small pages instead.
+    assert_eq!(ents.len(), 511 + large.len() + (3 - large.len()) * 512);
+    log::info!(
+        "pin_range: {} of 3 regions large, {} extents",
+        large.len(),
+        extents.len()
+    );
+
+    let (pages, _) = obj
+        .pin(PageNumber::from_offset(PAGE), len / PAGE, PinFlags::empty())
+        .unwrap();
+    let pages: alloc::vec::Vec<u64> = pages.iter().map(|p| p.physical_address()).collect();
+    assert_eq!(pages, page_addrs(&extents));
+}
+
+/// A one-extent buffer pins a prefix, and continuing from `covered` yields the same extents.
+#[twizzler_kernel_macros::kernel_test]
+fn pin_range_continues_past_a_small_buffer() {
+    let obj = create_blank_object();
+    let len = 3 * LARGE;
+    // Partly populated, so every region is small pages in allocation order.
+    for i in (0..len / PAGE).step_by(3) {
+        obj.write_at(&1u8, PAGE + i * PAGE).unwrap();
+    }
+    let (all, covered, _) = obj
+        .pin_range(PAGE, len, usize::MAX, PinFlags::empty())
+        .unwrap();
+    assert_eq!(covered, len);
+    check_extents(&obj, PAGE, len, &all);
+    let mut joined = alloc::vec::Vec::new();
+    let mut at = PAGE;
+    while at < PAGE + len {
+        let (ext, covered, _) = obj
+            .pin_range(at, PAGE + len - at, 1, PinFlags::empty())
+            .unwrap();
+        assert_eq!(ext.len(), 1);
+        assert_eq!(ext[0].len as usize, covered);
+        joined.push(ext[0]);
+        at += covered;
+    }
+    assert_eq!(joined, all);
+}
+
+/// A pin over a large page is one extent, the frame itself, or a slice of it.
+#[twizzler_kernel_macros::kernel_test]
+fn pin_range_over_a_large_page_is_one_extent() {
+    let Some(obj) = object_with_large_page(LARGE) else {
+        return;
+    };
+    let base = obj
+        .lock_page_tables()
+        .get_frame(LARGE as u64)
+        .unwrap()
+        .start_address()
+        .raw();
+    let (extents, _, _) = obj
+        .pin_range(LARGE, LARGE, usize::MAX, PinFlags::empty())
+        .unwrap();
+    assert_eq!(
+        extents,
+        [PinExtent {
+            phys: base,
+            len: LARGE as u64
+        }]
+    );
+    let (extents, _, _) = obj
+        .pin_range(LARGE + 4 * PAGE, 8 * PAGE, 1, PinFlags::empty())
+        .unwrap();
+    assert_eq!(
+        extents,
+        [PinExtent {
+            phys: base + 4 * PAGE as u64,
+            len: 8 * PAGE as u64
+        }]
+    );
+}
+
+/// A large entry in the object's tables is a large CPU mapping, and what is written through the
+/// mapping is what the pinned physical memory holds, both ways.
+#[twizzler_kernel_macros::kernel_test]
+fn pinned_large_frame_is_a_large_cpu_mapping() {
+    use crate::{
+        memory::{PhysAddr, pagetables::MappingCursor},
+        security::KERNEL_SCTX,
+    };
+
+    let obj = create_blank_object();
+    let (extents, _, _) = obj
+        .pin_range(LARGE, LARGE, usize::MAX, PinFlags::empty())
+        .unwrap();
+    if extents[0].len != LARGE as u64 {
+        return;
+    }
+    let ko = kernel_context().insert_kernel_object::<u8>(ObjectContextInfo::new(
+        obj.clone(),
+        Protections::READ | Protections::WRITE,
+        CacheType::WriteBack,
+        MapFlags::empty(),
+    ));
+    let virt = ko.start_addr().offset(LARGE).unwrap();
+    let phys = PhysAddr::new(extents[0].phys).unwrap().kernel_vaddr();
+    for i in (0..LARGE - PAGE).step_by(PAGE * 37) {
+        unsafe {
+            virt.as_mut_ptr::<u64>()
+                .byte_add(i)
+                .write_volatile(i as u64 ^ 0x5a5a);
+            assert_eq!(
+                phys.as_ptr::<u64>().byte_add(i).read_volatile(),
+                i as u64 ^ 0x5a5a
+            );
+            phys.as_mut_ptr::<u64>()
+                .byte_add(i + 8)
+                .write_volatile(!(i as u64));
+            assert_eq!(
+                virt.as_ptr::<u64>().byte_add(i + 8).read_volatile(),
+                !(i as u64)
+            );
+        }
+    }
+    let size = kernel_context().with_arch(KERNEL_SCTX, |arch| {
+        arch.readmap(MappingCursor::new(virt, PAGE), |mut r| {
+            r.next().map(|mi| mi.len())
+        })
+    });
+    assert_eq!(size, Some(LARGE));
+}
+
+/// A physical-range object pins as its own range, with no frames behind it.
+#[twizzler_kernel_macros::kernel_test]
+fn pin_range_over_a_phys_mapping() {
+    use crate::memory::PhysAddr;
+
+    // Never accessed, and far above any frame.
+    let phys = PhysAddr::new(1 << 38).unwrap();
+    let obj = create_blank_object();
+    obj.map_phys(
+        LARGE,
+        phys,
+        phys.offset(2 * LARGE).unwrap(),
+        CacheType::MemoryMappedIO,
+    )
+    .unwrap();
+    let (extents, covered, _) = obj
+        .pin_range(LARGE, 2 * LARGE, usize::MAX, PinFlags::empty())
+        .unwrap();
+    assert_eq!(covered, 2 * LARGE);
+    assert_eq!(
+        extents,
+        [PinExtent {
+            phys: phys.raw(),
+            len: 2 * LARGE as u64
+        }]
+    );
+
+    let obj = create_blank_object();
+    let offset = twizzler_abi::device::MMIO_OFFSET;
+    obj.map_phys_small(
+        offset,
+        phys,
+        phys.offset(4 * PAGE).unwrap(),
+        CacheType::MemoryMappedIO,
+    )
+    .unwrap();
+    let (pages, _) = obj
+        .pin(PageNumber::from_offset(offset), 4, PinFlags::CONTIGUOUS)
+        .unwrap();
+    let pages: alloc::vec::Vec<u64> = pages.iter().map(|p| p.physical_address()).collect();
+    assert_eq!(pages, [0, 1, 2, 3].map(|i| phys.raw() + i * PAGE as u64));
 }
