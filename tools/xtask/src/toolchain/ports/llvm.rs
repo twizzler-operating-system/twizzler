@@ -86,6 +86,7 @@ pub(crate) fn setup_cmake_twizzler(
     cflags.push(format!("--target={}", target.to_string()));
     cflags.push(format!("--sysroot={}", sysroot.display()));
     cflags.push(" -D__Twizzler__".to_string());
+    cflags.push(target.arch.march_flag().to_string());
     cflags.append(&mut passed_c_flags);
     cfg.define("CMAKE_C_FLAGS", cflags.join(" "));
     cfg.define("CMAKE_CXX_FLAGS", cflags.join(" "));

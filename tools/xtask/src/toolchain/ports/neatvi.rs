@@ -43,10 +43,11 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
     let bin_dir = Path::new("toolchain/install/bin").canonicalize()?;
 
     let cc = format!(
-        "{} -target {} --sysroot {}",
+        "{} -target {} --sysroot {} {}",
         bin_dir.join("clang").display(),
         triple,
-        sysroot_dir.display()
+        sysroot_dir.display(),
+        triple.arch.march_flag()
     );
 
     let mut cmd = Command::new("make");

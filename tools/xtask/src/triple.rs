@@ -120,6 +120,17 @@ impl From<Triple> for String {
     }
 }
 
+impl Arch {
+    /// The clang flag for the cpu level userspace is built for. The Rust target specs set the same
+    /// level as their default `cpu`; clang has no per-target default, so C and C++ need it named.
+    pub fn march_flag(self) -> &'static str {
+        match self {
+            Arch::X86_64 => "-march=x86-64-v3",
+            Arch::Aarch64 => "",
+        }
+    }
+}
+
 impl Triple {
     pub fn new(arch: Arch, machine: Machine, host: Host, env: Option<&str>) -> Self {
         Self {

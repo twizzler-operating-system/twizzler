@@ -111,7 +111,9 @@ shared = false
 
 The command runs after the userspace collection with `TWIZZLER_ROOT` (the repository),
 `TWIZZLER_TOOLCHAIN`, `TWIZZLER_SYSROOT`, `TWIZZLER_TRIPLE`, `TWIZZLER_PROFILE` and
-`TWIZZLER_OUT_DIR` set, all paths absolute. It writes only under `TWIZZLER_OUT_DIR`
+`TWIZZLER_OUT_DIR` set, all paths absolute, and `TWIZZLER_MARCH`, the clang flag for the cpu level
+userspace is built for (`-march=x86-64-v3` on x86_64, empty on aarch64), which the command should
+pass to its C and C++ compiles. It writes only under `TWIZZLER_OUT_DIR`
 (`target/external/<triple>/<profile>/<name>`, with `shared` in place of the profile for a shared
 build); a disk file with a `build` key takes its `from` relative to that directory. A failing
 command fails the build.

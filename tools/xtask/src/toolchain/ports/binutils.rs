@@ -121,9 +121,10 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
     cmd.env("DESTDIR", &install_dir);
 
     let cflags = format!(
-        "-target {} --sysroot {} -fPIC -DHAVE_DECL_BASENAME=1 -O2",
+        "-target {} --sysroot {} -fPIC -DHAVE_DECL_BASENAME=1 -O2 {}",
         triple,
-        sysroot_dir.display()
+        sysroot_dir.display(),
+        triple.arch.march_flag()
     );
 
     let set_env = |cmd: &mut Command| {

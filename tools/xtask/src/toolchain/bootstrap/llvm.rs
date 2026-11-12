@@ -98,6 +98,7 @@ pub fn setup_cmake_twizzler(
     cflags.push(format!("--target={}", target.to_string()));
     cflags.push(format!("--sysroot={}", sysroot.display()));
     cflags.push(" -D__Twizzler__".to_string());
+    cflags.push(target.arch.march_flag().to_string());
     cflags.append(&mut passed_c_flags);
     cfg.define("CMAKE_C_FLAGS", cflags.join(" "));
     cfg.define("CMAKE_CXX_FLAGS", cflags.join(" "));
@@ -314,6 +315,9 @@ pub fn build_libunwind(_cli: &BootstrapOptions, triple: &Triple) -> anyhow::Resu
         // get_compiler() need set opt_level first.
         cfg.opt_level(3);
         cfg.flag("-fstrict-aliasing");
+        if !triple.arch.march_flag().is_empty() {
+            cfg.flag(triple.arch.march_flag());
+        }
         cfg.flag("-funwind-tables");
         cfg.flag("-fvisibility=hidden");
         cfg.define("_LIBUNWIND_DISABLE_VISIBILITY_ANNOTATIONS", None);

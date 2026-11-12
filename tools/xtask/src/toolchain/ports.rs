@@ -94,15 +94,17 @@ pub struct PortOptions {
     pub ports: Vec<String>,
 }
 
-static PROFILE: std::sync::OnceLock<crate::Profile> = std::sync::OnceLock::new();
+static BUILD: std::sync::OnceLock<(crate::Profile, Arch)> = std::sync::OnceLock::new();
 
-/// Optimization flags for the profile `ports` was invoked with, for recipes that set CFLAGS
-/// themselves (which also stops autoconf from adding its own `-g -O2`).
-pub fn opt_flags() -> &'static str {
-    match PROFILE.get() {
-        Some(crate::Profile::Release) | None => "-O2",
+/// Optimization and cpu-level flags for the profile and arch `ports` was invoked with, for recipes
+/// that set CFLAGS themselves (which also stops autoconf from adding its own `-g -O2`).
+pub fn opt_flags() -> String {
+    let opt = match BUILD.get() {
+        Some((crate::Profile::Release, _)) | None => "-O2",
         Some(_) => "-O0 -g",
-    }
+    };
+    let march = BUILD.get().map_or("", |(_, arch)| arch.march_flag());
+    format!("{} {}", opt, march)
 }
 
 /// Known ports: name, the ports it must be built after, and whether `@all` includes it.
@@ -154,7 +156,7 @@ pub fn list_ports() -> anyhow::Result<()> {
 }
 
 pub fn build_and_install_ports(cli: &PortOptions) -> anyhow::Result<()> {
-    let _ = PROFILE.set(cli.profile);
+    let _ = BUILD.set((cli.profile, cli.arch));
     let triple = Triple::new(cli.arch, Machine::Unknown, Host::Twizzler, None);
     if cli.ports.is_empty() {
         return list_ports();

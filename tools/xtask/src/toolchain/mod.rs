@@ -483,10 +483,11 @@ pub fn set_cc(target: &Triple) -> anyhow::Result<()> {
     // We don't yet support stack protector. Also, don't pull in standard lib includes, as those may
     // go to the system includes.
     let cflags = format!(
-        "-fno-stack-protector -isysroot {} -target {} --sysroot {}",
+        "-fno-stack-protector -isysroot {} -target {} --sysroot {} {}",
         sysroot_path.display(),
         target,
         sysroot_path.display(),
+        target.arch.march_flag(),
     );
     std::env::set_var("CFLAGS", &cflags);
     std::env::set_var("LDFLAGS", &cflags);

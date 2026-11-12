@@ -87,7 +87,7 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
     }},
     "twizzler-x86_64" => {{
         inherit_from     => [ "twizzler-common" ],
-        cflags           => add("-target x86_64-unknown-twizzler --sysroot {}"),
+        cflags           => add("-target x86_64-unknown-twizzler --sysroot {} {}"),
         cppflags         => add("-target x86_64-unknown-twizzler --sysroot {}"),
         lib_cppflags         => add("-target x86_64-unknown-twizzler --sysroot {}"),
         lib_ldflags         => add("-target x86_64-unknown-twizzler --sysroot {}"),
@@ -108,6 +108,7 @@ pub fn install(triple: &Triple) -> anyhow::Result<()> {
         cpp.display(),
         ar.display(),
         x86_64_sysroot.display(),
+        crate::triple::Arch::X86_64.march_flag(),
         x86_64_sysroot.display(),
         x86_64_sysroot.display(),
         x86_64_sysroot.display(),

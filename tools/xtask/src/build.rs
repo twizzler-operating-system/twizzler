@@ -215,8 +215,9 @@ fn build_third_party<'a>(
 /// Runs each bundle's `[[build]]` command, in the bundle directory.
 ///
 /// The command gets `TWIZZLER_ROOT`, `TWIZZLER_TOOLCHAIN`, `TWIZZLER_SYSROOT`, `TWIZZLER_TRIPLE`,
-/// `TWIZZLER_PROFILE` and `TWIZZLER_OUT_DIR` (paths absolute), and leaves what `disk-files` names
-/// under the last one. It runs on every build, so it has to be incremental itself. This goes
+/// `TWIZZLER_PROFILE` and `TWIZZLER_OUT_DIR` (paths absolute), plus `TWIZZLER_MARCH`, the clang
+/// cpu-level flag for the target (empty where there is none), and leaves what `disk-files` names
+/// under the out dir. It runs on every build, so it has to be incremental itself. This goes
 /// after the userspace collection, which is what puts the current runtime in the sysroot.
 fn run_external_builds(
     workspace: &Workspace,
@@ -246,6 +247,7 @@ fn run_external_builds(
             .env("TWIZZLER_TRIPLE", &triple)
             .env("TWIZZLER_PROFILE", build_config.profile.to_string())
             .env("TWIZZLER_OUT_DIR", &out_dir)
+            .env("TWIZZLER_MARCH", build_config.arch.march_flag())
             .status()
             .map_err(|e| anyhow::anyhow!("external build {}: {}: {}", ext.name, ext.command[0], e))?;
         if !status.success() {
