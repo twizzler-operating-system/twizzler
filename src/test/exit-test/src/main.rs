@@ -2,7 +2,12 @@
 //! by exit code via test-programs); the C and C++ programs are this crate's other binaries, and the
 //! Rust cases self-spawn with --child <mode>.
 
-use std::process::{Command, ExitCode, Stdio};
+use std::{
+    process::{Command, ExitCode, Stdio},
+    time::{Duration, Instant},
+};
+
+const TIMEOUT: Duration = Duration::from_secs(30);
 
 extern "C" {
     fn atexit(f: extern "C" fn()) -> i32;
@@ -35,6 +40,16 @@ fn child_main(mode: &str) -> ExitCode {
     mark("main");
     match mode {
         "exit" => std::process::exit(3),
+        "thread-exit0" => {
+            let t = std::thread::spawn(|| std::process::exit(0));
+            let _ = t.join();
+            ExitCode::from(5)
+        }
+        "threads" => {
+            let ts: Vec<_> = (0..3).map(|_| std::thread::spawn(|| {})).collect();
+            ts.into_iter().for_each(|t| t.join().unwrap());
+            ExitCode::from(3)
+        }
         "panic" => panic!("exit-test: deliberate panic"),
         _ => ExitCode::from(3),
     }
@@ -55,6 +70,16 @@ const CXX_EXIT: &[&str] = &[
     "local-static-dtor",
     "atexit",
     "static-dtor",
+    "stdio-buffered",
+];
+
+const C_FINISH: &[&str] = &[
+    "main",
+    "thread-returned",
+    "thread-pthread-exit",
+    "main-woke",
+    "atexit2",
+    "atexit1",
     "stdio-buffered",
 ];
 
@@ -143,6 +168,30 @@ const CASES: &[Case] = &[
         code: Some(3),
         out: C_EXIT,
     },
+    Case {
+        prog: "exit-test-c",
+        mode: "thread-exit0",
+        code: Some(0),
+        out: C_EXIT,
+    },
+    Case {
+        prog: "exit-test",
+        mode: "thread-exit0",
+        code: Some(0),
+        out: &["main"],
+    },
+    Case {
+        prog: "exit-test-c",
+        mode: "thread-finish",
+        code: Some(4),
+        out: C_FINISH,
+    },
+    Case {
+        prog: "exit-test",
+        mode: "threads",
+        code: Some(3),
+        out: &["main", "tls-dtor", "atexit"],
+    },
 ];
 
 /// Where `unittest` finds test programs.
@@ -161,8 +210,20 @@ fn run(case: &Case) -> bool {
     }
     // A file, not a pipe: a child that dies abnormally never closes its end of a pipe.
     let path = "/exit-test-out";
-    let status =
-        std::fs::File::create(path).and_then(|file| cmd.arg(case.mode).stdout(file).status());
+    let status = std::fs::File::create(path).and_then(|file| {
+        let mut child = cmd.arg(case.mode).stdout(file).spawn()?;
+        let start = Instant::now();
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return Ok(status);
+            }
+            if start.elapsed() > TIMEOUT {
+                let _ = child.kill();
+                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "hung"));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
     let status = match status {
         Ok(status) => status,
         Err(e) => {

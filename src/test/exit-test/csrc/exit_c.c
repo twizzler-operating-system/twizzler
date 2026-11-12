@@ -17,6 +17,20 @@ static void *exit_from_thread(void *arg) {
     exit(3);
 }
 
+static void *exit0_from_thread(void *arg) {
+    exit(0);
+}
+
+static void *return_from_thread(void *arg) {
+    mark("thread-returned");
+    return NULL;
+}
+
+static void *pthread_exit_from_thread(void *arg) {
+    mark("thread-pthread-exit");
+    pthread_exit(NULL);
+}
+
 int main(int argc, char **argv) {
     const char *mode = argc > 1 ? argv[1] : "return";
     atexit(on_atexit1);
@@ -38,6 +52,16 @@ int main(int argc, char **argv) {
         pthread_create(&t, NULL, exit_from_thread, NULL);
         pthread_join(t, NULL);
         return 99;
+    }
+    if (!strcmp(mode, "thread-exit0") || !strcmp(mode, "thread-finish")) {
+        int finish = !strcmp(mode, "thread-finish");
+        pthread_t t1, t2;
+        pthread_create(&t1, NULL, finish ? return_from_thread : exit0_from_thread, NULL);
+        if (finish)
+            pthread_create(&t2, NULL, pthread_exit_from_thread, NULL);
+        sleep(2);
+        mark("main-woke");
+        return finish ? 4 : 5;
     }
     if (!strcmp(mode, "pathconf")) {
         _exit(pathconf("/", _PC_PATH_MAX) > 0 && pathconf("/", _PC_NAME_MAX) > 0 ? 0 : 1);
