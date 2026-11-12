@@ -88,6 +88,13 @@ fn get_kso_manager() -> &'static KsoManager {
     })
 }
 
+/// Pins taken through a kaction belong to the caller's active security context.
+fn pin_owner() -> ObjID {
+    crate::thread::current_thread_ref()
+        .map(|t| t.active_sctx_id())
+        .unwrap_or(crate::security::KERNEL_SCTX)
+}
+
 pub fn kaction(cmd: KactionCmd, id: Option<ObjID>, arg: u64, arg2: u64) -> Result<KactionValue> {
     match cmd {
         KactionCmd::Generic(cmd) => match cmd {
@@ -96,7 +103,7 @@ pub fn kaction(cmd: KactionCmd, id: Option<ObjID>, arg: u64, arg2: u64) -> Resul
                 let obj =
                     lookup_object(id, LookupFlags::empty()).ok_or(ObjectError::NoSuchObject)?;
                 let pin = arg as u32;
-                obj.release_pin(pin);
+                obj.release_pin(pin)?;
                 Ok(KactionValue::U64(0))
             }
             KactionGenericCmd::PinPages(flags) => {
@@ -117,6 +124,7 @@ pub fn kaction(cmd: KactionCmd, id: Option<ObjID>, arg: u64, arg2: u64) -> Resul
                         .map_err(|_| ArgumentError::InvalidArgument)?,
                     slice.len(),
                     flags,
+                    pin_owner(),
                 )?;
                 let len: u32 = core::cmp::min(pins.len(), len as usize).try_into().unwrap();
 
@@ -136,8 +144,13 @@ pub fn kaction(cmd: KactionCmd, id: Option<ObjID>, arg: u64, arg2: u64) -> Resul
                     .ok_or(ArgumentError::InvalidArgument)?[0];
                 let out = unsafe { create_user_slice::<PinExtent>(req.out, req.cap as u64) }
                     .ok_or(ArgumentError::InvalidArgument)?;
-                let (extents, covered, token) =
-                    obj.pin_range(req.offset as usize, req.len as usize, out.len(), flags)?;
+                let (extents, covered, token) = obj.pin_range(
+                    req.offset as usize,
+                    req.len as usize,
+                    out.len(),
+                    flags,
+                    pin_owner(),
+                )?;
                 out[..extents.len()].copy_from_slice(&extents);
                 req.nr = extents.len() as u32;
                 req.covered = covered as u64;

@@ -116,11 +116,83 @@ mod tests {
             pack_kaction_pin_start_and_len, KactionCmd, KactionFlags, KactionGenericCmd, PinExtent,
             PinFlags, PinRequest,
         },
-        object::NULLPAGE_SIZE,
-        syscall::{sys_kaction, PinnedPage},
+        object::{Protections, NULLPAGE_SIZE},
+        syscall::{
+            sys_kaction, sys_object_copy, sys_object_create, BackingType, LifetimeType,
+            ObjectCreate, ObjectCreateFlags, PinnedPage,
+        },
     };
+    use twizzler_rt_abi::bindings::object_source;
 
     use crate::dma::{Access, DmaObject, DmaOptions, DmaPool, DMA_PAGE_SIZE};
+
+    fn release(id: ObjID, token: u32) -> bool {
+        sys_kaction(
+            KactionCmd::Generic(KactionGenericCmd::ReleasePin),
+            Some(id),
+            token as u64,
+            0,
+            KactionFlags::empty(),
+        )
+        .is_ok()
+    }
+
+    /// Released pins are gone, and pinning again finds the same frames.
+    #[test]
+    fn pin_range_release_and_repin() {
+        let obj = fresh(false);
+        let id = obj.object().id();
+        let pin = obj.pin_range(PAGE..LARGE, PinFlags::empty()).unwrap();
+        let ext = pin.extents().to_vec();
+        let mut out = [PinExtent::default(); 64];
+        let req = raw_pin_range(id, PAGE, LARGE - PAGE, &mut out);
+        assert_ne!(req.token, 0);
+        unsafe { pin.release() };
+        assert!(release(id, req.token));
+        assert!(!release(id, req.token));
+        let again = obj.pin_range(PAGE..LARGE, PinFlags::empty()).unwrap();
+        assert_eq!(again.extents(), ext);
+    }
+
+    /// Zeroing a pinned range, or copy-on-write from it, is refused until the pin is released.
+    #[test]
+    fn pin_range_refuses_replacement() {
+        let obj = fresh(false);
+        let id = obj.object().id();
+        let pin = obj
+            .pin_range(LARGE..LARGE + 4 * PAGE, PinFlags::empty())
+            .unwrap();
+        let zero = object_source {
+            id: 0,
+            src_start: 0,
+            dest_start: LARGE as u64,
+            len: PAGE as u64,
+        };
+        let from = object_source {
+            id: id.raw(),
+            src_start: LARGE as u64,
+            dest_start: LARGE as u64,
+            len: 4 * PAGE as u64,
+        };
+        let create = || {
+            sys_object_create(
+                ObjectCreate::new(
+                    BackingType::Normal,
+                    LifetimeType::Volatile,
+                    None,
+                    ObjectCreateFlags::DELETE,
+                    Protections::all(),
+                ),
+                &[from],
+                &[],
+            )
+        };
+        assert!(sys_object_copy(id, &[zero]).is_err());
+        assert!(create().is_err());
+        unsafe { pin.release() };
+        sys_object_copy(id, &[zero]).unwrap();
+        create().unwrap();
+    }
 
     const LARGE: usize = 2 * 1024 * 1024;
     const PAGE: usize = DMA_PAGE_SIZE;

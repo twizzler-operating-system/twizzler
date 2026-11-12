@@ -152,6 +152,10 @@ impl ObjectPin {
 
 impl Drop for DmaObject {
     fn drop(&mut self) {
+        // Clones share the pins, which belong to the last of them.
+        if Arc::strong_count(&self.releasable_pins) > 1 {
+            return;
+        }
         let mut pins = self.releasable_pins.lock().unwrap();
         for pin in pins.drain(..) {
             release_pin(self.object().id(), pin);

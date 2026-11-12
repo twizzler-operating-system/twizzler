@@ -650,6 +650,9 @@ impl MapRegion {
                     let mut pt = self.object().lock_page_tables();
                     let mut stable = PtGuard::new(stable);
                     let len = self.range.end - self.range.start;
+                    if pt.is_pinned(self.offset, len) {
+                        return Err(ResourceError::Busy.into());
+                    }
                     // Conservative: the stable shadow is not the region's own object and its
                     // backing is not established here, so it keeps the inherited DIRTY and behaves
                     // exactly as before.

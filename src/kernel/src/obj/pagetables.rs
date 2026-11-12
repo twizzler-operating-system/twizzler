@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use itertools::Itertools;
 use twizzler_abi::{device::CacheType, kso::PinExtent};
-use twizzler_rt_abi::error::TwzError;
+use twizzler_rt_abi::error::{ResourceError, TwzError};
 
 use crate::{
     arch::{
@@ -20,7 +20,7 @@ use crate::{
             FrameAllocFlags, FrameAllocator, alloc_frame, free_frame, take_or_new_frame_allocator,
         },
     },
-    obj::{Object, ObjectRef, PageNumber},
+    obj::{Object, ObjectRef, PageNumber, PinInfo},
 };
 
 /// Kept at 8: raising it to 16 was measured (`widen2-a`/`widen2-b`) and changed nothing. The same
@@ -367,6 +367,7 @@ pub struct ObjectPageTable {
     /// lives behind the object's page-table mutex, and `Mutex<T>: Sync` requires only `T: Send`
     /// (mutex.rs), which `Cell<u8>` satisfies.
     latched: core::cell::Cell<u8>,
+    pub(super) pins: PinInfo,
 }
 
 bitflags::bitflags! {
@@ -449,6 +450,7 @@ impl ObjectPageTable {
             map_count: 0,
             deferred: None,
             latched: core::cell::Cell::new(0),
+            pins: PinInfo::default(),
         }
     }
 
@@ -1064,6 +1066,11 @@ impl ObjectPageTable {
         Some((extents, (at - offset) as usize))
     }
 
+    /// Whether any pin covers part of a large region the range touches.
+    pub fn is_pinned(&self, offset: u64, len: usize) -> bool {
+        self.pins.is_pinned(offset, len)
+    }
+
     pub fn readmap(&'_ mut self, offset: u64, len: usize) -> MapReader<'_> {
         let cursor = MappingCursor::new(VirtAddr::new(offset).unwrap(), len);
         self.mapper.readmap(cursor)
@@ -1201,7 +1208,11 @@ impl ObjectPageTable {
                 let pn = PageNumber::from_address(mi.vaddr());
                 for i in 0..(mi.len() / PageNumber::PAGE_SIZE) {
                     let p = pn.offset(i);
-                    if dirty.contains(&p) {
+                    if dirty.contains(&p)
+                        || self
+                            .pins
+                            .is_pinned(p.as_byte_offset() as u64, PageNumber::PAGE_SIZE)
+                    {
                         continue;
                     }
                     if victims.len() >= budget || victims.push(p).is_err() {
@@ -1251,7 +1262,7 @@ impl ObjectPageTable {
     /// Returns the number of pages dropped.
     pub fn evict_all(&mut self) -> usize {
         let pages = self.count_pages();
-        if pages == 0 {
+        if pages == 0 || !self.pins.is_empty() {
             return 0;
         }
         // Shoot the mappings down *before* the frames can be reused. `invalidate` is what reaches
@@ -1500,6 +1511,9 @@ impl ObjectPageTable {
         dst_offset: u64,
         len: usize,
     ) -> Result<(), TwzError> {
+        if self.is_pinned(src_offset, len) || dest.is_pinned(dst_offset, len) {
+            return Err(ResourceError::Busy.into());
+        }
         let src_cursor = MappingCursor::new(VirtAddr::new(src_offset).unwrap(), len);
         let dst_cursor = MappingCursor::new(VirtAddr::new(dst_offset).unwrap(), len);
         let mut consist = Consistency::new_object_tables();
@@ -1527,6 +1541,9 @@ impl ObjectPageTable {
         len: usize,
         anon: bool,
     ) -> Result<(), TwzError> {
+        if self.is_pinned(offset, len) {
+            return Err(ResourceError::Busy.into());
+        }
         let cursor = MappingCursor::new(VirtAddr::new(offset).unwrap(), len);
         let mut fa = take_or_new_frame_allocator();
         fa.precharge(
@@ -1674,6 +1691,10 @@ impl Object {
                 &mut false,
                 &mut false,
             )?;
+        }
+        // After `ensure_in_core`, which may have dropped the lock.
+        if !old_pt.pins.is_empty() {
+            return Err(ResourceError::Busy.into());
         }
         let r = old_pt.mapper.setup_cow_range(
             &mut new_pt.mapper,

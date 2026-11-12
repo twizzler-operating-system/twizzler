@@ -13,6 +13,7 @@ use crate::{
         tracker::{FrameAllocFlags, FrameAllocator, alloc_frame},
     },
     obj::{ObjectRef, PageNumber},
+    security::KERNEL_SCTX,
     userinit::create_blank_object,
 };
 
@@ -80,7 +81,12 @@ fn pin_over_a_large_page_reports_every_page() {
 
     let count = 4;
     let (pages, _) = obj
-        .pin(PageNumber::from_offset(region), count, PinFlags::empty())
+        .pin(
+            PageNumber::from_offset(region),
+            count,
+            PinFlags::empty(),
+            KERNEL_SCTX,
+        )
         .unwrap();
     assert_eq!(pages.len(), count);
     for (i, pair) in pages.windows(2).enumerate() {
@@ -769,7 +775,7 @@ fn pin_range_fresh_volatile_takes_large_frames() {
     let obj = create_blank_object();
     let len = 4 * LARGE - PAGE;
     let (extents, covered, _) = obj
-        .pin_range(PAGE, len, usize::MAX, PinFlags::empty())
+        .pin_range(PAGE, len, usize::MAX, PinFlags::empty(), KERNEL_SCTX)
         .unwrap();
     assert_eq!(covered, len);
     check_extents(&obj, PAGE, len, &extents);
@@ -790,7 +796,12 @@ fn pin_range_fresh_volatile_takes_large_frames() {
     );
 
     let (pages, _) = obj
-        .pin(PageNumber::from_offset(PAGE), len / PAGE, PinFlags::empty())
+        .pin(
+            PageNumber::from_offset(PAGE),
+            len / PAGE,
+            PinFlags::empty(),
+            KERNEL_SCTX,
+        )
         .unwrap();
     let pages: alloc::vec::Vec<u64> = pages.iter().map(|p| p.physical_address()).collect();
     assert_eq!(pages, page_addrs(&extents));
@@ -806,7 +817,7 @@ fn pin_range_continues_past_a_small_buffer() {
         obj.write_at(&1u8, PAGE + i * PAGE).unwrap();
     }
     let (all, covered, _) = obj
-        .pin_range(PAGE, len, usize::MAX, PinFlags::empty())
+        .pin_range(PAGE, len, usize::MAX, PinFlags::empty(), KERNEL_SCTX)
         .unwrap();
     assert_eq!(covered, len);
     check_extents(&obj, PAGE, len, &all);
@@ -814,7 +825,7 @@ fn pin_range_continues_past_a_small_buffer() {
     let mut at = PAGE;
     while at < PAGE + len {
         let (ext, covered, _) = obj
-            .pin_range(at, PAGE + len - at, 1, PinFlags::empty())
+            .pin_range(at, PAGE + len - at, 1, PinFlags::empty(), KERNEL_SCTX)
             .unwrap();
         assert_eq!(ext.len(), 1);
         assert_eq!(ext[0].len as usize, covered);
@@ -837,7 +848,7 @@ fn pin_range_over_a_large_page_is_one_extent() {
         .start_address()
         .raw();
     let (extents, _, _) = obj
-        .pin_range(LARGE, LARGE, usize::MAX, PinFlags::empty())
+        .pin_range(LARGE, LARGE, usize::MAX, PinFlags::empty(), KERNEL_SCTX)
         .unwrap();
     assert_eq!(
         extents,
@@ -847,7 +858,13 @@ fn pin_range_over_a_large_page_is_one_extent() {
         }]
     );
     let (extents, _, _) = obj
-        .pin_range(LARGE + 4 * PAGE, 8 * PAGE, 1, PinFlags::empty())
+        .pin_range(
+            LARGE + 4 * PAGE,
+            8 * PAGE,
+            1,
+            PinFlags::empty(),
+            KERNEL_SCTX,
+        )
         .unwrap();
     assert_eq!(
         extents,
@@ -862,14 +879,11 @@ fn pin_range_over_a_large_page_is_one_extent() {
 /// mapping is what the pinned physical memory holds, both ways.
 #[twizzler_kernel_macros::kernel_test]
 fn pinned_large_frame_is_a_large_cpu_mapping() {
-    use crate::{
-        memory::{PhysAddr, pagetables::MappingCursor},
-        security::KERNEL_SCTX,
-    };
+    use crate::memory::{PhysAddr, pagetables::MappingCursor};
 
     let obj = create_blank_object();
     let (extents, _, _) = obj
-        .pin_range(LARGE, LARGE, usize::MAX, PinFlags::empty())
+        .pin_range(LARGE, LARGE, usize::MAX, PinFlags::empty(), KERNEL_SCTX)
         .unwrap();
     if extents[0].len != LARGE as u64 {
         return;
@@ -924,7 +938,7 @@ fn pin_range_over_a_phys_mapping() {
     )
     .unwrap();
     let (extents, covered, _) = obj
-        .pin_range(LARGE, 2 * LARGE, usize::MAX, PinFlags::empty())
+        .pin_range(LARGE, 2 * LARGE, usize::MAX, PinFlags::empty(), KERNEL_SCTX)
         .unwrap();
     assert_eq!(covered, 2 * LARGE);
     assert_eq!(
@@ -945,8 +959,145 @@ fn pin_range_over_a_phys_mapping() {
     )
     .unwrap();
     let (pages, _) = obj
-        .pin(PageNumber::from_offset(offset), 4, PinFlags::CONTIGUOUS)
+        .pin(
+            PageNumber::from_offset(offset),
+            4,
+            PinFlags::CONTIGUOUS,
+            KERNEL_SCTX,
+        )
         .unwrap();
     let pages: alloc::vec::Vec<u64> = pages.iter().map(|p| p.physical_address()).collect();
     assert_eq!(pages, [0, 1, 2, 3].map(|i| phys.raw() + i * PAGE as u64));
+}
+
+/// A pinned object marked for deletion is not reaped until the pin is released.
+#[twizzler_kernel_macros::kernel_test]
+fn pin_holds_off_reaping() {
+    use crate::obj::{LookupFlags, LookupResult, lookup_object, scan_deleted_one};
+
+    let obj = create_blank_object();
+    let id = obj.id();
+    let found = || {
+        matches!(
+            lookup_object(id, LookupFlags::ALLOW_DELETED),
+            LookupResult::Found(_)
+        )
+    };
+    let (_, _, token) = obj
+        .pin_range(PAGE, 4 * PAGE, usize::MAX, PinFlags::empty(), KERNEL_SCTX)
+        .unwrap();
+    obj.mark_for_delete();
+    scan_deleted_one(&obj);
+    assert!(found(), "pinned object was reaped");
+    obj.release_pin(token).unwrap();
+    assert!(obj.release_pin(token).is_err());
+    // The release also queues it for the reaper, which may get there first.
+    for _ in 0..1000 {
+        scan_deleted_one(&obj);
+        if !found() {
+            return;
+        }
+    }
+    panic!("released object was not reaped");
+}
+
+/// Nothing may replace or COW-share a pinned page: zeroing, copying from or into it, or a STABLE
+/// clone. All are refused, and over the whole large region of the pin, not only its pages.
+#[twizzler_kernel_macros::kernel_test]
+fn pin_refuses_paths_that_replace_pages() {
+    let obj = create_blank_object();
+    let other = create_blank_object();
+    let (extents, _, token) = obj
+        .pin_range(LARGE, 4 * PAGE, usize::MAX, PinFlags::empty(), KERNEL_SCTX)
+        .unwrap();
+    assert!(obj.zero_range(LARGE, PAGE).is_err());
+    assert!(obj.zero_range(LARGE + 64 * PAGE, PAGE).is_err());
+    obj.zero_range(2 * LARGE, PAGE).unwrap();
+    assert!(obj.copy_range(&other, LARGE, LARGE, 4 * PAGE).is_err());
+    assert!(other.copy_range(&obj, LARGE, LARGE, 4 * PAGE).is_err());
+    assert!(obj.cow_clone_page_tables().is_err());
+    // An unaligned copy writes in place and is allowed either way. The destination page has to be
+    // present: `direct_copy` maps an absent one at the unaligned offset, which panics in `map`.
+    other.write_at(&0u8, LARGE).unwrap();
+    obj.copy_range(&other, LARGE + 8, LARGE + 8, 64).unwrap();
+    other.copy_range(&obj, LARGE + 8, LARGE + 8, 64).unwrap();
+    obj.write_at(&7u8, LARGE).unwrap();
+    assert_eq!(page_addrs(&extents), {
+        let (again, _, t) = obj
+            .pin_range(LARGE, 4 * PAGE, usize::MAX, PinFlags::empty(), KERNEL_SCTX)
+            .unwrap();
+        obj.release_pin(t).unwrap();
+        page_addrs(&again)
+    });
+
+    obj.release_pin(token).unwrap();
+    obj.copy_range(&other, LARGE, LARGE, 4 * PAGE).unwrap();
+    drop(obj.cow_clone_page_tables().unwrap());
+    obj.zero_range(LARGE, PAGE).unwrap();
+}
+
+/// Eviction skips pinned regions and takes them once released, and leaves frameless physical
+/// entries alone (they are installed dirty, and only clean pages are evicted).
+#[twizzler_kernel_macros::kernel_test]
+fn eviction_skips_pinned_and_physical_entries() {
+    use crate::memory::PhysAddr;
+
+    let obj = create_blank_object();
+    for i in 0..8 {
+        obj.write_at(&1u8, LARGE + i * PAGE).unwrap();
+        obj.write_at(&1u8, 2 * LARGE + i * PAGE).unwrap();
+    }
+    let (_, _, token) = obj
+        .pin_range(LARGE, PAGE, usize::MAX, PinFlags::empty(), KERNEL_SCTX)
+        .unwrap();
+    drop(obj.lock_page_tables().get_dirty_and_reset().unwrap());
+    obj.lock_page_tables().evict_clean_pages(64);
+    assert_eq!(entries(&obj, LARGE, LARGE).len(), 8);
+    assert!(entries(&obj, 2 * LARGE, LARGE).is_empty());
+    obj.release_pin(token).unwrap();
+    obj.lock_page_tables().evict_clean_pages(64);
+    assert!(entries(&obj, LARGE, LARGE).is_empty());
+
+    let phys = PhysAddr::new(1 << 38).unwrap();
+    let obj = create_blank_object();
+    obj.map_phys(
+        LARGE,
+        phys,
+        phys.offset(LARGE).unwrap(),
+        CacheType::WriteBack,
+    )
+    .unwrap();
+    obj.map_phys_small(
+        2 * LARGE,
+        phys,
+        phys.offset(4 * PAGE).unwrap(),
+        CacheType::WriteBack,
+    )
+    .unwrap();
+    let before = entries(&obj, LARGE, 2 * LARGE);
+    obj.lock_page_tables().evict_clean_pages(64);
+    assert_eq!(entries(&obj, LARGE, 2 * LARGE), before);
+}
+
+/// A security context going away releases the pins it holds, and only those.
+#[twizzler_kernel_macros::kernel_test]
+fn pins_are_released_with_their_security_context() {
+    use alloc::sync::Arc;
+
+    use crate::security::SecurityContext;
+
+    let obj = create_blank_object();
+    let sctx = Arc::new(SecurityContext::new(Some(create_blank_object())));
+    let (_, _, token) = obj
+        .pin_range(LARGE, PAGE, usize::MAX, PinFlags::empty(), sctx.id())
+        .unwrap();
+    let (_, _, kept) = obj
+        .pin_range(2 * LARGE, PAGE, usize::MAX, PinFlags::empty(), KERNEL_SCTX)
+        .unwrap();
+    assert!(obj.lock_page_tables().is_pinned(LARGE as u64, PAGE));
+    drop(sctx);
+    assert!(!obj.lock_page_tables().is_pinned(LARGE as u64, PAGE));
+    assert!(obj.lock_page_tables().is_pinned(2 * LARGE as u64, PAGE));
+    assert!(obj.release_pin(token).is_err());
+    obj.release_pin(kept).unwrap();
 }

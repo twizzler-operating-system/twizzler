@@ -7,7 +7,7 @@ use core::{
 use twizzler_abi::{
     kso::{PinExtent, PinFlags},
     meta::MetaInfo,
-    object::MAX_SIZE,
+    object::{MAX_SIZE, ObjID},
     pager::PagerFlags,
     syscall::PinnedPage,
 };
@@ -24,7 +24,7 @@ use crate::{
             try_alloc_split_frames,
         },
     },
-    obj::{Object, ObjectRef, PageNumber, PtGuard, pagetables::FindFrameFlags},
+    obj::{Object, ObjectRef, PageNumber, PtGuard, add_pin_owner, pagetables::FindFrameFlags},
     thread::current_thread_ref,
 };
 
@@ -429,6 +429,7 @@ impl Object {
         page: PageNumber,
         count: usize,
         flags: PinFlags,
+        owner: ObjID,
     ) -> Result<(Vec<PinnedPage>, u32), TwzError> {
         if count == 0 && !flags.contains(PinFlags::CONTIGUOUS) {
             return Ok((Vec::new(), 0));
@@ -436,7 +437,8 @@ impl Object {
         let len = count
             .checked_mul(PageNumber::PAGE_SIZE)
             .ok_or(ArgumentError::InvalidArgument)?;
-        let (extents, _, token) = self.pin_range(page.as_byte_offset(), len, usize::MAX, flags)?;
+        let (extents, _, token) =
+            self.pin_range(page.as_byte_offset(), len, usize::MAX, flags, owner)?;
         let pages = extents
             .iter()
             .flat_map(|e| {
@@ -453,13 +455,15 @@ impl Object {
     ///
     /// Holes are filled first. Volatile memory takes a large frame for every empty aligned region
     /// wholly inside the range, when one is free. With [PinFlags::CONTIGUOUS] the range must come
-    /// out as one run.
+    /// out as one run. The pin belongs to security context `owner` until released by its token, or
+    /// until `owner` goes away.
     pub fn pin_range(
         self: &ObjectRef,
         offset: usize,
         len: usize,
         cap: usize,
         flags: PinFlags,
+        owner: ObjID,
     ) -> Result<(Vec<PinExtent>, usize, u32), TwzError> {
         if len == 0
             || cap == 0
@@ -488,7 +492,9 @@ impl Object {
             if contiguous && covered != len {
                 return Err(ResourceError::Unavailable.into());
             }
-            return Ok((extents, covered, 0));
+            let token = pt.pins.add(offset as u64, covered, owner);
+            add_pin_owner(owner, self, token);
+            return Ok((extents, covered, token));
         }
         Err(ResourceError::Unavailable.into())
     }
@@ -1298,6 +1304,11 @@ impl Object {
         }
 
         let (mut self_pt, mut dst_pt) = PtGuard::new_two(self.page_tables(), dst.page_tables());
+        // A pinned source would become COW, and a pinned destination would lose its frames.
+        if self_pt.is_pinned(src_offset as u64, len) || dst_pt.is_pinned(dst_offset as u64, len) {
+            PtGuard::release_two(self_pt, dst_pt);
+            return Err(ResourceError::Busy.into());
+        }
 
         let src_level = max_level_for_addr(src_offset).ok_or(TwzError::INVALID_ARGUMENT)?;
         let dst_level = max_level_for_addr(dst_offset).ok_or(TwzError::INVALID_ARGUMENT)?;
@@ -1417,6 +1428,9 @@ impl Object {
         );
         if len == 0 {
             return Ok(());
+        }
+        if self.lock_page_tables().is_pinned(offset as u64, len) {
+            return Err(ResourceError::Busy.into());
         }
         if self.use_pager() {
             log::warn!("TODO: zero_range with pager for object {}", self.id());
