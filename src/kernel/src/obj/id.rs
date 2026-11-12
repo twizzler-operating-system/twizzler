@@ -209,6 +209,9 @@ impl Object {
         if let Some(id) = self.verified_id.poll() {
             return *id;
         }
+        if self.has_no_meta() {
+            return (true, Protections::all());
+        }
         checkidstats::slow();
         let id = loop {
             if let Some(meta) = self.read_meta() {

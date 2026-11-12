@@ -6,6 +6,10 @@
 //! `bartest big` instead exercises `Device::map_bar_range` on the memory BAR of an ivshmem
 //! device, which is ordinary RAM of any size:
 //! `-object memory-backend-ram,id=big,size=4G -device ivshmem-plain,memdev=big`.
+//! `python3 src/test/bartest/big.py` (from the repo root) instead backs the BAR with a host file
+//! holding [host_marker]s, and afterwards checks that the guest's [guest_marker]s reached it: at
+//! the start, middle and last page of every chunk, the last page being where an object's meta page
+//! would be.
 
 use std::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
@@ -57,6 +61,20 @@ fn regs(mmio: &MmioObject) -> (u64, u32, u32) {
 const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
 
+fn probes(len: u64) -> impl Iterator<Item = u64> {
+    (0..len)
+        .step_by(GIB as usize)
+        .flat_map(|c| [c, c + GIB / 2 + 8, c + GIB - 4096, c + GIB - 8])
+}
+
+fn host_marker(off: u64) -> u64 {
+    (0x4854 << 48) | off
+}
+
+fn guest_marker(off: u64) -> u64 {
+    (0x4753 << 48) | off
+}
+
 fn big() {
     const BAR: usize = 2;
     let (_, dev) = find(|i| i.vendor_id == 0x1af4 && i.device_id == 0x1110).expect("no ivshmem");
@@ -84,6 +102,22 @@ fn big() {
         r
     };
     let word = |r: &BarRange, off: u64| unsafe { r.as_ptr().add(off as usize).cast::<u64>() };
+
+    // Before anything is written: all zero for a fresh RAM backend, or what big.py put there.
+    let whole = map(0, len).unwrap();
+    let found: Vec<_> = probes(len)
+        .map(|off| (off, unsafe { word(&whole, off).read_volatile() }))
+        .collect();
+    drop(whole);
+    let host = found[0].1 != 0;
+    for (off, v) in found {
+        let want = if host { host_marker(off) } else { 0 };
+        assert_eq!(v, want, "BAR offset {:#x} before any write", off);
+    }
+    println!(
+        "bartest: {} at every probe",
+        if host { "host markers" } else { "zero" }
+    );
 
     // The start of the BAR, against the mmio object.
     let head = map(0, MIB).unwrap();
@@ -183,6 +217,35 @@ fn big() {
             assert_eq!(word(&wide, 0).read_volatile(), 0x4444 + ct as u64);
         }
     }
+    drop((head, wide, tail));
+
+    // Written write-combining through one mapping of the whole BAR, read uncached through
+    // one-chunk mappings and through a remapping of the whole BAR; big.py checks the host file.
+    let whole = map(0, len).unwrap();
+    dev.set_bar_cache_type(BAR, CacheType::WriteCombining)
+        .unwrap();
+    for off in probes(len) {
+        unsafe { word(&whole, off).write_volatile(guest_marker(off)) };
+    }
+    unsafe { core::arch::x86_64::_mm_sfence() };
+    dev.set_bar_cache_type(BAR, CacheType::MemoryMappedIO)
+        .unwrap();
+    drop(whole);
+    for off in probes(len) {
+        let chunk = map(off & !(GIB - 1), GIB).unwrap();
+        assert_eq!(
+            unsafe { word(&chunk, off % GIB).read_volatile() },
+            guest_marker(off)
+        );
+    }
+    let whole = map(0, len).unwrap();
+    for off in probes(len) {
+        assert_eq!(
+            unsafe { word(&whole, off).read_volatile() },
+            guest_marker(off)
+        );
+    }
+    println!("bartest: guest markers written");
     println!("bartest: PASS");
 }
 
