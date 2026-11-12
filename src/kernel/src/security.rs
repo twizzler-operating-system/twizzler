@@ -78,6 +78,7 @@ impl Drop for SecurityContext {
         with_each_context(|ctx| {
             ctx.unregister_sctx(self.id());
         });
+        crate::obj::release_sctx_pins(self.id());
     }
 }
 

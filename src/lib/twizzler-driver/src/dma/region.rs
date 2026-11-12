@@ -175,6 +175,11 @@ impl<'a, T: DeviceSync> DmaRegion<T> {
             .map(|p| p.physical_address().try_into().map(|pa| PhysInfo::new(pa)))
             .collect();
 
+        self.dma_object()
+            .releasable_pins
+            .lock()
+            .unwrap()
+            .push(token);
         self.backing = Some((backing.map_err(|_| GenericError::Other)?, token));
 
         Ok(())
@@ -245,7 +250,15 @@ impl<'a, T: DeviceSync> DmaRegion<T> {
     /// Caller must ensure that no device is using the information from any active pins for this
     /// region.
     pub unsafe fn release_pin(&mut self) {
-        // TODO
+        let Some((_, token)) = self.backing.take() else {
+            return;
+        };
+        let dma = self.dma_object();
+        let mut pins = dma.releasable_pins.lock().unwrap();
+        if let Some(pos) = pins.iter().position(|t| *t == token) {
+            pins.swap_remove(pos);
+            super::object::release_pin(dma.object().id(), token);
+        }
     }
 
     /// Get a reference to the DMA memory.

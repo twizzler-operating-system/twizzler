@@ -5,7 +5,11 @@ use core::{
 };
 
 use twizzler_abi::{
-    kso::PinFlags, meta::MetaInfo, object::MAX_SIZE, pager::PagerFlags, syscall::PinnedPage,
+    kso::{PinExtent, PinFlags},
+    meta::MetaInfo,
+    object::{MAX_SIZE, ObjID},
+    pager::PagerFlags,
+    syscall::PinnedPage,
 };
 use twizzler_rt_abi::{
     error::{ArgumentError, ResourceError, TwzError},
@@ -16,10 +20,11 @@ use crate::{
     memory::{
         frame::{FrameRef, PHYS_LEVEL_LAYOUTS, get_frame, max_level_for_addr},
         tracker::{
-            FrameAllocFlags, FrameAllocator, allocprofile, free_frame, try_alloc_split_frames,
+            FrameAllocFlags, FrameAllocator, allocprofile, free_frame, try_alloc_frame,
+            try_alloc_split_frames,
         },
     },
-    obj::{Object, ObjectRef, PageNumber, PtGuard, pagetables::FindFrameFlags},
+    obj::{Object, ObjectRef, PageNumber, PtGuard, add_pin_owner, pagetables::FindFrameFlags},
     thread::current_thread_ref,
 };
 
@@ -33,6 +38,22 @@ enum ZeroOrFrame {
 /// from whoever called. **It also caps fault-around**: a run longer than this splits into two
 /// `map_frames` calls, so raising `ANON_FAULT_AROUND` past it needs this raised too.
 pub(crate) const FILL_BATCH_MAX: usize = 16;
+
+/// Un-share every COW page of a fully present range, once per entry.
+fn break_cow(pt: &mut PtGuard, offset: usize, len: usize) -> Result<(), TwzError> {
+    let end = (offset + len) as u64;
+    let mut at = offset as u64;
+    while at < end {
+        pt.maybe_cow_at(at, true)?;
+        // After the COW, which can split a shared large entry.
+        at = pt
+            .get_mapinfo(at)
+            .map_or(at + PageNumber::PAGE_SIZE as u64, |mi| {
+                mi.vaddr().raw() + mi.len() as u64
+            });
+    }
+    Ok(())
+}
 
 impl Object {
     fn do_with_frame<R>(
@@ -402,46 +423,138 @@ impl Object {
         Ok(())
     }
 
+    /// [Object::pin_range] by pages, one physical address per page.
     pub fn pin(
         self: &ObjectRef,
         page: PageNumber,
         count: usize,
         flags: PinFlags,
+        owner: ObjID,
     ) -> Result<(Vec<PinnedPage>, u32), TwzError> {
+        if count == 0 && !flags.contains(PinFlags::CONTIGUOUS) {
+            return Ok((Vec::new(), 0));
+        }
+        let len = count
+            .checked_mul(PageNumber::PAGE_SIZE)
+            .ok_or(ArgumentError::InvalidArgument)?;
+        let (extents, _, token) =
+            self.pin_range(page.as_byte_offset(), len, usize::MAX, flags, owner)?;
+        let pages = extents
+            .iter()
+            .flat_map(|e| {
+                (0..e.len)
+                    .step_by(PageNumber::PAGE_SIZE)
+                    .map(move |o| PinnedPage::new(e.phys + o))
+            })
+            .collect();
+        Ok((pages, token))
+    }
+
+    /// Pin the page-aligned range `[offset, offset + len)` and report the physical runs backing it,
+    /// in object order: at most `cap` of them, covering the returned number of bytes from `offset`.
+    ///
+    /// Holes are filled first. Volatile memory takes a large frame for every empty aligned region
+    /// wholly inside the range, when one is free. With [PinFlags::CONTIGUOUS] the range must come
+    /// out as one run. The pin belongs to security context `owner` until released by its token, or
+    /// until `owner` goes away.
+    pub fn pin_range(
+        self: &ObjectRef,
+        offset: usize,
+        len: usize,
+        cap: usize,
+        flags: PinFlags,
+        owner: ObjID,
+    ) -> Result<(Vec<PinExtent>, usize, u32), TwzError> {
+        if len == 0
+            || cap == 0
+            || !offset.is_multiple_of(PageNumber::PAGE_SIZE)
+            || !len.is_multiple_of(PageNumber::PAGE_SIZE)
+            || offset.checked_add(len).is_none_or(|end| end > MAX_SIZE)
+        {
+            return Err(ArgumentError::InvalidArgument.into());
+        }
         let contiguous = flags.contains(PinFlags::CONTIGUOUS);
         if contiguous {
-            self.populate_contiguous(page, count)?;
+            self.populate_contiguous(PageNumber::from_offset(offset), len / PageNumber::PAGE_SIZE)?;
+        } else if !self.use_pager() {
+            self.populate_large(offset, len);
         }
-        let mut pages = Vec::new();
-        for i in 0..count {
-            let page_offset = page.offset(i).as_byte_offset() as u64;
-            self.with_frame(
-                page_offset as usize,
-                FindFrameFlags::POPULATE | FindFrameFlags::WRITE,
-                // `po` is the offset of this page within the frame backing it, which is only zero
-                // when that frame is a 4 KiB one. A large page backs 512 of these offsets and
-                // reports its region base for all of them, so the page's own address is the base
-                // plus `po`.
-                |po, frame| {
-                    pages.push(PinnedPage::new(frame.start_address().raw() + po as u64));
-                },
-            )?;
+        // A pager-backed range can lose a page again while `ensure_in_core` waits unlocked.
+        for _ in 0..4 {
+            let mut pt = self.lock_page_tables();
+            pt = self.populate_small(pt, offset, len)?;
+            break_cow(&mut pt, offset, len)?;
+            let Some((extents, covered)) =
+                pt.pin_extents(offset as u64, len, if contiguous { 1 } else { cap })
+            else {
+                continue;
+            };
+            if contiguous && covered != len {
+                return Err(ResourceError::Unavailable.into());
+            }
+            let token = pt.pins.add(offset as u64, covered, owner);
+            add_pin_owner(owner, self, token);
+            return Ok((extents, covered, token));
         }
-        // Checked on what was actually pinned: the range may have been populated before this call,
-        // and the loop above un-shares a COW page by copying it elsewhere.
-        if contiguous
-            && pages.iter().enumerate().any(|(i, p)| {
-                p.physical_address()
-                    != pages[0].physical_address() + (i * PageNumber::PAGE_SIZE) as u64
-            })
-        {
-            return Err(ResourceError::Unavailable.into());
+        Err(ResourceError::Unavailable.into())
+    }
+
+    /// Back each empty aligned large region wholly inside the range with one large frame.
+    fn populate_large(self: &ObjectRef, offset: usize, len: usize) {
+        let large = PHYS_LEVEL_LAYOUTS[1].size();
+        let regions = offset.next_multiple_of(large)..(offset + len) / large * large;
+        let empty: Vec<usize> = {
+            let mut pt = self.lock_page_tables();
+            regions
+                .step_by(large)
+                .filter(|r| pt.is_empty_at_level(*r as u64, 1))
+                .collect()
+        };
+        // Zeroed without the page-table lock, and never waited for: 4 KiB frames do instead.
+        let frames: Vec<FrameRef> = empty
+            .iter()
+            .map_while(|_| try_alloc_frame(FrameAllocFlags::ZEROED, PHYS_LEVEL_LAYOUTS[1]))
+            .collect();
+        let mut pt = self.lock_page_tables();
+        for (region, frame) in empty.into_iter().zip(frames) {
+            let mapped =
+                pt.is_empty_at_level(region as u64, 1) && pt.map_page(region as u64, frame).is_ok();
+            if !mapped && frame.refcount() == 0 {
+                free_frame(frame);
+            }
         }
-        Ok((pages, 0))
+    }
+
+    /// Fill every hole in the range, one large region at a time.
+    fn populate_small<'a>(
+        self: &'a ObjectRef,
+        mut pt: PtGuard<'a>,
+        offset: usize,
+        len: usize,
+    ) -> Result<PtGuard<'a>, TwzError> {
+        let large = PHYS_LEVEL_LAYOUTS[1].size();
+        let end = offset + len;
+        let mut at = offset;
+        while at < end {
+            let next = (at / large + 1) * large;
+            let count = (next.min(end) - at) / PageNumber::PAGE_SIZE;
+            if pt.tally_present(at as u64, count).installed > 0 {
+                pt = self.ensure_in_core(
+                    pt,
+                    PageNumber::from_offset(at),
+                    count,
+                    &mut false,
+                    &mut false,
+                )?;
+            }
+            at = next;
+        }
+        Ok(pt)
     }
 
     /// If no page of `[page, page + count)` is present, back it with zeroed frames carved from the
-    /// head of one level-1 frame. A fully present range is left alone for [Object::pin] to judge;
+    /// head of one level-1 frame, or with the whole frame as one large entry when the range is an
+    /// aligned level-1 region. A fully present range is left alone for [Object::pin] to judge;
     /// a partly present one cannot be made contiguous without migrating, and is an error.
     fn populate_contiguous(
         self: &ObjectRef,
@@ -475,6 +588,21 @@ impl Object {
             return Err(ResourceError::Unavailable.into());
         }
 
+        if count == MAX && page.num().is_multiple_of(MAX) {
+            let frame = try_alloc_frame(FrameAllocFlags::ZEROED, PHYS_LEVEL_LAYOUTS[1])
+                .ok_or(ResourceError::OutOfMemory)?;
+            let mut pt = self.lock_page_tables();
+            let r = if present(&mut pt) == 0 {
+                pt.map_page(offset, frame)
+            } else {
+                Err(ResourceError::Busy.into())
+            };
+            drop(pt);
+            if r.is_err() && frame.refcount() == 0 {
+                free_frame(frame);
+            }
+            return r;
+        }
         // Without the page-table lock and without waiting: zeroing is slow, and on a fragmented
         // machine a level-1 frame may never turn up.
         let (head, len) = try_alloc_split_frames(FrameAllocFlags::empty(), PHYS_LEVEL_LAYOUTS[1])
@@ -1176,6 +1304,11 @@ impl Object {
         }
 
         let (mut self_pt, mut dst_pt) = PtGuard::new_two(self.page_tables(), dst.page_tables());
+        // A pinned source would become COW, and a pinned destination would lose its frames.
+        if self_pt.is_pinned(src_offset as u64, len) || dst_pt.is_pinned(dst_offset as u64, len) {
+            PtGuard::release_two(self_pt, dst_pt);
+            return Err(ResourceError::Busy.into());
+        }
 
         let src_level = max_level_for_addr(src_offset).ok_or(TwzError::INVALID_ARGUMENT)?;
         let dst_level = max_level_for_addr(dst_offset).ok_or(TwzError::INVALID_ARGUMENT)?;
@@ -1295,6 +1428,9 @@ impl Object {
         );
         if len == 0 {
             return Ok(());
+        }
+        if self.lock_page_tables().is_pinned(offset as u64, len) {
+            return Err(ResourceError::Busy.into());
         }
         if self.use_pager() {
             log::warn!("TODO: zero_range with pager for object {}", self.id());

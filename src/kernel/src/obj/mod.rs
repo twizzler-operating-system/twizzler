@@ -24,10 +24,10 @@ pub use self::thread_sync::{SleepInfo, ThreadSleepLinker};
 use crate::{
     arch::memory::frame::FRAME_SIZE,
     condvar::CondVar,
-    idcounter::{IdCounter, SimpleId},
     memory::{
         VirtAddr,
         context::virtmem::region::MapRegion,
+        frame::PHYS_LEVEL_LAYOUTS,
         pagetables::DeferredUnmappingOps,
         tracker::{FrameAllocFlags, alloc_frame},
     },
@@ -119,7 +119,7 @@ pub struct Object {
     /// [Object::dec_map_count] holds it -- so a reader that holds the lock sees the same value it
     /// always did. What the atomic buys is [is_reapable]'s negative case, which needs no lock at
     /// all: an object that is still mapped is by far the common one, and answering that used to
-    /// cost the 1,280-byte sleeping `Mutex` plus the one behind `pin_info`.
+    /// cost the 1,280-byte sleeping `Mutex`.
     ///
     /// **Ordering.** `SeqCst`, and the delete path depends on it. A delete marks `OBJ_DELETED`
     /// and then loads this; the last unmapper stores zero (under the page-table lock) and then,
@@ -130,7 +130,6 @@ pub struct Object {
     /// never to neither. Weaker orderings break that argument, which is the whole reason the fast
     /// path is safe to take without the lock.
     map_count: AtomicUsize,
-    pin_info: Mutex<PinInfo>,
     lifetime_type: LifetimeType,
     ties: Vec<object_tie>,
     verified_id: OnceWait<(bool, Protections)>,
@@ -202,10 +201,116 @@ impl Drop for Object {
     }
 }
 
+/// An object's pins, counted per large region: any pin covers every region it touches. Kept in the
+/// object's page tables, under the lock that every path replacing a present page already holds.
 #[derive(Default)]
-struct PinInfo {
-    id_counter: IdCounter,
-    pins: Vec<SimpleId>,
+pub struct PinInfo {
+    last_token: u32,
+    regions: BTreeMap<usize, u32>,
+    pins: Vec<PinRecord>,
+}
+
+struct PinRecord {
+    token: u32,
+    owner: ObjID,
+    regions: core::ops::Range<usize>,
+}
+
+impl PinInfo {
+    fn regions(offset: u64, len: usize) -> core::ops::Range<usize> {
+        let large = PHYS_LEVEL_LAYOUTS[1].size();
+        offset as usize / large..(offset as usize + len).div_ceil(large)
+    }
+
+    pub fn add(&mut self, offset: u64, len: usize, owner: ObjID) -> u32 {
+        let token = loop {
+            self.last_token = self.last_token.wrapping_add(1);
+            if self.last_token != 0 && !self.pins.iter().any(|p| p.token == self.last_token) {
+                break self.last_token;
+            }
+        };
+        let regions = Self::regions(offset, len);
+        for r in regions.clone() {
+            *self.regions.entry(r).or_default() += 1;
+        }
+        self.pins.push(PinRecord {
+            token,
+            owner,
+            regions,
+        });
+        token
+    }
+
+    /// Drop pin `token`, if `owner` (when given) holds it, returning its owner.
+    pub fn remove(&mut self, token: u32, owner: Option<ObjID>) -> Option<ObjID> {
+        let pos = self
+            .pins
+            .iter()
+            .position(|p| p.token == token && owner.is_none_or(|o| o == p.owner))?;
+        let pin = self.pins.swap_remove(pos);
+        for r in pin.regions {
+            let count = self.regions.get_mut(&r).unwrap();
+            *count -= 1;
+            if *count == 0 {
+                self.regions.remove(&r);
+            }
+        }
+        Some(pin.owner)
+    }
+
+    pub fn is_pinned(&self, offset: u64, len: usize) -> bool {
+        self.regions
+            .range(Self::regions(offset, len))
+            .next()
+            .is_some()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pins.is_empty()
+    }
+}
+
+/// Every pin by security context, so that a context going away releases its pins. Taken after an
+/// object's page-table lock, never before.
+static PIN_OWNERS: Mutex<BTreeMap<ObjID, Vec<(ObjectRef, u32)>>> = Mutex::new(BTreeMap::new());
+
+pub(crate) fn add_pin_owner(owner: ObjID, obj: &ObjectRef, token: u32) {
+    PIN_OWNERS
+        .lock()
+        .entry(owner)
+        .or_default()
+        .push((obj.clone(), token));
+}
+
+fn remove_pin_owner(owner: ObjID, id: ObjID, token: u32) {
+    let removed = {
+        let mut owners = PIN_OWNERS.lock();
+        let Some(pins) = owners.get_mut(&owner) else {
+            return;
+        };
+        let removed = pins
+            .iter()
+            .position(|(obj, t)| obj.id() == id && *t == token)
+            .map(|pos| pins.swap_remove(pos));
+        if pins.is_empty() {
+            owners.remove(&owner);
+        }
+        removed
+    };
+    drop(removed);
+}
+
+/// Release every pin held by security context `sctx`.
+pub fn release_sctx_pins(sctx: ObjID) {
+    let Some(pins) = PIN_OWNERS.lock().remove(&sctx) else {
+        return;
+    };
+    for (obj, token) in pins {
+        let released = obj.lock_page_tables().pins.remove(token, Some(sctx));
+        if released.is_some() && obj.is_pending_delete() {
+            request_reap(&obj);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialOrd, Ord, PartialEq, Eq)]
@@ -471,9 +576,17 @@ impl Object {
         self.id
     }
 
-    pub fn release_pin(&self, _pin: u32) {
-        // TODO: Currently we don't track pins. This will be changed in-future when we fully
-        // implement eviction.
+    pub fn release_pin(self: &ObjectRef, token: u32) -> Result<(), TwzError> {
+        let owner = self
+            .lock_page_tables()
+            .pins
+            .remove(token, None)
+            .ok_or(twizzler_rt_abi::error::ArgumentError::InvalidArgument)?;
+        remove_pin_owner(owner, self.id(), token);
+        if self.is_pending_delete() {
+            request_reap(self);
+        }
+        Ok(())
     }
 
     #[track_caller]
@@ -495,7 +608,6 @@ impl Object {
             tables: Some(Box::new(PtHome::new())),
             sleep_slots: [const { Once::new() }; SLEEP_STRIPES],
             map_count: AtomicUsize::new(0),
-            pin_info: Mutex::new(PinInfo::default()),
             ties: ties.to_vec(),
             verified_id: OnceWait::new(),
             known_len: AtomicU64::new(u64::MAX),
@@ -897,20 +1009,17 @@ pub fn print_all_objects() {
 
 /// Whether `obj` can be reaped now: nothing maps it and nothing has it pinned.
 ///
-/// Tries the object's page-table lock and its pin lock, so it must be called with the global map
-/// lock *released* -- see [`scan_deleted`] for what deadlocks otherwise. Tries, never waits: a
+/// Tries the object's page-table lock, which holds its pins, so it must be called with the global
+/// map lock *released* -- see [`scan_deleted`] for what deadlocks otherwise. Tries, never waits: a
 /// held lock means a fault or a pin is in flight, which answers the question by itself, and the
 /// caller is the idle loop, which cannot sleep on a mutex and used to spin here with interrupts
 /// masked -- on the bsp, that silenced wake ipis and ticks for every contended fault on the
 /// object, at ~1 ms per fault under four pinned threads.
 fn is_reapable(obj: &ObjectRef) -> bool {
-    let Some(_tables) = obj.try_lock_page_tables() else {
+    let Some(tables) = obj.try_lock_page_tables() else {
         return false;
     };
-    let Some(pins) = obj.pin_info.try_lock() else {
-        return false;
-    };
-    (obj.map_count() == 0 || stale_map_count(obj)) && pins.pins.len() == 0
+    (obj.map_count() == 0 || stale_map_count(obj)) && tables.pins.is_empty()
 }
 
 /// A positive map count with no live mapping is stale accounting, not reachability: installs
@@ -1419,10 +1528,7 @@ pub mod reclaimstat {
 /// be dropped outright because the pager can produce it again; a dirty one would need a write-back
 /// first, and anonymous memory would need swap, which does not exist. See `reclaim-design.md`.
 ///
-/// **Pinning is not consulted, because it is not tracked** (`PinInfo::pins` is read in three places
-/// and written in none). A pinned page's physical address is held by a device, so evicting one lets
-/// that device DMA into a reused frame. This is therefore a development path, not a shippable one,
-/// until `Object::pin`/`release_pin` record ranges.
+/// Pinned regions are skipped by `evict_clean_pages`.
 ///
 /// Candidates are collected before any is evicted: eviction takes page-table locks and sends
 /// shootdown IPIs, and doing that inside the omap scan would run it under the shard lock.
@@ -1648,7 +1754,7 @@ pub fn pressure_census() {
                                 core::str::from_utf8(&nbuf[..n]).unwrap_or("?")
                             );
                         }
-                    } else if obj.pin_info.lock().pins.len() != 0 {
+                    } else if !obj.lock_page_tables().pins.is_empty() {
                         pd_stuck_pins += 1;
                     } else if obj.reap_link.is_linked() {
                         pd_stuck_linked += 1;

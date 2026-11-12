@@ -118,11 +118,49 @@ bitflags::bitflags! {
 }
 
 bitflags::bitflags! {
-    /// Flags carried by [KactionGenericCmd::PinPages].
+    /// Flags carried by [KactionGenericCmd::PinPages] and [KactionGenericCmd::PinRange].
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct PinFlags: u16 {
         /// Back the range with a single physically contiguous run of frames.
         const CONTIGUOUS = 0x1;
+    }
+}
+
+/// A physically contiguous run of pinned memory. `len` is a multiple of the page size.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[repr(C)]
+pub struct PinExtent {
+    pub phys: u64,
+    pub len: u64,
+}
+
+/// The argument of [KactionGenericCmd::PinRange], passed by pointer.
+///
+/// Pins the page-aligned byte range `[offset, offset + len)`. The kernel writes up to `cap`
+/// extents in object order to `out`, and sets `nr`, `covered` (bytes pinned from `offset`, less
+/// than `len` when the extents did not fit) and `token` (for [KactionGenericCmd::ReleasePin]).
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct PinRequest {
+    pub offset: u64,
+    pub len: u64,
+    pub out: u64,
+    pub cap: u32,
+    pub nr: u32,
+    pub covered: u64,
+    pub token: u32,
+    _pad: u32,
+}
+
+impl PinRequest {
+    pub fn new(offset: u64, len: u64, out: &mut [PinExtent]) -> Self {
+        Self {
+            offset,
+            len,
+            out: out.as_mut_ptr() as u64,
+            cap: out.len().try_into().unwrap_or(u32::MAX),
+            ..Default::default()
+        }
     }
 }
 
@@ -142,6 +180,10 @@ pub enum KactionGenericCmd {
     ReleasePin,
     /// Map Physical Pages
     MapPhys(u16),
+    /// Pin a byte range of object memory, reporting physical extents. The payload is a
+    /// [PinFlags], and `arg` points to a [PinRequest]. With [PinFlags::CONTIGUOUS], the range must
+    /// pin as exactly one extent.
+    PinRange(u16),
 }
 
 impl From<KactionGenericCmd> for u32 {
@@ -153,6 +195,7 @@ impl From<KactionGenericCmd> for u32 {
             KactionGenericCmd::PinPages(v) => (3, v),
             KactionGenericCmd::ReleasePin => (4, 0),
             KactionGenericCmd::MapPhys(v) => (5, v),
+            KactionGenericCmd::PinRange(v) => (6, v),
         };
         ((h as u32) << 16) | l as u32
     }
@@ -169,6 +212,7 @@ impl TryFrom<u32> for KactionGenericCmd {
             3 => KactionGenericCmd::PinPages(l),
             4 => KactionGenericCmd::ReleasePin,
             5 => KactionGenericCmd::MapPhys(l),
+            6 => KactionGenericCmd::PinRange(l),
             _ => return Err(TwzError::INVALID_ARGUMENT),
         };
         Ok(v)
