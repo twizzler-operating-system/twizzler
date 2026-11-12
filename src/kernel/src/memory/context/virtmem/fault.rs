@@ -15,7 +15,7 @@ use crate::{
     arch::VirtAddr,
     instant::Instant,
     memory::context::{ContextRef, kernel_context},
-    obj::PageNumber,
+    obj::{ObjectRef, PageNumber},
     security::{AccessInfo, KERNEL_SCTX, PermsInfo},
     thread::{current_memory_context, current_thread_ref, locktrack},
     time::TimeStatCollector,
@@ -508,8 +508,11 @@ fn check_object_addr(
     id: ObjID,
     cause: MemoryAccessKind,
     addr: VirtAddr,
+    object: &ObjectRef,
 ) -> Result<(), UpcallInfo> {
-    if page_number.is_zero() || page_number.as_byte_offset() >= MAX_SIZE {
+    // Page zero is the null page unless the object maps it, as a headerless mmio chunk does.
+    let null = || object.lock_page_tables().is_empty_at_level(0, 0);
+    if (page_number.is_zero() && null()) || page_number.as_byte_offset() >= MAX_SIZE {
         return Err(UpcallInfo::ObjectMemoryFault(ObjectMemoryFaultInfo::new(
             id,
             ObjectError::NotMapped.into(),
@@ -605,7 +608,13 @@ fn page_fault_to_region(
     let page_number = PageNumber::from_address(addr);
 
     // Step 1: Check for address validity and check for security violations.
-    check_object_addr(page_number, id, cause, addr)?;
+    check_object_addr(
+        page_number,
+        id,
+        cause,
+        addr,
+        &info.object,
+    )?;
 
     // `check_id` used to run here, per fault, to recover the object's default protections. It is
     // memoized in a `Once` that `insert_object` has already filled, so the region carries the
