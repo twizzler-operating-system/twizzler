@@ -44,6 +44,159 @@ fn test_stable_read() {
 }
 
 #[cfg(test)]
+mod adjacent {
+    use std::time::{Duration, Instant};
+
+    use twizzler_abi::{
+        arch::SLOTS,
+        object::Protections,
+        syscall::{
+            sys_object_create, sys_object_ctrl, sys_object_read_map, BackingType, DeleteFlags,
+            LifetimeType, ObjectControlCmd, ObjectCreate, ObjectCreateFlags,
+        },
+    };
+    use twizzler_rt_abi::object::{
+        twz_rt_map_adjacent_objects, MapFlags, ObjID, ObjectHandle, MAX_SIZE, NULLPAGE_SIZE,
+    };
+
+    const RW: MapFlags = MapFlags::READ.union(MapFlags::WRITE);
+
+    fn create(n: usize) -> Vec<ObjID> {
+        let spec = ObjectCreate::new(
+            BackingType::Normal,
+            LifetimeType::Volatile,
+            None,
+            ObjectCreateFlags::empty(),
+            Protections::all(),
+        );
+        (0..n)
+            .map(|_| sys_object_create(spec, &[], &[]).unwrap())
+            .collect()
+    }
+
+    fn delete(ids: &[ObjID]) {
+        for id in ids {
+            let _ = sys_object_ctrl(*id, ObjectControlCmd::Delete(DeleteFlags::empty()), 0, 0);
+        }
+    }
+
+    fn map(ids: &[ObjID]) -> Vec<ObjectHandle> {
+        let objs: Vec<_> = ids.iter().map(|id| (*id, RW)).collect();
+        let mut handles = vec![None; ids.len()];
+        twz_rt_map_adjacent_objects(&objs, &mut handles).unwrap();
+        let handles: Vec<_> = handles.into_iter().map(Option::unwrap).collect();
+        let base = handles[0].start() as usize;
+        for (i, h) in handles.iter().enumerate() {
+            assert_eq!(h.id(), ids[i]);
+            assert_eq!(h.start() as usize, base + i * MAX_SIZE);
+        }
+        handles
+    }
+
+    fn word(base: usize, i: usize) -> *mut u64 {
+        (base + i * MAX_SIZE + NULLPAGE_SIZE) as *mut u64
+    }
+
+    fn holds(slot: usize, id: ObjID) -> bool {
+        sys_object_read_map(None, slot).is_ok_and(|m| m.id == id)
+    }
+
+    #[test]
+    fn test_map_adjacent() {
+        for n in [1, 2, 4, 16] {
+            let ids = create(n);
+            let handles = map(&ids);
+            let base = handles[0].start() as usize;
+            for i in 0..n {
+                unsafe { word(base, i).write_volatile(0x1000 + i as u64) };
+            }
+            for i in 0..n {
+                assert_eq!(unsafe { word(base, i).read_volatile() }, 0x1000 + i as u64);
+            }
+            drop(handles);
+
+            // The monitor unmaps in the background.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while (0..n).any(|i| holds(base / MAX_SIZE + i, ids[i])) {
+                assert!(Instant::now() < deadline, "run of {} not unmapped", n);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+
+            let handles = map(&ids);
+            let base = handles[0].start() as usize;
+            for i in 0..n {
+                assert_eq!(unsafe { word(base, i).read_volatile() }, 0x1000 + i as u64);
+            }
+            drop(handles);
+            delete(&ids);
+        }
+    }
+
+    fn wait_unmapped(slot: usize, id: ObjID) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while holds(slot, id) {
+            assert!(Instant::now() < deadline, "slot {} not unmapped", slot);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn test_map_adjacent_overlapping() {
+        let ids = create(3);
+        let (a, b, c) = (ids[0], ids[1], ids[2]);
+        let ab = map(&[a, b]);
+        let bc = map(&[b, c]);
+        let single = twizzler_rt_abi::object::twz_rt_map_object(b, RW).unwrap();
+        let ptr = |h: &ObjectHandle| unsafe { h.start().add(NULLPAGE_SIZE).cast::<u64>() };
+        let all = [&ab[0], &ab[1], &bc[0], &bc[1], &single];
+        for (i, h) in all.iter().enumerate() {
+            unsafe { ptr(h).add(i + 1).write_volatile(i as u64) };
+        }
+
+        let [ab0, ab1] = <[ObjectHandle; 2]>::try_from(ab).unwrap();
+        let [bc0, bc1] = <[ObjectHandle; 2]>::try_from(bc).unwrap();
+        let slot = |h: &ObjectHandle| h.start() as usize / MAX_SIZE;
+        let (bc0_slot, ab0_slot) = (slot(&bc0), slot(&ab0));
+        drop(bc0);
+        wait_unmapped(bc0_slot, b);
+        for (i, h) in [&ab0, &ab1, &bc1, &single].iter().enumerate() {
+            unsafe { ptr(h).add(10 + i).write_volatile(i as u64) };
+        }
+        for h in [&ab1, &single] {
+            assert_eq!(unsafe { ptr(h).add(2).read_volatile() }, 1);
+            assert_eq!(unsafe { ptr(h).add(3).read_volatile() }, 2);
+            assert_eq!(unsafe { ptr(h).add(5).read_volatile() }, 4);
+        }
+        drop(single);
+        drop(ab0);
+        wait_unmapped(ab0_slot, a);
+        unsafe { ptr(&ab1).add(20).write_volatile(1) };
+        unsafe { ptr(&bc1).add(20).write_volatile(2) };
+        drop(ab1);
+        drop(bc1);
+        delete(&ids);
+    }
+
+    #[test]
+    fn test_map_adjacent_fails_whole() {
+        let ids = create(3);
+        let bad = ObjID::new(0xdead_beef_dead_beef_dead_beef_dead_beef);
+        let objs = [(ids[0], RW), (ids[1], RW), (bad, RW), (ids[2], RW)];
+        let mut handles = [None, None, None, None];
+        assert!(twz_rt_map_adjacent_objects(&objs, &mut handles).is_err());
+        assert!(handles.iter().all(Option::is_none));
+        for slot in 0..SLOTS {
+            assert!(
+                !ids.iter().any(|id| holds(slot, *id)),
+                "slot {} left mapped",
+                slot
+            );
+        }
+        delete(&ids);
+    }
+}
+
+#[cfg(test)]
 mod tester {
     use std::time::Instant;
 
