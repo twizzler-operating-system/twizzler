@@ -7,6 +7,7 @@ use disk::Disk;
 use memstore::virtio::init_virtio;
 use object_store::{Ext4Store, PagedObjectStore};
 use physrw::{init_pr_mgr, report_ready};
+use stores::{DynStore, Route};
 use threads::PagerThreadPool;
 use tracing_subscriber::fmt::format::FmtSpan;
 use twizzler::{
@@ -33,6 +34,7 @@ mod nvme;
 mod physrw;
 mod placement;
 mod request_handle;
+mod stores;
 mod threads;
 mod watchdog;
 
@@ -122,11 +124,25 @@ struct PagerContext {
     _pool: PagerThreadPool,
 
     store: OnceLock<Ext4Store<Disk>>,
+    routes: Vec<Route>,
 }
 
 impl PagerContext {
+    /// The default (ext4) store, which also holds external files and the config object.
     pub fn paged_ostore(&self, _id: Option<ObjID>) -> Result<&Ext4Store<Disk>> {
         Ok(self.store.wait())
+    }
+
+    /// The non-default store that claims `id`, if any.
+    pub fn route(&self, id: ObjID) -> Option<&DynStore> {
+        self.routes.iter().find(|r| r.claims(id)).map(|r| &*r.store)
+    }
+
+    pub fn store_for(&self, id: ObjID) -> Result<&DynStore> {
+        match self.route(id) {
+            Some(store) => Ok(store),
+            None => Ok(self.store.wait()),
+        }
     }
 
     /// The store, if it is already open. For callers that must not block waiting for it -- unlike
@@ -157,6 +173,7 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
         data,
         kernel_notify: rq,
         store: OnceLock::new(),
+        routes: stores::load_stores(),
         _pool: PagerThreadPool::new(rq),
     });
     let ctx = PAGER_CTX.get().unwrap();
@@ -212,7 +229,7 @@ pub fn disk_len(id: ObjID) -> Result<u64> {
     PAGER_CTX
         .get()
         .unwrap()
-        .paged_ostore(None)?
+        .store_for(id)?
         .len(id.raw())
         // TODO: err
         .map_err(|_| TwzError::NOT_SUPPORTED)

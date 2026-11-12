@@ -63,6 +63,15 @@ kibi = { path = "src/ports/kibi" }
 Each one is compiled for arch-machine-twizzler as its own workspace, from its own manifest. A
 local path that is not present (an uninitialized submodule, say) is skipped with a note. To put a
 package's binaries in the initrd, add `"third-party:<name>"` to `[workspace.metadata] initrd`.
+A package that builds a `cdylib` puts its library there the same way.
+
+### Pager object stores
+
+The pager loads every initrd library named `libpagerstore_*.so` at start-up and hands it the
+objects whose IDs it claims. A store is a `cdylib` package named `pagerstore-<name>` that depends
+on `src/lib/pager/pager-store` and exports `twz_pager_store_register`; see that crate for the
+interface and `src/test/pagerstore-test` for an example. A bundle ships one by listing the package
+in its `initrd`.
 
 ### Bundles
 

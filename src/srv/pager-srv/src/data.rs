@@ -951,6 +951,19 @@ impl PagerData {
             Protections::empty(),
         );
 
+        if let Some(store) = ctx.route(id) {
+            let len = store.len(id.raw()).map_err(|_| ObjectError::NoSuchObject)?;
+            return Ok(ObjectInfo::new(
+                LifetimeType::Persistent,
+                BackingType::Normal,
+                EXTERNAL_META.kuid,
+                EXTERNAL_META.nonce.0,
+                EXTERNAL_META.default_prot,
+            )
+            .validated()
+            .synth_meta(len));
+        }
+
         if objid_to_ino(id.raw()).is_some() {
             // No page crosses over. These objects have no stored metadata -- we invent it from
             // [EXTERNAL_META] plus the file's length -- so the length is the only thing the kernel
@@ -983,7 +996,7 @@ impl PagerData {
         // This length was previously computed purely as an existence check and discarded. Stating
         // it lets the kernel answer faults past the end of the object without a round trip at all;
         // leaving it unstated is what made every stored object look zero-length to the kernel.
-        let base = match ctx.paged_ostore(None)?.len(id.raw()) {
+        let base = match ctx.store_for(id)?.len(id.raw()) {
             Ok(len) => base.with_size(len),
             Err(_) => return Err(ObjectError::NoSuchObject.into()),
         };

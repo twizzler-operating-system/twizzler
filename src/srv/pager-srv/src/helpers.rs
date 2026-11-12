@@ -1,4 +1,4 @@
-use object_store::{objid_to_ino, PageRequest, PagedObjectStore, ProbeMiss};
+use object_store::{objid_to_ino, PageRequest, ProbeMiss};
 use twizzler::object::{MetaExt, MetaFlags, MetaInfo, ObjID, MEXT_MTIME, MEXT_NLINK, MEXT_SIZED};
 use twizzler_abi::{
     object::{Protections, MAX_SIZE},
@@ -79,7 +79,7 @@ fn fill_external_meta(buffer: &mut [u8; PAGE as usize], len: u64, mtime: u32, nl
 /// Fill a fresh physical page with an external file's meta page.
 pub fn page_in_external_meta(ctx: &'static PagerContext, obj_id: ObjID) -> Result<PhysRange> {
     let (len, mtime, nlink) = ctx
-        .paged_ostore(None)?
+        .store_for(obj_id)?
         .len_mtime_nlink(obj_id.raw())
         .inspect_err(|e| tracing::warn!("failed to find extern inode: {}", e))?;
     let phys_range = {
@@ -107,6 +107,10 @@ pub fn page_in_external_meta(ctx: &'static PagerContext, obj_id: ObjID) -> Resul
 /// (ext4-backed) object it is synthesized from the length alone, so a cached length is the whole
 /// question there. Answers "no" before the store is open, which is the pre-store behavior.
 pub fn page_in_would_block(ctx: &PagerContext, obj_id: ObjID, obj_range: ObjectRange) -> ProbeMiss {
+    // Nothing is known about another store's cost, so keep it off the fast lane.
+    if ctx.route(obj_id).is_some() {
+        return ProbeMiss::NoExtents;
+    }
     let Some(store) = ctx.try_paged_ostore() else {
         return ProbeMiss::Cached;
     };
@@ -138,7 +142,7 @@ pub fn page_in(
     if obj_range.start == (MAX_SIZE as u64) - PAGE {
         tracing::debug!("found meta page, using 0 page",);
         start_page = 0;
-        if objid_to_ino(obj_id.raw()).is_some() {
+        if objid_to_ino(obj_id.raw()).is_some() || ctx.route(obj_id).is_some() {
             return page_in_external_meta(ctx, obj_id);
         }
     }
@@ -159,7 +163,7 @@ pub fn page_out_many(
     let mut reqslice = &mut reqs[..];
     while reqslice.len() > 0 {
         let donecount = ctx
-            .paged_ostore(None)?
+            .store_for(obj_id)?
             .page_out_object(obj_id.raw(), reqslice, true_len)
             .inspect_err(|e| tracing::warn!("error in write to object store: {}", e))?;
         reqslice = &mut reqslice[donecount..];
@@ -173,7 +177,7 @@ pub fn page_in_many(
     reqs: &mut [PageRequest],
 ) -> Result<usize> {
     let ret = ctx
-        .paged_ostore(None)?
+        .store_for(obj_id)?
         .page_in_object(obj_id.raw(), reqs)
         .inspect_err(|e| tracing::warn!("error in read from object store: {}", e))?;
     Ok(ret)

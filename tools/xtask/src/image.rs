@@ -60,7 +60,7 @@ fn get_third_party_initrd_files(
     let found: Vec<PathBuf> = comp
         .borrow_third_party_compilation()
         .iter()
-        .flat_map(|c| c.binaries.iter())
+        .flat_map(|c| c.binaries.iter().chain(&c.cdylibs))
         .filter(|item| item.unit.pkg.name() == crate_name)
         .map(|x| x.path.clone())
         .collect();

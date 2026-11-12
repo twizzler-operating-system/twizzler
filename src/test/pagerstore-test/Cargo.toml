@@ -1,0 +1,16 @@
+[package]
+name = "pagerstore-test"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+pager-store = { path = "../../lib/pager/pager-store" }
+
+[dev-dependencies]
+twizzler-rt-abi = { path = "../../abi/rt-abi" }
+
+[package.metadata]
+twizzler-build = "test"
