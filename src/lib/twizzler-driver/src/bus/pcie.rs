@@ -12,7 +12,7 @@ use twizzler_abi::{
 };
 use twizzler_rt_abi::{
     error::TwzError,
-    object::{twz_rt_map_object, MapFlags, ObjectHandle, MAX_SIZE},
+    object::{twz_rt_map_adjacent_objects, MapFlags, ObjectHandle, MAX_SIZE},
     Result,
 };
 use volatile::{
@@ -26,7 +26,7 @@ use crate::device::{Device, MmioObject};
 pub struct BarRange {
     ptr: *mut u8,
     len: usize,
-    _objs: (ObjectHandle, Option<ObjectHandle>),
+    _objs: Vec<Option<ObjectHandle>>,
 }
 
 // Device memory, reached only through the raw pointer.
@@ -212,8 +212,8 @@ impl Device {
 
     /// Map `len` bytes at `offset` of BAR `bar`, anywhere in the BAR. A BAR longer than its mmio
     /// object is also in headerless chunk sub-objects of [MAX_SIZE] bytes each, which are
-    /// contiguous in adjacent slots; only a pair of slots can be asked for, so a range reaching
-    /// into a third chunk is refused: any range of up to [MAX_SIZE] bytes fits.
+    /// contiguous in adjacent slots, which the range holds until dropped. A range may span up to
+    /// [twizzler_rt_abi::object::MAX_ADJACENT_OBJECTS] chunks.
     pub fn map_bar_range(&self, bar: usize, offset: u64, len: usize) -> Result<BarRange> {
         let mmio = self.find_mmio_bar(bar).ok_or(TwzError::INVALID_ARGUMENT)?;
         let region = mmio.get_region();
@@ -231,22 +231,15 @@ impl Device {
                 .and_then(|n| self.get_subobj(SubObjectType::MmioChunk.into(), n))
                 .ok_or(TwzError::INVALID_ARGUMENT)
         };
-        let ids = (first..=(end - 1) / MAX_SIZE as u64)
-            .map(chunk)
-            .collect::<Result<Vec<_>>>()?;
         let flags = MapFlags::READ | MapFlags::WRITE;
-        let objs = match ids[..] {
-            [a] => (twz_rt_map_object(a, flags)?, None),
-            [a, b] => {
-                // Deprecated with no successor; the only way to adjacent slots.
-                #[allow(deprecated)]
-                let (a, b) = twizzler_rt_abi::object::twz_rt_map_two_objects(a, flags, b, flags)?;
-                (a, Some(b))
-            }
-            _ => return Err(TwzError::NOT_SUPPORTED),
-        };
+        let ids = (first..=(end - 1) / MAX_SIZE as u64)
+            .map(|idx| chunk(idx).map(|id| (id, flags)))
+            .collect::<Result<Vec<_>>>()?;
+        let mut objs = vec![None; ids.len()];
+        twz_rt_map_adjacent_objects(&ids, &mut objs)?;
+        let base = objs[0].as_ref().unwrap().start();
         Ok(BarRange {
-            ptr: unsafe { objs.0.start().add((offset % MAX_SIZE as u64) as usize) },
+            ptr: unsafe { base.add((offset % MAX_SIZE as u64) as usize) },
             len,
             _objs: objs,
         })

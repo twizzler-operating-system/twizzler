@@ -134,7 +134,40 @@ fn big() {
         word(&tail, 4 * MIB - 8).write_volatile(0x3333);
     }
 
-    assert!(map(GIB - 4096, 2 * GIB + 4096).is_err(), "three chunks");
+    // Three and four chunks, written across each boundary they span and read through one-chunk
+    // mappings; the first mapped is dropped first, and the other must keep its slots.
+    let check = |r: &BarRange, base: u64, tag: u64| {
+        let end = base + r.len() as u64;
+        for b in (GIB..len)
+            .step_by(GIB as usize)
+            .filter(|b| *b > base && *b < end)
+        {
+            unsafe {
+                word(r, b - base - 8).write_volatile(tag + b - 8);
+                word(r, b - base).write_volatile(tag + b);
+            }
+            let below = map(b - 4 * MIB, 4 * MIB).unwrap();
+            let above = map(b, 4 * MIB).unwrap();
+            unsafe {
+                assert_eq!(word(&below, 4 * MIB - 8).read_volatile(), tag + b - 8);
+                assert_eq!(word(&above, 0).read_volatile(), tag + b);
+            }
+        }
+    };
+    let three = map(GIB, 3 * GIB).unwrap();
+    let whole = map(0, len).unwrap();
+    check(&three, GIB, 0x7 << 40);
+    check(&whole, 0, 0x8 << 40);
+    drop(three);
+    check(&whole, 0, 0x9 << 40);
+    drop(whole);
+    let last = map(len - GIB, 4 * MIB).unwrap();
+    assert_eq!(
+        unsafe { word(&last, 0).read_volatile() },
+        (0x9 << 40) + len - GIB
+    );
+    drop(last);
+
     assert!(map(len - MIB, 2 * MIB).is_err(), "past the end");
     assert!(map(0, 0).is_err(), "empty");
 
