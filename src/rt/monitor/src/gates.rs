@@ -275,6 +275,29 @@ pub fn monitor_rt_object_pair_map(
 }
 
 #[secgate::entry(lib = "monitor-api")]
+pub fn monitor_rt_object_adjacent_map(n: usize) -> Result<crate::MappedObjectAddrs, TwzError> {
+    let info = secgate::get_caller().ok_or(TwzError::NOT_SUPPORTED)?;
+    if unsafe { !__is_monitor_ready() } {
+        return Err(ResourceError::Unavailable.into());
+    }
+    crate::mon::get_monitor().map_adjacent(
+        info.source_context().unwrap_or(MONITOR_INSTANCE_ID),
+        info.thread_id(),
+        n,
+    )
+}
+
+#[secgate::entry(lib = "monitor-api")]
+pub fn monitor_rt_object_unmap_slot(slot: usize) -> Result<(), TwzError> {
+    let info = secgate::get_caller().ok_or(TwzError::NOT_SUPPORTED)?;
+    if unsafe { __is_monitor_ready() } {
+        crate::mon::get_monitor()
+            .unmap_slot(info.source_context().unwrap_or(MONITOR_INSTANCE_ID), slot);
+    }
+    Ok(())
+}
+
+#[secgate::entry(lib = "monitor-api")]
 pub fn monitor_rt_object_unmap(
     id: ObjID,
     flags: twizzler_rt_abi::object::MapFlags,

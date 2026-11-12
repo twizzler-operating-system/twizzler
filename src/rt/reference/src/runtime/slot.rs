@@ -95,6 +95,24 @@ impl SlotAllocatorInner {
         None
     }
 
+    /// Allocate `n` adjacent slots out of whole pairs. An odd run's spare slot becomes a single.
+    fn alloc_run(&mut self, n: usize) -> Option<usize> {
+        let pairs = n.div_ceil(2);
+        let mut start = 0;
+        for p in 0..(SLOTS / 2) {
+            if self.test(p) {
+                start = p + 1;
+            } else if p + 1 - start == pairs {
+                (start..=p).for_each(|q| self.set(q));
+                if n % 2 == 1 {
+                    self.singles.push(start * 2 + n);
+                }
+                return Some(start * 2);
+            }
+        }
+        None
+    }
+
     fn alloc_single(&mut self) -> Option<usize> {
         if let Some(idx) = self.singles.pop() {
             return Some(idx);
@@ -213,6 +231,15 @@ impl ReferenceRuntime {
             preinit_println!("cannot allocate slot pairs during runtime init");
             preinit_abort();
         }
+    }
+
+    /// Allocate `n` adjacent slots, returning the first. Each is released with
+    /// [Self::release_slot].
+    pub fn allocate_run(&self, n: usize) -> Option<usize> {
+        if n == 0 || !self.state().contains(RuntimeState::READY) {
+            return None;
+        }
+        SLOT_ALLOCATOR.inner.lock().unwrap().alloc_run(n)
     }
 
     /// Release a pair. Must be of form (x, x+1).

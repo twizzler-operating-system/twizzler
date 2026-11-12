@@ -5,6 +5,11 @@ pub fn global_allocate() -> Option<usize> {
     SLOT_TRACKER.lock().alloc()
 }
 
+/// Allocate `n` adjacent slots, returning the first.
+pub fn global_allocate_run(n: usize) -> Option<usize> {
+    SLOT_TRACKER.lock().alloc_run(n)
+}
+
 /// Release a slot for reuse.
 #[allow(dead_code)]
 pub fn global_release(slot: usize) {
@@ -35,6 +40,21 @@ impl SlotTracker {
             if !self.bitmap.bit_test(slot) {
                 self.bitmap.bit_set(slot);
                 return Some(slot);
+            }
+        }
+        None
+    }
+
+    fn alloc_run(&mut self, n: usize) -> Option<usize> {
+        let mut start = ALLOC_START;
+        for slot in ALLOC_START..self.bitmap.bit_len() {
+            if self.bitmap.bit_test(slot) {
+                start = slot + 1;
+            } else if slot + 1 - start == n {
+                for s in start..=slot {
+                    self.bitmap.bit_set(s);
+                }
+                return Some(start);
             }
         }
         None

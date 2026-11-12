@@ -10,8 +10,9 @@ use compartment::{
 use dynlink::compartment::MONITOR_COMPARTMENT_ID;
 use happylock::{LockCollection, RwLock, ThreadKey};
 use monitor_api::{
-    CompartmentFlags, MonitorCompControlCmd, PostSignalFlags, RuntimeThreadControl,
-    SharedCompConfig, TlsTemplateInfo, MONITOR_INSTANCE_ID,
+    CompartmentFlags, MappedObjectAddrs, MonitorCompControlCmd, PostSignalFlags,
+    RuntimeThreadControl, SharedCompConfig, TlsTemplateInfo, ADJACENT_ENTRY_LEN,
+    MONITOR_INSTANCE_ID,
 };
 use secgate::util::HandleMgr;
 use space::Space;
@@ -418,6 +419,53 @@ impl Monitor {
         if let Ok(comp) = comp_mgr.get(sctx) {
             // Handle dropped after both locks: it sends to the unmapper thread.
             let handle = comp.unmap_object(info);
+            drop(comp_mgr);
+            drop(handle);
+        }
+    }
+
+    /// Map the objects `thread` wrote to its simple buffer into adjacent slots for `sctx`.
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
+    pub fn map_adjacent(
+        &self,
+        sctx: ObjID,
+        thread: ObjID,
+        n: usize,
+    ) -> Result<MappedObjectAddrs, TwzError> {
+        if n == 0 || n > twizzler_abi::arch::SLOTS {
+            return Err(TwzError::INVALID_ARGUMENT);
+        }
+        let len = n * ADJACENT_ENTRY_LEN;
+        let bytes = self.read_thread_simple_buffer(sctx, thread, len)?;
+        if bytes.len() != len {
+            return Err(TwzError::INVALID_ARGUMENT);
+        }
+        let infos: Vec<MapInfo> = bytes
+            .chunks_exact(ADJACENT_ENTRY_LEN)
+            .map(|e| MapInfo {
+                id: ObjID::new(u128::from_ne_bytes(e[..16].try_into().unwrap())),
+                flags: MapFlags::from_bits_truncate(u32::from_ne_bytes(
+                    e[16..].try_into().unwrap(),
+                )),
+            })
+            .collect();
+        let handles = Space::map_run(&infos, sctx)?;
+        let addrs = handles[0].addrs();
+        let comp_mgr = crate::lockdiag::watched_read(self.comp_mgr, ThreadKey::get().unwrap());
+        comp_mgr.get(sctx)?.map_slots(handles);
+        Ok(addrs)
+    }
+
+    /// Unmap a slot `sctx` got from [Self::map_adjacent].
+    #[tracing::instrument(skip(self), level = tracing::Level::DEBUG)]
+    pub fn unmap_slot(&self, sctx: ObjID, slot: usize) {
+        let Some(key) = ThreadKey::get() else {
+            tracing::warn!("dropped recursive unmap of slot {}", slot);
+            return;
+        };
+        let comp_mgr = crate::lockdiag::watched_read(self.comp_mgr, key);
+        if let Ok(comp) = comp_mgr.get(sctx) {
+            let handle = comp.unmap_slot(slot);
             drop(comp_mgr);
             drop(handle);
         }

@@ -201,6 +201,15 @@ pub fn monitor_rt_object_pair_map(
 ) -> Result<(crate::MappedObjectAddrs, crate::MappedObjectAddrs), TwzError> {
 }
 
+/// Map the `n` (id, flags) entries of [ADJACENT_ENTRY_LEN] bytes the caller wrote to its simple
+/// buffer into adjacent slots, returning the first. See [object_adjacent_map].
+#[secgate::gatecall]
+pub fn monitor_rt_object_adjacent_map(n: usize) -> Result<crate::MappedObjectAddrs, TwzError> {}
+
+/// Unmap a slot from [monitor_rt_object_adjacent_map].
+#[secgate::gatecall]
+pub fn monitor_rt_object_unmap_slot(slot: usize) -> Result<(), TwzError> {}
+
 #[secgate::gatecall]
 pub fn monitor_rt_object_unmap(
     id: ObjID,
@@ -1217,6 +1226,28 @@ bitflags::bitflags! {
 ///
 /// A snapshot, not an iterator: the set changes as compartments start and exit, and an
 /// index-based `nth` walk over it would skip or repeat entries when it did.
+/// Bytes per object in the [monitor_rt_object_adjacent_map] request: id, then map flags.
+pub const ADJACENT_ENTRY_LEN: usize = size_of::<u128>() + size_of::<u32>();
+
+/// Map `objs` into adjacent slots, in order, returning the first slot. All or nothing.
+pub fn object_adjacent_map(
+    objs: &[(ObjID, twizzler_rt_abi::object::MapFlags)],
+) -> Result<usize, TwzError> {
+    let bytes: Vec<u8> = objs
+        .iter()
+        .flat_map(|(id, flags)| {
+            id.raw()
+                .to_ne_bytes()
+                .into_iter()
+                .chain(flags.bits().to_ne_bytes())
+        })
+        .collect();
+    if lazy_sb::write_bytes_to_sb(&bytes) != bytes.len() {
+        return Err(TwzError::INVALID_ARGUMENT);
+    }
+    monitor_rt_object_adjacent_map(objs.len()).map(|addrs| addrs.slot)
+}
+
 pub fn compartment_ids() -> Result<Vec<ObjID>, TwzError> {
     const ID_LEN: usize = size_of::<u128>();
     let count = monitor_rt_get_compartment_ids()?;

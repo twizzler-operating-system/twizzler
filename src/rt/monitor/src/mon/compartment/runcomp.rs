@@ -95,6 +95,8 @@ pub struct RunComp {
     /// compartments run concurrently, and maps into this one serialize only on a HashMap insert
     /// rather than on the manager's global write lock.
     mapped_objects: Mutex<HashMap<MapInfo, MapHandle>>,
+    /// Exclusive mappings from `Monitor::map_adjacent`, by slot: one object can hold several.
+    mapped_slots: Mutex<HashMap<usize, MapHandle>>,
     flags: Box<AtomicU64>,
     /// Behind its own lock, and each entry behind its own lock, for two separate reasons.
     ///
@@ -311,6 +313,7 @@ impl RunComp {
             comp_config_object,
             alloc,
             mapped_objects: Mutex::new(HashMap::default()),
+            mapped_slots: Mutex::new(HashMap::default()),
             flags: Box::new(AtomicU64::new(flags)),
             per_thread: Mutex::new(HashMap::new()),
             gate_cache: Mutex::new(HashMap::new()),
@@ -390,6 +393,19 @@ impl RunComp {
             .unwrap()
             .entry(info)
             .or_insert(handle);
+    }
+
+    /// Record exclusive mappings made for this compartment.
+    pub fn map_slots(&self, handles: Vec<MapHandle>) {
+        let mut slots = self.mapped_slots.lock().unwrap();
+        for handle in handles {
+            slots.insert(handle.addrs().slot, handle);
+        }
+    }
+
+    /// Remove an exclusive mapping, which unmaps its slot once dropped.
+    pub fn unmap_slot(&self, slot: usize) -> Option<MapHandle> {
+        self.mapped_slots.lock().unwrap().remove(&slot)
     }
 
     /// Unmap and object from this compartment.

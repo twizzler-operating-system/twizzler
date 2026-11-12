@@ -63,6 +63,7 @@ fn mapflags_into_prot(flags: MapFlags) -> Protections {
 extern "C-unwind" {
     fn __monitor_get_slot() -> isize;
     fn __monitor_get_slot_pair(one: *mut usize, two: *mut usize) -> bool;
+    fn __monitor_get_slot_run(n: usize) -> isize;
     fn __monitor_release_pair(one: usize, two: usize);
     fn __monitor_release_slot(slot: usize);
 }
@@ -213,6 +214,49 @@ impl Space {
                 MappedObjectAddrs::new(two),
             )),
         ))
+    }
+
+    /// Map objects into adjacent slots, in order. Like [Self::map_pair], the handles own their
+    /// slots and are not recorded in `maps`. All or nothing.
+    pub fn map_run(infos: &[MapInfo], target_sctx: ObjID) -> Result<Vec<MapHandle>, TwzError> {
+        let base: usize = unsafe { __monitor_get_slot_run(infos.len()) }
+            .try_into()
+            .ok()
+            .ok_or(ResourceError::OutOfResources)?;
+        for (i, info) in infos.iter().enumerate() {
+            let res = twizzler_abi::syscall::sys_object_map_in_sctx(
+                None,
+                info.id,
+                base + i,
+                mapflags_into_prot(info.flags),
+                info.flags.into(),
+                target_sctx,
+            );
+            if let Err(e) = res {
+                for slot in base..base + infos.len() {
+                    if slot < base + i
+                        && sys_object_unmap(None, slot, UnmapFlags::empty())
+                            .inspect_err(|e| tracing::warn!("failed to unmap slot {}: {}", slot, e))
+                            .is_err()
+                    {
+                        continue;
+                    }
+                    unsafe { __monitor_release_slot(slot) };
+                }
+                return Err(e);
+            }
+        }
+        PAIR_HANDLES_MADE.fetch_add(infos.len(), core::sync::atomic::Ordering::Relaxed);
+        Ok(infos
+            .iter()
+            .enumerate()
+            .map(|(i, info)| {
+                Arc::new(MapHandleInner::new_exclusive(
+                    *info,
+                    MappedObjectAddrs::new(base + i),
+                ))
+            })
+            .collect())
     }
 
     /// Remove an object from the space. The actual unmapping syscall only happens once the returned
