@@ -311,6 +311,14 @@ fn run_brush(pty_id: ObjID) -> Result<(), TwzError> {
 /// failures exit with the shell's codes for them -- 127 for a name that resolved to nothing, 126
 /// for one that resolved but could not be run -- so the harness's status distinguishes them from
 /// anything the program itself returns.
+fn is_script(path: &str) -> bool {
+    use std::io::Read;
+    let mut magic = [0u8; 2];
+    std::fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut magic))
+        .is_ok_and(|_| &magic == b"#!")
+}
+
 fn run_autostart(autostart: &str, autostart_args: &[String]) {
     // With `--statexit`, rebaseline the kernel's profiles here so the counters printed at exit
     // cover the autostart program alone rather than boot plus the program.
@@ -320,26 +328,38 @@ fn run_autostart(autostart: &str, autostart_args: &[String]) {
     // Two fallbacks, in PATH order: the boot image first, then the on-disk program directory.
     // The second is what finds uuhelper's coreutils aliases, which are ext4 symlinks in the image
     // rather than naming-server nodes init used to make -- so `--autostart="ls /"` still works.
-    let fallback = format!("/initrd/{}", autostart);
-    let disk_fallback = format!("/pkg/twizzler/bin/{}", autostart);
-    let resolved = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), autostart)
-        .map(|id| (autostart, id))
-        .or_else(|_| {
-            twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), &fallback)
-                .map(|id| (fallback.as_str(), id))
+    let resolve = |name: &str| {
+        [
+            name.to_string(),
+            format!("/initrd/{}", name),
+            format!("/pkg/twizzler/bin/{}", name),
+        ]
+        .into_iter()
+        .find_map(|path| {
+            let id = twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), &path).ok()?;
+            Some((path, id))
         })
-        .or_else(|_| {
-            twizzler_rt_abi::fd::twz_rt_resolve_name(Default::default(), &disk_fallback)
-                .map(|id| (disk_fallback.as_str(), id))
-        });
-    let Ok((path, id)) = resolved else {
+    };
+    let Some((mut path, mut id)) = resolve(autostart) else {
         warn!(
-            "failed to find autostart program: tried {}, {} and {}",
-            autostart, fallback, disk_fallback
+            "failed to find autostart program: tried {0}, /initrd/{0} and /pkg/twizzler/bin/{0}",
+            autostart
         );
         shutdown(127);
         return;
     };
+    // A script runs under brush, with its own arguments after its path.
+    let mut script = None;
+    if is_script(&path) {
+        let Some((shell, shell_id)) = resolve("brush") else {
+            warn!("autostart {} is a script, and there is no brush to run it", path);
+            shutdown(127);
+            return;
+        };
+        script = Some(std::mem::replace(&mut path, shell));
+        id = shell_id;
+    }
+    let path = path.as_str();
 
     if ZERO_ON_START.load(Ordering::Relaxed) {
         let start = Instant::now();
@@ -354,9 +374,10 @@ fn run_autostart(autostart: &str, autostart_args: &[String]) {
         println!("ZEROSTART ms={} bytes={:?}", start.elapsed().as_millis(), r);
     }
 
-    println!("autostart: {} {:?}", path, autostart_args);
     let mut args = vec![path.to_string()];
+    args.extend(script);
     args.extend(autostart_args.iter().cloned());
+    println!("autostart: {} {:?}", path, &args[1..]);
     let comp = CompartmentLoader::new(path, path, id, NewCompartmentFlags::empty())
         .args(&args)
         .load();
