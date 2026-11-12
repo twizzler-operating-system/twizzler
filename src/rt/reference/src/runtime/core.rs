@@ -54,6 +54,7 @@ fn search_envs_enabled(envp: *mut *mut c_char, name: &str) -> bool {
 
 extern "C" {
     fn __mlibc_handle_thread_exit(pointer: *mut u8, ret_val: i32);
+    fn exit(code: i32) -> !;
 }
 
 /// DIAG: which heap object backs `ptr`, if any.
@@ -116,6 +117,10 @@ impl ReferenceRuntime {
                 // change still retires every finished thread through here with code 0 -- treat
                 // all codes as process-exit only once the deployed toolchain is known to carry
                 // the trampoline switch (see unix.md / the bootstrap keep-stage-std pin).
+                //
+                // The fds are closed here because nothing else will: the other threads are killed,
+                // and a pipe end left open keeps its reader from ever seeing EOF.
+                OUR_RUNTIME.close_fds();
                 let _ = monitor_api::monitor_rt_comp_ctrl(
                     monitor_api::MonitorCompControlCmd::Exit(code),
                 );
@@ -272,7 +277,12 @@ impl ReferenceRuntime {
         };
 
         let ret = unsafe { std_entry(ba) };
-        self.exit(ret.code);
+        if self.state().contains(RuntimeState::IS_MONITOR) {
+            self.exit(ret.code);
+        }
+        // Returning from main is exit(code): libc runs the atexit handlers and static
+        // destructors and flushes stdio, then ends up back in Self::exit.
+        unsafe { exit(ret.code) }
     }
 
     pub fn pre_main_hook(&self) -> Option<ExitCode> {
