@@ -35,13 +35,16 @@ pub(crate) struct RuntimeHandleInfo {
     refs: AtomicU64,
     fot_cache: FotCache,
     is_deleted: AtomicBool,
+    /// Sole owner of its slot, from [ReferenceRuntime::map_adjacent_objects].
+    exclusive: bool,
 }
 
-pub(crate) fn new_runtime_info() -> *mut RuntimeHandleInfo {
+pub(crate) fn new_runtime_info(exclusive: bool) -> *mut RuntimeHandleInfo {
     let rhi = Box::new(RuntimeHandleInfo {
         refs: AtomicU64::new(1),
         fot_cache: FotCache::new(),
         is_deleted: AtomicBool::new(false),
+        exclusive,
     });
     Box::into_raw(rhi)
 }
@@ -53,11 +56,16 @@ pub(crate) fn free_runtime_info(ptr: *mut RuntimeHandleInfo) {
     let _boxed = unsafe { Box::from_raw(ptr) };
 }
 
-pub(crate) fn new_object_handle(id: ObjID, slot: usize, flags: MapFlags) -> ObjectHandle {
+pub(crate) fn new_object_handle(
+    id: ObjID,
+    slot: usize,
+    flags: MapFlags,
+    exclusive: bool,
+) -> ObjectHandle {
     unsafe {
         ObjectHandle::new(
             id,
-            new_runtime_info().cast(),
+            new_runtime_info(exclusive).cast(),
             (slot * MAX_SIZE) as *mut _,
             (slot * MAX_SIZE + MAX_SIZE - NULLPAGE_SIZE) as *mut _,
             flags,
@@ -220,6 +228,14 @@ impl ReferenceRuntime {
 
     #[tracing::instrument(skip(self), level = "trace")]
     pub fn release_handle(&self, handle: *mut object_handle, flags: release_flags) {
+        let rhi = unsafe { (*handle).runtime_info.cast::<RuntimeHandleInfo>() };
+        if unsafe { (*rhi).exclusive } {
+            let slot = unsafe { (*handle).start } as usize / MAX_SIZE;
+            free_runtime_info(rhi);
+            let _ = monitor_api::monitor_rt_object_unmap_slot(slot)
+                .inspect_err(|e| warn!("failed to unmap slot {}: {}", slot, e));
+            return;
+        }
         let mut mgr = self.object_manager.lock();
         mgr.release(handle, flags);
         // TODO: do this less often?
@@ -466,12 +482,20 @@ impl ReferenceRuntime {
         in_id_b: ObjID,
         in_flags_b: MapFlags,
     ) -> Result<(ObjectHandle, ObjectHandle)> {
-        let mapping =
-            monitor_api::monitor_rt_object_pair_map(in_id_a, in_flags_a, in_id_b, in_flags_b)?;
+        let mut handles = self
+            .map_adjacent_objects(&[(in_id_a, in_flags_a), (in_id_b, in_flags_b)])?
+            .into_iter();
+        Ok((handles.next().unwrap(), handles.next().unwrap()))
+    }
 
-        let handle = new_object_handle(in_id_a, mapping.0.slot, in_flags_a);
-        let handle2 = new_object_handle(in_id_b, mapping.1.slot, in_flags_b);
-        Ok((handle, handle2))
+    /// These handles bypass the handle cache: each owns its slot, and its release unmaps that slot.
+    pub fn map_adjacent_objects(&self, objs: &[(ObjID, MapFlags)]) -> Result<Vec<ObjectHandle>> {
+        let base = monitor_api::object_adjacent_map(objs)?;
+        Ok(objs
+            .iter()
+            .enumerate()
+            .map(|(i, (id, flags))| new_object_handle(*id, base + i, *flags, true))
+            .collect())
     }
 }
 
@@ -561,7 +585,7 @@ impl ObjectHandleManager {
         // `HandleCache::cancel_pending_unmap`. Deferring rather than dropping it would hand the
         // next drain an unmap of the mapping being established here.
         self.cache.cancel_pending_unmap(&key);
-        let handle = new_object_handle(key.0, slot, key.1).into_raw();
+        let handle = new_object_handle(key.0, slot, key.1, false).into_raw();
         self.cache.insert(handle);
         ObjectHandle::from_raw(handle)
     }

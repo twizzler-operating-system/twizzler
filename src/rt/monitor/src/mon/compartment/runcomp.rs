@@ -95,9 +95,9 @@ pub struct RunComp {
     /// compartments run concurrently, and maps into this one serialize only on a HashMap insert
     /// rather than on the manager's global write lock.
     mapped_objects: Mutex<HashMap<MapInfo, MapHandle>>,
-    /// Pair mappings own their slots, so they must not be keyed by MapInfo: a later map of the
-    /// same object would displace one and unmap its slot under the caller. Held until exit.
-    pair_objects: Mutex<Vec<MapHandle>>,
+    /// Exclusive mappings (adjacent runs and pairs), by slot: one object can hold several, so they
+    /// must not be keyed by MapInfo, where a later map of the same object would displace one.
+    mapped_slots: Mutex<HashMap<usize, MapHandle>>,
     flags: Box<AtomicU64>,
     /// Behind its own lock, and each entry behind its own lock, for two separate reasons.
     ///
@@ -314,7 +314,7 @@ impl RunComp {
             comp_config_object,
             alloc,
             mapped_objects: Mutex::new(HashMap::default()),
-            pair_objects: Mutex::new(Vec::new()),
+            mapped_slots: Mutex::new(HashMap::default()),
             flags: Box::new(AtomicU64::new(flags)),
             per_thread: Mutex::new(HashMap::new()),
             gate_cache: Mutex::new(HashMap::new()),
@@ -386,11 +386,6 @@ impl RunComp {
         Ok(handle)
     }
 
-    pub fn map_pair_object(&self, handle: MapHandle) -> MapHandle {
-        self.pair_objects.lock().unwrap().push(handle.clone());
-        handle
-    }
-
     /// Record a mapping the monitor made on this compartment's behalf, before the compartment has
     /// asked for it. Deliberately not `map_object`: an existing mapping is never clobbered.
     pub fn premap_object(&self, info: MapInfo, handle: MapHandle) {
@@ -399,6 +394,19 @@ impl RunComp {
             .unwrap()
             .entry(info)
             .or_insert(handle);
+    }
+
+    /// Record exclusive mappings made for this compartment.
+    pub fn map_slots(&self, handles: Vec<MapHandle>) {
+        let mut slots = self.mapped_slots.lock().unwrap();
+        for handle in handles {
+            slots.insert(handle.addrs().slot, handle);
+        }
+    }
+
+    /// Remove an exclusive mapping, which unmaps its slot once dropped.
+    pub fn unmap_slot(&self, slot: usize) -> Option<MapHandle> {
+        self.mapped_slots.lock().unwrap().remove(&slot)
     }
 
     /// Unmap and object from this compartment.

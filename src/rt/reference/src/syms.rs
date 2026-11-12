@@ -1236,6 +1236,31 @@ pub unsafe extern "C-unwind" fn __twz_rt_map_two_objects(
 }
 check_ffi_type!(__twz_rt_map_two_objects, _, _, _, _, _, _);
 
+#[no_mangle]
+pub unsafe extern "C-unwind" fn twz_rt_map_adjacent_objects(
+    handles: *mut object_handle,
+    count: usize,
+) -> twz_error {
+    if handles.is_null() || count == 0 {
+        return TwzError::INVALID_ARGUMENT.raw();
+    }
+    let handles = unsafe { core::slice::from_raw_parts_mut(handles, count) };
+    let objs: Vec<_> = handles
+        .iter()
+        .map(|h| (h.id.into(), MapFlags::from_bits_truncate(h.map_flags)))
+        .collect();
+    match OUR_RUNTIME.map_adjacent_objects(&objs) {
+        Ok(mapped) => {
+            for (h, m) in handles.iter_mut().zip(mapped) {
+                *h = m.into_raw();
+            }
+            0
+        }
+        Err(e) => e.raw(),
+    }
+}
+check_ffi_type!(twz_rt_map_adjacent_objects, _, _);
+
 // time.h
 
 use twizzler_rt_abi::bindings::duration;
@@ -1445,6 +1470,14 @@ pub unsafe extern "C-unwind" fn __monitor_get_slot_pair(one: *mut usize, two: *m
     one.write(a);
     two.write(b);
     true
+}
+
+#[no_mangle]
+pub unsafe extern "C-unwind" fn __monitor_get_slot_run(n: usize) -> isize {
+    match OUR_RUNTIME.allocate_run(n) {
+        Some(s) => s.try_into().unwrap_or(-1),
+        None => -1,
+    }
 }
 
 #[no_mangle]
