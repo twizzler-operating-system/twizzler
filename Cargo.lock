@@ -2601,6 +2601,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "exit-test"
+version = "0.1.0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "exr"
 version = "1.74.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
