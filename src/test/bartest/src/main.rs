@@ -2,6 +2,10 @@
 //!
 //! For emulated devices only: the BAR is switched to write-combining while its driver is live,
 //! which real register memory would not tolerate. Registers are only read.
+//!
+//! `bartest big` instead exercises `Device::map_bar_range` on the memory BAR of an ivshmem
+//! device, which is ordinary RAM of any size:
+//! `-object memory-backend-ram,id=big,size=4G -device ivshmem-plain,memdev=big`.
 
 use std::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
@@ -13,7 +17,7 @@ use twizzler_abi::{
     kso::{KactionCmd, KactionFlags},
 };
 use twizzler_driver::{
-    bus::pcie::{PcieDeviceInfo, PcieKactionSpecific},
+    bus::pcie::{BarRange, PcieDeviceInfo, PcieKactionSpecific},
     device::{Device, MmioObject},
     get_bustree_root,
 };
@@ -21,7 +25,7 @@ use twizzler_driver::{
 const BAR: usize = 0;
 const ROUNDS: usize = 200;
 
-fn find_nvme() -> Option<(Device, Device)> {
+fn find(want: impl Fn(&PcieDeviceInfo) -> bool) -> Option<(Device, Device)> {
     for seg in get_bustree_root().children() {
         if seg.bus_type() != BusType::Pcie {
             continue;
@@ -31,7 +35,7 @@ fn find_nvme() -> Option<(Device, Device)> {
                 continue;
             };
             let info = info.get_data();
-            if info.class == 1 && info.subclass == 8 {
+            if want(info) {
                 return Some((seg, dev));
             }
         }
@@ -50,8 +54,95 @@ fn regs(mmio: &MmioObject) -> (u64, u32, u32) {
     }
 }
 
+const MIB: u64 = 1 << 20;
+const GIB: u64 = 1 << 30;
+
+fn big() {
+    const BAR: usize = 2;
+    let (_, dev) = find(|i| i.vendor_id == 0x1af4 && i.device_id == 0x1110).expect("no ivshmem");
+    let len = dev.bar_length(BAR).unwrap();
+    let mmio = dev.find_mmio_bar(BAR).unwrap();
+    println!(
+        "bartest: ivshmem BAR{} is {} MiB, its mmio object holds {} MiB",
+        BAR,
+        len / MIB,
+        mmio.get_info().length / MIB
+    );
+    assert!(len >= 4 * GIB);
+    assert!(dev.bar_length(0xff).is_err());
+
+    let map = |offset: u64, len: u64| {
+        let start = Instant::now();
+        let r = dev.map_bar_range(BAR, offset, len as usize);
+        println!(
+            "bartest: map +{} MiB, {} KiB: {} in {:?}",
+            offset / MIB,
+            len >> 10,
+            if r.is_ok() { "ok" } else { "refused" },
+            start.elapsed()
+        );
+        r
+    };
+    let word = |r: &BarRange, off: u64| unsafe { r.as_ptr().add(off as usize).cast::<u64>() };
+
+    // The start of the BAR, against the mmio object.
+    let head = map(0, MIB).unwrap();
+    unsafe {
+        mmio.get_mmio_offset_mut::<u64>(0x1000)
+            .as_mut_ptr()
+            .write(0x1111);
+        assert_eq!(word(&head, 0x1000).read_volatile(), 0x1111);
+    }
+
+    // A range across each chunk boundary, written through, read through one-chunk mappings.
+    for boundary in (GIB..len).step_by(GIB as usize) {
+        let across = map(boundary - 4 * MIB, 8 * MIB).unwrap();
+        let below = map(boundary - 4 * MIB, 4 * MIB).unwrap();
+        let above = map(boundary, 4 * MIB).unwrap();
+        unsafe {
+            for off in (0..8 * MIB).step_by(4096) {
+                word(&across, off).write_volatile(boundary + off);
+            }
+            for off in (0..4 * MIB).step_by(4096) {
+                assert_eq!(word(&below, off).read_volatile(), boundary + off);
+                assert_eq!(word(&above, off).read_volatile(), boundary + 4 * MIB + off);
+            }
+        }
+    }
+
+    // The largest range that always fits, ending 2 MiB short of the BAR's end.
+    let wide = map(len - GIB - 2 * MIB, GIB).unwrap();
+    let tail = map(len - 4 * MIB, 4 * MIB).unwrap();
+    unsafe {
+        word(&wide, GIB - 8).write_volatile(0x2222);
+        assert_eq!(word(&tail, 2 * MIB - 8).read_volatile(), 0x2222);
+        word(&tail, 4 * MIB - 8).write_volatile(0x3333);
+    }
+
+    assert!(map(GIB - 4096, 2 * GIB + 4096).is_err(), "three chunks");
+    assert!(map(len - MIB, 2 * MIB).is_err(), "past the end");
+    assert!(map(0, 0).is_err(), "empty");
+
+    for ct in [CacheType::WriteCombining, CacheType::MemoryMappedIO] {
+        let start = Instant::now();
+        dev.set_bar_cache_type(BAR, ct).unwrap();
+        println!("bartest: BAR{} -> {:?} in {:?}", BAR, ct, start.elapsed());
+        unsafe {
+            assert_eq!(word(&head, 0x1000).read_volatile(), 0x1111);
+            assert_eq!(word(&tail, 4 * MIB - 8).read_volatile(), 0x3333);
+            word(&wide, 0).write_volatile(0x4444 + ct as u64);
+            core::arch::x86_64::_mm_sfence();
+            assert_eq!(word(&wide, 0).read_volatile(), 0x4444 + ct as u64);
+        }
+    }
+    println!("bartest: PASS");
+}
+
 fn main() {
-    let (seg, dev) = find_nvme().expect("no NVMe controller");
+    if std::env::args().nth(1).as_deref() == Some("big") {
+        return big();
+    }
+    let (seg, dev) = find(|i| i.class == 1 && i.subclass == 8).expect("no NVMe controller");
     let mmio = dev.find_mmio_bar(BAR).expect("no BAR0");
     let orig = mmio.get_info().cache_type;
     let len = mmio.get_info().length;

@@ -10,13 +10,38 @@ use twizzler_abi::{
         KactionFlags,
     },
 };
-use twizzler_rt_abi::{error::TwzError, Result};
+use twizzler_rt_abi::{
+    error::TwzError,
+    object::{twz_rt_map_object, MapFlags, ObjectHandle, MAX_SIZE},
+    Result,
+};
 use volatile::{
     access::{Access, ReadWrite, Readable},
     map_field, VolatilePtr, VolatileRef,
 };
 
 use crate::device::{Device, MmioObject};
+
+/// A mapping of part of a BAR, made by [Device::map_bar_range].
+pub struct BarRange {
+    ptr: *mut u8,
+    len: usize,
+    _objs: (ObjectHandle, Option<ObjectHandle>),
+}
+
+// Device memory, reached only through the raw pointer.
+unsafe impl Send for BarRange {}
+unsafe impl Sync for BarRange {}
+
+impl BarRange {
+    pub fn as_ptr(&self) -> *mut u8 {
+        self.ptr
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+}
 
 pub struct PcieCapabilityIterator<'a> {
     _dev: &'a Device,
@@ -177,6 +202,58 @@ impl Device {
             ct as u64,
         )?;
         Ok(())
+    }
+
+    /// Length of BAR `bar`. Its mmio object may hold less: see [Self::map_bar_range].
+    pub fn bar_length(&self, bar: usize) -> Result<u64> {
+        self.kaction(
+            KactionCmd::Specific(PcieKactionSpecific::BarLength.into()),
+            bar as u64,
+            KactionFlags::empty(),
+            0,
+        )
+        .map(|v| v.unwrap_u64())
+    }
+
+    /// Map `len` bytes at `offset` of BAR `bar`, anywhere in the BAR. The kernel exposes a BAR
+    /// in chunks of one object each and only a pair of slots can be asked for, so a range
+    /// reaching into a third chunk is refused: any range of up to [MAX_SIZE] bytes fits.
+    pub fn map_bar_range(&self, bar: usize, offset: u64, len: usize) -> Result<BarRange> {
+        let end = offset
+            .checked_add(len as u64)
+            .filter(|end| len > 0 && *end <= self.bar_length(bar).unwrap_or(0))
+            .ok_or(TwzError::INVALID_ARGUMENT)?;
+        let first = offset / MAX_SIZE as u64;
+        let chunk = |idx| {
+            self.kaction(
+                KactionCmd::Specific(PcieKactionSpecific::BarChunk.into()),
+                bar as u64,
+                KactionFlags::empty(),
+                idx,
+            )
+            .map(|v| v.unwrap_objid())
+        };
+        let flags = MapFlags::READ | MapFlags::WRITE;
+        let objs = match (end - 1) / MAX_SIZE as u64 - first {
+            0 => (twz_rt_map_object(chunk(first)?, flags)?, None),
+            1 => {
+                // Deprecated with no successor; the only way to adjacent slots.
+                #[allow(deprecated)]
+                let (a, b) = twizzler_rt_abi::object::twz_rt_map_two_objects(
+                    chunk(first)?,
+                    flags,
+                    chunk(first + 1)?,
+                    flags,
+                )?;
+                (a, Some(b))
+            }
+            _ => return Err(TwzError::NOT_SUPPORTED),
+        };
+        Ok(BarRange {
+            ptr: unsafe { objs.0.start().add((offset % MAX_SIZE as u64) as usize) },
+            len,
+            _objs: objs,
+        })
     }
 
     /// Run `f` on entry `inum` of the MSI-X table `msix` describes.

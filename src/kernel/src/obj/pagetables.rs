@@ -1514,14 +1514,34 @@ impl Object {
         end: PhysAddr,
         ct: CacheType,
     ) -> Result<usize, TwzError> {
+        // TODO: temporary limit
+        let len = ((end.raw() - start.raw()) as usize).min(512 * 1024 * 1024);
+        self.do_map_phys(offset, start, len, ct, ct == CacheType::WriteCombining)
+    }
+
+    /// Maps the whole range with last-level entries, so that [Self::set_cache_type] can make it
+    /// write-combining later.
+    pub fn map_phys_small(
+        &self,
+        offset: usize,
+        start: PhysAddr,
+        end: PhysAddr,
+        ct: CacheType,
+    ) -> Result<usize, TwzError> {
+        self.do_map_phys(offset, start, (end.raw() - start.raw()) as usize, ct, true)
+    }
+
+    fn do_map_phys(
+        &self,
+        offset: usize,
+        start: PhysAddr,
+        len: usize,
+        ct: CacheType,
+        small: bool,
+    ) -> Result<usize, TwzError> {
         let mut pt = self.lock_page_tables();
-        let mut len = (end.raw() - start.raw()) as usize;
         if len == 0 {
             return Ok(0);
-        }
-        // TODO: temporary limit
-        if len >= (512 * 1024 * 1024) {
-            len = 512 * 1024 * 1024;
         }
         let cursor = MappingCursor::new(VirtAddr::new(offset as u64).unwrap(), len);
         let mut fa = take_or_new_frame_allocator();
@@ -1530,7 +1550,7 @@ impl Object {
             fa.precharge(need, FrameAllocFlags::WAIT_OK);
         }
         let settings = MappingSettings::default_user().with_cache(ct);
-        let mut phys = if ct == CacheType::WriteCombining {
+        let mut phys = if small {
             // x86 can only encode write-combining in last-level entries.
             ContiguousProvider::new_of_page_size(start, len, PageNumber::PAGE_SIZE, settings)
         } else {

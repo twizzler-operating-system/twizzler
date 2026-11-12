@@ -278,6 +278,19 @@ fn free_interrupt(device: DeviceRef, inum: u64) -> twizzler_rt_abi::Result<Kacti
     Ok(KactionValue::U64(0))
 }
 
+/// BARs only: config space is registered as 0xff, and a segment's mmio is its ECAM.
+fn check_bar(device: &DeviceRef, bar: u64) -> twizzler_rt_abi::Result<()> {
+    if bar >= 6
+        || DEVS
+            .lock()
+            .get(&device.objid())
+            .is_none_or(|k| k.seg_dev.objid() == device.objid())
+    {
+        return Err(ArgumentError::InvalidArgument.into());
+    }
+    Ok(())
+}
+
 fn kaction(
     device: DeviceRef,
     cmd: u32,
@@ -325,17 +338,17 @@ fn kaction(
             .into_iter()
             .find(|ct| *ct as u64 == arg2)
             .ok_or(ArgumentError::InvalidArgument)?;
-            // BARs only: config space is registered as 0xff, and a segment's mmio is its ECAM.
-            if arg >= 6
-                || DEVS
-                    .lock()
-                    .get(&device.objid())
-                    .is_none_or(|k| k.seg_dev.objid() == device.objid())
-            {
-                return Err(ArgumentError::InvalidArgument.into());
-            }
+            check_bar(&device, arg)?;
             device.set_mmio_cache_type(arg, ct)?;
             Ok(KactionValue::U64(0))
+        }
+        PcieKactionSpecific::BarLength => {
+            check_bar(&device, arg)?;
+            Ok(KactionValue::U64(device.mmio_length(arg)?))
+        }
+        PcieKactionSpecific::BarChunk => {
+            check_bar(&device, arg)?;
+            Ok(KactionValue::ObjID(device.mmio_chunk(arg, arg2)?))
         }
     }
 }
