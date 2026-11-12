@@ -390,9 +390,7 @@ impl Monitor {
 
         let comp_mgr = crate::lockdiag::watched_read(self.comp_mgr, ThreadKey::get().unwrap());
         let rc = comp_mgr.get(sctx)?;
-        let handle = rc.map_object(info, handle)?;
-        let handle2 = rc.map_object(info2, handle2)?;
-        Ok((handle, handle2))
+        Ok((rc.map_pair_object(handle), rc.map_pair_object(handle2)))
     }
 
     /// Unmap an object from a given compartmen.
