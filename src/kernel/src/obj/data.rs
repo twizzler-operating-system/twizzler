@@ -126,10 +126,16 @@ impl Object {
     }
 
     pub fn read_meta(self: &ObjectRef) -> Option<MetaInfo> {
+        if self.has_no_meta() {
+            return None;
+        }
         self.read_at(PageNumber::meta_page().as_byte_offset()).ok()
     }
 
     pub fn write_meta(self: &ObjectRef, meta: MetaInfo) -> bool {
+        if self.has_no_meta() {
+            return false;
+        }
         let ok = self
             .write_at(&meta, PageNumber::meta_page().as_byte_offset())
             .inspect_err(|e| log::warn!("failed to write metadata: {}", e))

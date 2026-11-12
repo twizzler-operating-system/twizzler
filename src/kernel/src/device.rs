@@ -366,7 +366,7 @@ impl Device {
         let chunks = match length < end - start {
             true => (0..(end - start).div_ceil(MAX_SIZE))
                 .map(|_| {
-                    let chunk = crate::obj::Object::new_kernel();
+                    let chunk = crate::obj::Object::new_kernel_no_meta();
                     crate::obj::register_object(chunk.clone());
                     (chunk, false)
                 })

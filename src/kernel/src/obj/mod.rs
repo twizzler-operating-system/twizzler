@@ -99,6 +99,8 @@ const OBJ_KNOWN_LEN_EXACT: u32 = 16;
 /// including, the synthesized meta page) is empty, so past-EOF zero-fill needs no FOT floor and can
 /// answer a fault there directly. See [Object::zero_fill_floor].
 const OBJ_EXTERNAL: u32 = 32;
+/// Has no meta page: its last page is data like the rest (see [Object::new_kernel_no_meta]).
+const OBJ_NO_META: u32 = 64;
 pub struct Object {
     pub id: ObjID,
     flags: AtomicU32,
@@ -490,6 +492,10 @@ impl Object {
         self.flags.fetch_or(OBJ_EXTERNAL, Ordering::SeqCst);
     }
 
+    pub fn has_no_meta(&self) -> bool {
+        self.flags.load(Ordering::SeqCst) & OBJ_NO_META != 0
+    }
+
     /// Whether this object is backed by an external file (see [OBJ_EXTERNAL]).
     pub fn is_external(&self) -> bool {
         self.flags.load(Ordering::SeqCst) & OBJ_EXTERNAL != 0
@@ -741,6 +747,15 @@ impl Object {
         let obj = Arc::new(obj);
         obj.init_meta(meta);
         obj
+    }
+
+    /// A volatile object without a meta page, so that every page up to [MAX_SIZE] can be data, as
+    /// for a headerless mmio chunk. Its ID is not derived from metadata and is trusted as is, with
+    /// all default protections.
+    pub fn new_kernel_no_meta() -> Arc<Self> {
+        let obj = Self::new(id::backup_id_gen(), LifetimeType::Volatile, &[]);
+        obj.flags.fetch_or(OBJ_NO_META, Ordering::SeqCst);
+        Arc::new(obj)
     }
 
     pub fn print_page_tree(&self) {

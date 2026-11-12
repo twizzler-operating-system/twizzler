@@ -1101,3 +1101,42 @@ fn pins_are_released_with_their_security_context() {
     assert!(obj.release_pin(token).is_err());
     obj.release_pin(kept).unwrap();
 }
+
+/// An object without a meta page maps physical memory over its last page, where every other
+/// object's meta frame is.
+#[twizzler_kernel_macros::kernel_test]
+fn phys_mapping_over_absent_meta_page() {
+    use twizzler_abi::object::MAX_SIZE;
+
+    use crate::{memory::PhysAddr, obj::Object};
+
+    let len = PHYS_LEVEL_LAYOUTS[1].size();
+    // Never accessed, and far above any frame.
+    let phys = PhysAddr::new(1 << 38).unwrap();
+    let obj = Object::new_kernel_no_meta();
+    assert!(obj.read_meta().is_none());
+    assert_eq!(obj.check_id(), (true, Protections::all()));
+    obj.map_phys_small(
+        MAX_SIZE - len,
+        phys,
+        phys.offset(len).unwrap(),
+        CacheType::MemoryMappedIO,
+    )
+    .unwrap();
+    let meta = PageNumber::meta_page().as_byte_offset();
+    let v: alloc::vec::Vec<_> = obj
+        .lock_page_tables()
+        .readmap(meta as u64, PageNumber::PAGE_SIZE)
+        .map(|mi| mi.paddr().raw())
+        .collect();
+    assert_eq!(v, [phys.raw() + (len - PageNumber::PAGE_SIZE) as u64]);
+    assert!(obj.read_meta().is_none());
+    assert!(!obj.write_meta(twizzler_abi::meta::MetaInfo {
+        nonce: twizzler_rt_abi::object::Nonce(0),
+        kuid: 0.into(),
+        default_prot: Protections::all(),
+        flags: twizzler_abi::meta::MetaFlags::empty(),
+        fotcount: 0,
+        extcount: 0,
+    }));
+}
