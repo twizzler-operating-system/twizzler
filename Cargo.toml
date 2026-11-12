@@ -111,6 +111,7 @@ members = [
     "src/bin/brush",
     "src/test/pipestat",
     "src/test/exit-test",
+    "src/test/heap-test",
 ]
 
 exclude = [
@@ -139,6 +140,7 @@ test-programs = [
     { crate = "signal-test" },
     { crate = "logboi-test" },
     { crate = "exit-test" },
+    { crate = "heap-test" },
 ]
 # Plain files copied onto the data disk, as `{ from = <repo-relative>, to = <path in the image> }`.
 # The initrd holds only built artifacts and is read whole at boot; the disk is demand-paged, so
