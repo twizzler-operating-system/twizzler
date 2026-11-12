@@ -285,7 +285,7 @@ fn handle_page_data_request_task(
         req_range.start = PAGE;
     }
     let start_time = diag.then(Instant::now);
-    let obj_len = ctx.paged_ostore(None).unwrap().len(id.raw()).ok();
+    let obj_len = ctx.store_for(id).unwrap().len(id.raw()).ok();
     let max_len = obj_len
         .map(|x| x + PAGE)
         .unwrap_or(MAX_SIZE as u64)
@@ -531,7 +531,7 @@ pub fn handle_kernel_request(
             work.phase("info:spawn");
             return handle_object_info_request(ctx, qid, obj_id, request);
         }
-        KernelCommand::ObjectDel(obj_id) => match ctx.paged_ostore(None) {
+        KernelCommand::ObjectDel(obj_id) => match ctx.store_for(obj_id) {
             Ok(po) => {
                 work.phase("del:delete");
                 match po.delete_object(obj_id.raw()) {
@@ -544,7 +544,7 @@ pub fn handle_kernel_request(
             }
             Err(e) => KernelCompletionData::Error(TwzError::from(e).into()),
         },
-        KernelCommand::ObjectCreate(id, object_info) => match ctx.paged_ostore(None) {
+        KernelCommand::ObjectCreate(id, object_info) => match ctx.store_for(id) {
             Ok(po) => {
                 work.phase("create:create");
                 match po.create_object(id.raw()) {
@@ -569,16 +569,10 @@ pub fn handle_kernel_request(
                                 .copy_from_slice(any_as_u8_slice(&meta));
                         }
                         work.phase("create:write-meta");
-                        ctx.paged_ostore(None)
-                            .unwrap()
-                            .write_object(id.raw(), 0, &buffer)
-                            .unwrap();
+                        po.write_object(id.raw(), 0, &buffer).unwrap();
 
                         work.phase("create:read-back");
-                        ctx.paged_ostore(None)
-                            .unwrap()
-                            .read_object(id.raw(), 0, &mut buffer)
-                            .unwrap();
+                        po.read_object(id.raw(), 0, &mut buffer).unwrap();
 
                         // Validated, not merely echoed. The kernel derived `id` from these very
                         // kuid/nonce/def_prot fields and we have just written them into the meta
@@ -612,6 +606,11 @@ pub fn handle_kernel_request(
             // `flush` is `ext4_fs_fini` plus a cache flush: it writes back the superblock and
             // every dirty buffer. Ordinary operation never needs it, because the store's flush
             // points (page-out, sync) cover the data; what they do not cover is "and now stop".
+            for route in &ctx.routes {
+                if let Err(e) = route.store.flush() {
+                    tracing::warn!("failed to flush a routed store for shutdown: {}", e);
+                }
+            }
             match ctx.paged_ostore(None) {
                 Ok(po) => match po.flush() {
                     Ok(()) => KernelCompletionData::Okay,

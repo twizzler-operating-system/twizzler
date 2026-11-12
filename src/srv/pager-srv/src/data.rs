@@ -983,7 +983,7 @@ impl PagerData {
         // This length was previously computed purely as an existence check and discarded. Stating
         // it lets the kernel answer faults past the end of the object without a round trip at all;
         // leaving it unstated is what made every stored object look zero-length to the kernel.
-        let base = match ctx.paged_ostore(None)?.len(id.raw()) {
+        let base = match ctx.store_for(id)?.len(id.raw()) {
             Ok(len) => base.with_size(len),
             Err(_) => return Err(ObjectError::NoSuchObject.into()),
         };
