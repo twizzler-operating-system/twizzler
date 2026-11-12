@@ -49,12 +49,6 @@ pub enum PcieKactionSpecific {
     /// Set the cache type of a BAR's mapping: arg is the BAR index, arg2 the
     /// [crate::device::CacheType]. Applies to every mapping of the BAR's mmio object.
     SetBarCacheType = 3,
-    /// The length in bytes of the BAR whose index is arg, which may exceed its mmio object's.
-    BarLength = 4,
-    /// The ID of an object holding, from its first byte and with no
-    /// [crate::device::MmioInfo], bytes `arg2 * MAX_SIZE..` of the BAR whose index is arg.
-    /// Mapped in adjacent slots, consecutive chunks are contiguous.
-    BarChunk = 5,
 }
 
 impl From<PcieKactionSpecific> for u32 {
@@ -72,8 +66,6 @@ impl TryFrom<u32> for PcieKactionSpecific {
             1 => PcieKactionSpecific::AllocateInterrupt,
             2 => PcieKactionSpecific::FreeInterrupt,
             3 => PcieKactionSpecific::SetBarCacheType,
-            4 => PcieKactionSpecific::BarLength,
-            5 => PcieKactionSpecific::BarChunk,
             _ => return Err(ArgumentError::InvalidArgument.into()),
         })
     }

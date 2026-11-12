@@ -35,7 +35,7 @@ impl Device {
         Ok(Self { obj })
     }
 
-    fn get_subobj(&self, ty: u8, idx: u8) -> Option<ObjID> {
+    pub(crate) fn get_subobj(&self, ty: u8, idx: u8) -> Option<ObjID> {
         let cmd = KactionCmd::Generic(KactionGenericCmd::GetSubObject(ty, idx));
         let result = twizzler_abi::syscall::sys_kaction(
             cmd,

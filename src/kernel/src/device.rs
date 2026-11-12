@@ -5,7 +5,7 @@ use memoffset::offset_of;
 use twizzler_abi::{
     device::{
         BusType, CacheType, DeviceId, DeviceInterrupt, DeviceRepr, DeviceType, MMIO_OFFSET,
-        MmioInfo, SubObjectType,
+        MmioInfo, MmioRegion, SubObjectType,
     },
     kso::{
         KactionCmd, KactionGenericCmd, KactionValue, KsoHdr, PinFlags,
@@ -43,8 +43,27 @@ struct Mmio {
     /// Covers the first `length` bytes, after an [MmioInfo].
     obj: ObjectRef,
     length: usize,
-    /// Objects covering [MAX_SIZE] each from their first byte, by index; made when asked for.
-    chunks: BTreeMap<u64, ObjectRef>,
+    /// [SubObjectType::MmioChunk]s, mapped when first looked up: 4 KiB entries (so they can be
+    /// made write-combining) cost 2 MiB of page table per chunk.
+    chunks: Vec<(ObjectRef, bool)>,
+}
+
+impl Mmio {
+    fn chunk_len(&self, idx: usize) -> usize {
+        ((self.end - self.start) - idx * MAX_SIZE).min(MAX_SIZE)
+    }
+
+    fn chunk(&mut self, idx: usize) -> Result<ObjID> {
+        // Inside the region, which add_mmio checked.
+        let start = self.start.offset(idx * MAX_SIZE).unwrap();
+        let end = start.offset(self.chunk_len(idx)).unwrap();
+        let (obj, mapped) = &mut self.chunks[idx];
+        if !*mapped {
+            obj.map_phys_small(0, start, end, self.ct)?;
+            *mapped = true;
+        }
+        Ok(obj.id())
+    }
 }
 
 pub struct Device {
@@ -313,23 +332,39 @@ impl Device {
             end,
             (end - start) / (1024 * 1024)
         );
-        let length = obj.map_phys(MMIO_OFFSET, start, end, ct).unwrap() as u64;
+        let length = obj.map_phys(MMIO_OFFSET, start, end, ct).unwrap();
+        let chunks = match length < end - start {
+            true => (0..(end - start).div_ceil(MAX_SIZE))
+                .map(|_| {
+                    let chunk = crate::obj::Object::new_kernel();
+                    crate::obj::register_object(chunk.clone());
+                    (chunk, false)
+                })
+                .collect(),
+            false => Vec::new(),
+        };
+        let mut inner = self.inner.lock();
+        let region = MmioRegion {
+            length: (end - start) as u64,
+            first_chunk: inner.mmio.iter().map(|m| m.chunks.len() as u64).sum(),
+        };
         let mmio_info = MmioInfo {
-            length,
+            length: length as u64,
             cache_type: ct,
             info,
         };
         obj.write_base(&mmio_info).unwrap();
+        obj.write_at(&region, NULLPAGE_SIZE + size_of::<MmioInfo>())
+            .unwrap();
         crate::obj::register_object(obj.clone());
-        let mut inner = self.inner.lock();
         inner.mmio.push(Mmio {
             info,
             start,
             end,
             ct,
             obj: obj.clone(),
-            length: length as usize,
-            chunks: BTreeMap::new(),
+            length,
+            chunks,
         });
         inner.sub_objects.push((SubObjectType::Mmio, obj));
     }
@@ -343,9 +378,10 @@ impl Device {
             .find(|m| m.info == info)
             .ok_or(ArgumentError::InvalidArgument)?;
         m.obj.set_cache_type(MMIO_OFFSET, m.length, ct)?;
-        for (idx, chunk) in &m.chunks {
-            let len = ((m.end - m.start) - *idx as usize * MAX_SIZE).min(MAX_SIZE);
-            chunk.set_cache_type(0, len, ct)?;
+        for (idx, (chunk, mapped)) in m.chunks.iter().enumerate() {
+            if *mapped {
+                chunk.set_cache_type(0, m.chunk_len(idx), ct)?;
+            }
         }
         m.ct = ct;
         m.obj.write_base(&MmioInfo {
@@ -353,42 +389,6 @@ impl Device {
             cache_type: ct,
             info,
         })
-    }
-
-    /// Length of the whole mmio region `info`, which its sub-object may not cover.
-    pub fn mmio_length(&self, info: u64) -> Result<u64> {
-        let inner = self.inner.lock();
-        let m = inner
-            .mmio
-            .iter()
-            .find(|m| m.info == info)
-            .ok_or(ArgumentError::InvalidArgument)?;
-        Ok((m.end - m.start) as u64)
-    }
-
-    /// The object holding bytes `idx * MAX_SIZE..` of mmio region `info` from its first byte on,
-    /// with no [MmioInfo]: mapped in adjacent slots, consecutive chunks are contiguous.
-    pub fn mmio_chunk(&self, info: u64, idx: u64) -> Result<ObjID> {
-        let mut inner = self.inner.lock();
-        let m = inner
-            .mmio
-            .iter_mut()
-            .find(|m| m.info == info)
-            .ok_or(ArgumentError::InvalidArgument)?;
-        if let Some(chunk) = m.chunks.get(&idx) {
-            return Ok(chunk.id());
-        }
-        let start = (idx as usize)
-            .checked_mul(MAX_SIZE)
-            .and_then(|off| m.start.offset(off).ok())
-            .filter(|start| *start < m.end)
-            .ok_or(ArgumentError::InvalidArgument)?;
-        let end = start.offset(MAX_SIZE).map_or(m.end, |e| e.min(m.end));
-        let obj = crate::obj::Object::new_kernel();
-        obj.map_phys_small(0, start, end, m.ct)?;
-        crate::obj::register_object(obj.clone());
-        m.chunks.insert(idx, obj.clone());
-        Ok(obj.id())
     }
 
     pub fn add_child(&self, child: DeviceRef) {
@@ -409,6 +409,19 @@ impl Device {
 
     pub fn get_subobj_id(&self, t: u8, n: usize) -> Option<ObjID> {
         let t: SubObjectType = t.try_into().ok()?;
+        if t == SubObjectType::MmioChunk {
+            let mut n = n;
+            for m in &mut self.inner.lock().mmio {
+                if n < m.chunks.len() {
+                    return m
+                        .chunk(n)
+                        .inspect_err(|e| log::warn!("mmio chunk {}: {:?}", n, e))
+                        .ok();
+                }
+                n -= m.chunks.len();
+            }
+            return None;
+        }
         let ret = self
             .inner
             .lock()

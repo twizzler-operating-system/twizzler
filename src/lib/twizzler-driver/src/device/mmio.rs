@@ -1,6 +1,6 @@
 use twizzler::object::{ObjID, Object, RawObject};
 use twizzler_abi::{
-    device::{MmioInfo, SubObjectType, MMIO_OFFSET},
+    device::{MmioInfo, MmioRegion, SubObjectType, MMIO_OFFSET},
     object::NULLPAGE_SIZE,
 };
 use twizzler_rt_abi::{object::MapFlags, Result};
@@ -23,6 +23,18 @@ impl MmioObject {
     /// Get a reference to an MMIO subobject's info data.
     pub fn get_info(&self) -> &MmioInfo {
         unsafe { self.obj.base_ptr::<MmioInfo>().as_ref().unwrap() }
+    }
+
+    /// The whole region, which may be longer than this object holds.
+    pub fn get_region(&self) -> &MmioRegion {
+        unsafe {
+            self.obj
+                .base_ptr::<MmioInfo>()
+                .add(1)
+                .cast::<MmioRegion>()
+                .as_ref()
+                .unwrap()
+        }
     }
 
     /// Get the base of the memory mapped IO region.

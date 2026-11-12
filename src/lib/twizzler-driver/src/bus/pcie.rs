@@ -4,7 +4,7 @@ use std::ptr::NonNull;
 
 pub use twizzler_abi::device::bus::pcie::*;
 use twizzler_abi::{
-    device::{CacheType, InterruptVector},
+    device::{CacheType, InterruptVector, SubObjectType},
     kso::{
         pack_kaction_int_alloc, InterruptAllocateOptions, InterruptPriority, KactionCmd,
         KactionFlags,
@@ -206,45 +206,41 @@ impl Device {
 
     /// Length of BAR `bar`. Its mmio object may hold less: see [Self::map_bar_range].
     pub fn bar_length(&self, bar: usize) -> Result<u64> {
-        self.kaction(
-            KactionCmd::Specific(PcieKactionSpecific::BarLength.into()),
-            bar as u64,
-            KactionFlags::empty(),
-            0,
-        )
-        .map(|v| v.unwrap_u64())
+        let mmio = self.find_mmio_bar(bar).ok_or(TwzError::INVALID_ARGUMENT)?;
+        Ok(mmio.get_region().length)
     }
 
-    /// Map `len` bytes at `offset` of BAR `bar`, anywhere in the BAR. The kernel exposes a BAR
-    /// in chunks of one object each and only a pair of slots can be asked for, so a range
-    /// reaching into a third chunk is refused: any range of up to [MAX_SIZE] bytes fits.
+    /// Map `len` bytes at `offset` of BAR `bar`, anywhere in the BAR. A BAR longer than its mmio
+    /// object is also in headerless chunk sub-objects of [MAX_SIZE] bytes each, which are
+    /// contiguous in adjacent slots; only a pair of slots can be asked for, so a range reaching
+    /// into a third chunk is refused: any range of up to [MAX_SIZE] bytes fits.
     pub fn map_bar_range(&self, bar: usize, offset: u64, len: usize) -> Result<BarRange> {
+        let mmio = self.find_mmio_bar(bar).ok_or(TwzError::INVALID_ARGUMENT)?;
+        let region = mmio.get_region();
         let end = offset
             .checked_add(len as u64)
-            .filter(|end| len > 0 && *end <= self.bar_length(bar).unwrap_or(0))
+            .filter(|end| len > 0 && *end <= region.length)
             .ok_or(TwzError::INVALID_ARGUMENT)?;
+        if region.length == mmio.get_info().length {
+            return Err(TwzError::NOT_SUPPORTED);
+        }
         let first = offset / MAX_SIZE as u64;
-        let chunk = |idx| {
-            self.kaction(
-                KactionCmd::Specific(PcieKactionSpecific::BarChunk.into()),
-                bar as u64,
-                KactionFlags::empty(),
-                idx,
-            )
-            .map(|v| v.unwrap_objid())
+        let chunk = |idx: u64| {
+            u8::try_from(region.first_chunk + idx)
+                .ok()
+                .and_then(|n| self.get_subobj(SubObjectType::MmioChunk.into(), n))
+                .ok_or(TwzError::INVALID_ARGUMENT)
         };
+        let ids = (first..=(end - 1) / MAX_SIZE as u64)
+            .map(chunk)
+            .collect::<Result<Vec<_>>>()?;
         let flags = MapFlags::READ | MapFlags::WRITE;
-        let objs = match (end - 1) / MAX_SIZE as u64 - first {
-            0 => (twz_rt_map_object(chunk(first)?, flags)?, None),
-            1 => {
+        let objs = match ids[..] {
+            [a] => (twz_rt_map_object(a, flags)?, None),
+            [a, b] => {
                 // Deprecated with no successor; the only way to adjacent slots.
                 #[allow(deprecated)]
-                let (a, b) = twizzler_rt_abi::object::twz_rt_map_two_objects(
-                    chunk(first)?,
-                    flags,
-                    chunk(first + 1)?,
-                    flags,
-                )?;
+                let (a, b) = twizzler_rt_abi::object::twz_rt_map_two_objects(a, flags, b, flags)?;
                 (a, Some(b))
             }
             _ => return Err(TwzError::NOT_SUPPORTED),

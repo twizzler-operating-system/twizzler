@@ -69,7 +69,7 @@ fn big() {
         mmio.get_info().length / MIB
     );
     assert!(len >= 4 * GIB);
-    assert!(dev.bar_length(0xff).is_err());
+    assert!(dev.bar_length(6).is_err());
 
     let map = |offset: u64, len: u64| {
         let start = Instant::now();
@@ -93,6 +93,21 @@ fn big() {
             .write(0x1111);
         assert_eq!(word(&head, 0x1000).read_volatile(), 0x1111);
     }
+
+    // A pair's slots survive its members being mapped again, alone and in an overlapping pair.
+    let pair = map(GIB - 4 * MIB, 8 * MIB).unwrap();
+    let alone = map(GIB, 4 * MIB).unwrap();
+    let overlap = map(2 * GIB - 4 * MIB, 8 * MIB).unwrap();
+    unsafe {
+        word(&pair, 4 * MIB).write_volatile(0x5555);
+        assert_eq!(word(&alone, 0).read_volatile(), 0x5555);
+    }
+    drop((alone, overlap));
+    unsafe {
+        word(&pair, 4 * MIB + 8).write_volatile(0x6666);
+        assert_eq!(word(&pair, 4 * MIB + 8).read_volatile(), 0x6666);
+    }
+    drop(pair);
 
     // A range across each chunk boundary, written through, read through one-chunk mappings.
     for boundary in (GIB..len).step_by(GIB as usize) {

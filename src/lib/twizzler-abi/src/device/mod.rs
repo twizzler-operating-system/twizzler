@@ -54,6 +54,10 @@ pub enum SubObjectType {
     Info = 0,
     /// A mapping of the MMIO registers for this device into an object.
     Mmio = 1,
+    /// [MAX_SIZE](crate::object::MAX_SIZE) bytes of an mmio region from the object's first byte,
+    /// with no header, so that consecutive chunks mapped in adjacent slots are contiguous. See
+    /// [MmioRegion].
+    MmioChunk = 2,
 }
 
 impl From<SubObjectType> for u8 {
@@ -61,6 +65,7 @@ impl From<SubObjectType> for u8 {
         match x {
             SubObjectType::Info => 0,
             SubObjectType::Mmio => 1,
+            SubObjectType::MmioChunk => 2,
         }
     }
 }
@@ -71,6 +76,7 @@ impl TryFrom<u8> for SubObjectType {
         Ok(match x {
             0 => SubObjectType::Info,
             1 => SubObjectType::Mmio,
+            2 => SubObjectType::MmioChunk,
             _ => return Err(()),
         })
     }
@@ -97,6 +103,18 @@ pub struct MmioInfo {
     pub cache_type: CacheType,
     /// Device-specific info.
     pub info: u64,
+}
+
+/// Follows the [MmioInfo] of an mmio sub-object. When the region is longer than the sub-object
+/// holds, all of it is in the [SubObjectType::MmioChunk] sub-objects `first_chunk..` (one per
+/// [MAX_SIZE](crate::object::MAX_SIZE) bytes, the last one possibly shorter).
+#[derive(Debug)]
+#[repr(C)]
+pub struct MmioRegion {
+    /// The length of the whole region.
+    pub length: u64,
+    /// Meaningful only when `length` exceeds [MmioInfo::length].
+    pub first_chunk: u64,
 }
 
 /// An mmio object has, at its base, a [MmioInfo] struct. At this offset, the mmio mapping actually
