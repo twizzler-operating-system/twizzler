@@ -80,6 +80,7 @@ members = [
     "src/bin/trace",
 
     "src/test/schedtest",
+    "src/test/clockcheck",
     "src/test/rmdirtest",
     "src/test/sysbench",
     "src/test/nullexit",

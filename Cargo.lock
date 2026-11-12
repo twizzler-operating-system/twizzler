@@ -1387,6 +1387,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "clockcheck"
+version = "0.1.0"
+dependencies = [
+ "twizzler-abi",
+]
+
+[[package]]
 name = "clru"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

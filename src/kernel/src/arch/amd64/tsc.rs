@@ -94,37 +94,34 @@ fn feature_info_frequency() -> Result<u64, TscError> {
     // According to the Intel x86_64 manual,
     // Volume 3, Section 18.7.3:
     // TSC Freq = (ecx * ebx) / eax (for leaf 0x15)
-    let tsc = match cpuid.get_tsc_info() {
-        Some(x) => x,
-        // we are probably on some old processor
-        None => return Err(TscError::LeafNotupported(0x15)),
-    };
-
-    if let Some(freq) = tsc.tsc_frequency() {
-        return Ok(freq);
-    }
-
-    // most likely this means that 0x15.eax was 0
-    // in other words, the core crystal clock frequency
-    // was not reported. We might still be able to use the
-    // TSC/crystal core ratio if enumerated
-    if tsc.numerator() != 0 && tsc.denominator() != 0 {
-        // We refer to Table 18-85 here to provide us the
-        // core crystal clock frequency.
-        let feature = match cpuid.get_feature_info() {
-            Some(x) => x,
-            // No feature info, so we cannot identify the crystal frequency. Fall back to PIT
-            // calibration rather than failing the boot.
-            None => return Err(TscError::CpuFeatureNotSupported),
-        };
-
-        // for certian Xeon processors, we can use a core
-        // crystal clock frequency of 25 MHz.
-        if feature.family_id() == 0x06 && feature.model_id() == 0x55 {
-            let crystal: u32 = 25 * 1_000_000; // in Hz
-            let freq: u64 =
-                ((crystal as u64 * tsc.numerator() as u64) / tsc.denominator() as u64).into();
+    // AMD has no leaf 0x15; that must not skip the hypervisor's answer below.
+    if let Some(tsc) = cpuid.get_tsc_info() {
+        if let Some(freq) = tsc.tsc_frequency() {
             return Ok(freq);
+        }
+
+        // most likely this means that 0x15.eax was 0
+        // in other words, the core crystal clock frequency
+        // was not reported. We might still be able to use the
+        // TSC/crystal core ratio if enumerated
+        if tsc.numerator() != 0 && tsc.denominator() != 0 {
+            // We refer to Table 18-85 here to provide us the
+            // core crystal clock frequency.
+            let feature = match cpuid.get_feature_info() {
+                Some(x) => x,
+                // No feature info, so we cannot identify the crystal frequency. Fall back to PIT
+                // calibration rather than failing the boot.
+                None => return Err(TscError::CpuFeatureNotSupported),
+            };
+
+            // for certian Xeon processors, we can use a core
+            // crystal clock frequency of 25 MHz.
+            if feature.family_id() == 0x06 && feature.model_id() == 0x55 {
+                let crystal: u32 = 25 * 1_000_000; // in Hz
+                let freq: u64 =
+                    ((crystal as u64 * tsc.numerator() as u64) / tsc.denominator() as u64).into();
+                return Ok(freq);
+            }
         }
     }
 
