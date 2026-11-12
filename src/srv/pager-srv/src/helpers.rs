@@ -1,4 +1,4 @@
-use object_store::{objid_to_ino, PageRequest, PagedObjectStore, ProbeMiss};
+use object_store::{objid_to_ino, PageRequest, ProbeMiss};
 use twizzler::object::{MetaExt, MetaFlags, MetaInfo, ObjID, MEXT_MTIME, MEXT_NLINK, MEXT_SIZED};
 use twizzler_abi::{
     object::{Protections, MAX_SIZE},
@@ -79,7 +79,7 @@ fn fill_external_meta(buffer: &mut [u8; PAGE as usize], len: u64, mtime: u32, nl
 /// Fill a fresh physical page with an external file's meta page.
 pub fn page_in_external_meta(ctx: &'static PagerContext, obj_id: ObjID) -> Result<PhysRange> {
     let (len, mtime, nlink) = ctx
-        .paged_ostore(None)?
+        .store_for(obj_id)?
         .len_mtime_nlink(obj_id.raw())
         .inspect_err(|e| tracing::warn!("failed to find extern inode: {}", e))?;
     let phys_range = {
@@ -142,7 +142,7 @@ pub fn page_in(
     if obj_range.start == (MAX_SIZE as u64) - PAGE {
         tracing::debug!("found meta page, using 0 page",);
         start_page = 0;
-        if objid_to_ino(obj_id.raw()).is_some() {
+        if objid_to_ino(obj_id.raw()).is_some() || ctx.route(obj_id).is_some() {
             return page_in_external_meta(ctx, obj_id);
         }
     }

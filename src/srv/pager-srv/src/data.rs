@@ -951,6 +951,19 @@ impl PagerData {
             Protections::empty(),
         );
 
+        if let Some(store) = ctx.route(id) {
+            let len = store.len(id.raw()).map_err(|_| ObjectError::NoSuchObject)?;
+            return Ok(ObjectInfo::new(
+                LifetimeType::Persistent,
+                BackingType::Normal,
+                EXTERNAL_META.kuid,
+                EXTERNAL_META.nonce.0,
+                EXTERNAL_META.default_prot,
+            )
+            .validated()
+            .synth_meta(len));
+        }
+
         if objid_to_ino(id.raw()).is_some() {
             // No page crosses over. These objects have no stored metadata -- we invent it from
             // [EXTERNAL_META] plus the file's length -- so the length is the only thing the kernel

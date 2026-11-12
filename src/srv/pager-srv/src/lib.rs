@@ -173,7 +173,7 @@ fn do_pager_start(q1: ObjID, q2: ObjID) -> ObjID {
         data,
         kernel_notify: rq,
         store: OnceLock::new(),
-        routes: Vec::new(),
+        routes: stores::load_stores(),
         _pool: PagerThreadPool::new(rq),
     });
     let ctx = PAGER_CTX.get().unwrap();

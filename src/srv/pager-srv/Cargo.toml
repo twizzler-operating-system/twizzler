@@ -27,6 +27,8 @@ heapless = { workspace = true }
 async-channel = { workspace = true }
 smallvec = { workspace = true }
 libc = { workspace = true }
+libloading = { path = "../../ports/rust_libloading" }
+pager-store = { path = "../../lib/pager/pager-store" }
 
 volatile = { workspace = true }
 bitvec = { workspace = true }

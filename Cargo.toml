@@ -42,6 +42,7 @@ members = [
     "src/bin/unittest",
     "src/bin/unittest/unittest-report",
     "src/lib/pager/pager-dynamic",
+    "src/lib/pager/pager-store",
     "src/bin/uuhelper",
     "src/srv/cache-srv",
     "src/bin/cache",
@@ -100,6 +101,7 @@ members = [
     "src/test/async-test",
     "src/test/lltest",
     "src/test/lltest/llt",
+    "src/test/pagerstore-test",
     #"src/test/async-test",
     #"src/test/lltest",
     #"src/test/lltest/llt",
@@ -205,6 +207,7 @@ initrd = [
     #"crate:randtest",
     #"crate:serialecho",
     "lib:llt",
+    "lib:pagerstore-test",
     "crate:lltest",
     "crate:femto",
 ]
